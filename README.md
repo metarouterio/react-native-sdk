@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@metarouter/react-native-sdk)](https://www.npmjs.com/package/@metarouter/react-native-sdk)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-A lightweight React Native analytics SDK that transmits events to your MetaRouter cluster using Segment-compatible methods. Built on top of `@segment/analytics-react-native`.
+A lightweight React Native analytics SDK that transmits events to your MetaRouter cluster.
 
 ## Installation
 
