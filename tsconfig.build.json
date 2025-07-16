@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "outDir": "lib",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "target": "ES2019",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "jsx": "react"
+  },
+  "include": ["src"],
+  "exclude": ["**/*.test.ts", "**/__mocks__/**"]
+}

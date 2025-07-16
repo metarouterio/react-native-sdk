@@ -1,0 +1,9 @@
+{
+    "extends": "./tsconfig.build.json",
+    "compilerOptions": {
+      "noEmit": true,
+      "types": ["jest", "node"],
+      "allowJs": true
+    },
+    "include": ["src", "**/*.test.ts", "src/__mocks__/@segment/analytics-react-native.ts"]
+  }
