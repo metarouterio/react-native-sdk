@@ -1,6 +1,6 @@
 {
   "name": "@metarouter/react-native-sdk",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -8,7 +8,8 @@
       "import": "./lib/index.js",
       "require": "./lib/index.js",
       "types": "./lib/index.d.ts"
-    }
+    },
+    "./react-native.config.js": "./react-native.config.js"
   },
   "files": [
     "lib",
