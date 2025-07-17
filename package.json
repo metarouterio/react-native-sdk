@@ -1,6 +1,6 @@
 {
   "name": "@metarouter/react-native-sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -13,7 +13,8 @@
   },
   "files": [
     "lib",
-    "react-native.config.js"
+    "react-native.config.js",
+    "MetaRouterReactNativeSDK.podspec"
   ],
   "scripts": {
     "clean": "rm -rf lib",
