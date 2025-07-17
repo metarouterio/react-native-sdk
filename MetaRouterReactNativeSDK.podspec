@@ -24,4 +24,5 @@ Pod::Spec.new do |s|
     s.dependency 'AnalyticsReactNative', '~> 2.21.2'
     s.dependency 'SovranReactNative', '~> 1.1.3'
     s.dependency 'react-native-get-random-values', '~> 1.11.0'
+    s.dependency 'RNCAsyncStorage', '~> 2.2.0'
   end
