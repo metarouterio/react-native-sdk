@@ -20,6 +20,7 @@
     "clean": "rm -rf lib",
     "build": "tsc --project tsconfig.build.json",
     "prepare": "npm run build",
+    "publish": "npm run clean && npm run build && npm publish --access public",
     "test": "jest"
   },
   "publishConfig": {
