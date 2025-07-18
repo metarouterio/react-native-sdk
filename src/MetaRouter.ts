@@ -79,5 +79,6 @@ export const MetaRouter = {
     analytics = null;
     analyticsInterface = null;
     initialized = false;
+    setRealClient(null);
   },
 };
