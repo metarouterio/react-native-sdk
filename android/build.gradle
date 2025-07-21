@@ -1,8 +1,21 @@
 apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'com.google.devtools.ksp'  // Needed for Room compiler
 
 def safeExtGet(prop, fallback) {
     rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
+
+// Define AsyncStorage configuration
+ext.AsyncStorageConfig = [
+    useNextStorage: true,  // or false if you want legacy
+    roomVersion: "2.5.0"
+]
+
+// Define coroutines version for AsyncStorage
+ext.AsyncStorageLibs = [
+    coroutines: "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4"
+]
 
 android {
     compileSdkVersion safeExtGet('compileSdkVersion', 33)
@@ -18,6 +31,10 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+    
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
 }
 
 repositories {
@@ -27,13 +44,17 @@ repositories {
 }
 
 dependencies {
-    // React Native core
     implementation 'com.facebook.react:react-native:+'
     
-    // Your SDK's native dependencies - these will be installed when users add your SDK
-    // Using the exact source directories from the config output
-    implementation project(':react-native-async-storage_async-storage')
-    implementation project(':segment-analytics-react-native') 
-    implementation project(':sovran-react-native')
-    implementation project(':react-native-get-random-values')
+    // Kotlin support
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+    
+    // AsyncStorage dependencies (when useNextStorage = true)
+    if (ext.AsyncStorageConfig.useNextStorage) {
+        implementation "androidx.room:room-runtime:${ext.AsyncStorageConfig.roomVersion}"
+        implementation "androidx.room:room-ktx:${ext.AsyncStorageConfig.roomVersion}"
+        ksp "androidx.room:room-compiler:${ext.AsyncStorageConfig.roomVersion}"
+        
+        implementation ext.AsyncStorageLibs.coroutines
+    }
 }
