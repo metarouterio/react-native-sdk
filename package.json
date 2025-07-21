@@ -14,7 +14,8 @@
   "files": [
     "lib",
     "react-native.config.js",
-    "MetaRouterReactNativeSDK.podspec"
+    "MetaRouterReactNativeSDK.podspec",
+    "android"
   ],
   "scripts": {
     "clean": "rm -rf lib",
