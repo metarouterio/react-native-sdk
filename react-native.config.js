@@ -5,8 +5,12 @@ module.exports = {
     'react-native-get-random-values': {},
     '@react-native-async-storage/async-storage': {},
   },
-  platforms: {
-    ios: {},
-    android: {},
+  dependency: {
+    platforms: {
+      ios: {},
+      android: {
+        sourceDir: './android',
+      },
+    },
   },
 };
