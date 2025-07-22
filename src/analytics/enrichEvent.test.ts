@@ -1,5 +1,6 @@
 import { enrichEvent } from './enrichEvent';
 import { EventPayload } from './types';
+import packageJson from '../../package.json'; // Adjust the path as necessary
 
 describe('enrichEvent()', () => {
   const baseEvent: EventPayload = {
@@ -40,7 +41,7 @@ describe('enrichEvent()', () => {
     expect(enriched.context).toMatchObject({
       library: {
         name: 'metarouter-react-native-sdk',
-        version: '0.1.16',
+        version: packageJson.version,
       },
       locale: 'en-US',
       timezone: 'America/Denver',
