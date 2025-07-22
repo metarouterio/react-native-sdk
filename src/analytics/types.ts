@@ -1,0 +1,56 @@
+export type EventType = 'track' | 'identify' | 'group' | 'screen' | 'alias' | 'page';
+
+export interface EventPayload {
+  type: EventType;
+  event?: string;
+  userId?: string;
+  groupId?: string;
+  traits?: Record<string, any>;
+  properties?: Record<string, any>;
+  timestamp?: string;
+}
+
+export interface InitOptions {
+  writeKey: string;
+  ingestionEndpoint: string;
+  flushInterval?: number;
+  debug?: boolean;
+}
+
+export interface AnalyticsInterface {
+  track: (event: string, props?: Record<string, any>) => void;
+  identify: (userId: string, traits?: Record<string, any>) => void;
+  group: (groupId: string, traits?: Record<string, any>) => void;
+  screen: (name: string, props?: Record<string, any>) => void;
+  alias: (newUserId: string) => void;
+  flush: () => void;
+  cleanup: () => void;
+}
+
+export interface EventContext {
+  library: {
+    name: string;
+    version: string;
+  };
+  locale?: string;
+  timezone?: string;
+  device: {
+    manufacturer: string;
+    model: string;
+    osName: string;
+    osVersion: string;
+  };
+  app: {
+    version: string;
+    build: string;
+  };
+  [key: string]: any; // allow arbitrary context
+}
+
+export interface EnrichedEventPayload extends EventPayload {
+  anonymousId: string;
+  messageId: string;
+  sentAt: string;
+  context: EventContext;
+  writeKey: string;
+}
