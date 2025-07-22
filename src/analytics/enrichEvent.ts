@@ -11,7 +11,7 @@ export function enrichEvent(
     ...event,
     anonymousId,
     writeKey,
-    messageId: `${Date.now()}-${crypto.randomUUID()}`,
+    messageId: uuidv4(),
     sentAt: new Date().toISOString(),
     timestamp: event.timestamp ?? new Date().toISOString(),
     context: getContextInfo(),
