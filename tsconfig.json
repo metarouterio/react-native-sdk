@@ -3,7 +3,10 @@
     "compilerOptions": {
       "noEmit": true,
       "types": ["jest", "node"],
-      "allowJs": true
+      "allowJs": true,
+      "resolveJsonModule": true
     },
     "include": ["src", "**/*.test.ts", "src/__mocks__/@segment/analytics-react-native.ts"]
   }
+
+  
