@@ -1,39 +1,36 @@
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
-apply plugin: 'com.google.devtools.ksp'  // Needed for Room compiler
-
-def safeExtGet(prop, fallback) {
-    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath "com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:1.9.25-1.0.20"
+    }
 }
 
-// Define AsyncStorage configuration
-ext.AsyncStorageConfig = [
-    useNextStorage: true,  // or false if you want legacy
-    roomVersion: "2.5.0"
-]
-
-// Define coroutines version for AsyncStorage
-ext.AsyncStorageLibs = [
-    coroutines: "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4"
-]
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'com.google.devtools.ksp'
 
 android {
-    compileSdkVersion safeExtGet('compileSdkVersion', 33)
-    
+    namespace 'com.metarouter.reactnativesdk'
+    compileSdkVersion 33
+
     defaultConfig {
-        minSdkVersion safeExtGet('minSdkVersion', 21)
-        targetSdkVersion safeExtGet('targetSdkVersion', 33)
+        minSdkVersion 21
+        targetSdkVersion 33
         versionCode 1
         versionName "0.1.0"
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    
-    kotlinOptions {
-        jvmTarget = '1.8'
+
+    kotlin {
+        jvmToolchain(17)
     }
 }
 
@@ -45,16 +42,14 @@ repositories {
 
 dependencies {
     implementation 'com.facebook.react:react-native:+'
-    
-    // Kotlin support
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
-    
-    // AsyncStorage dependencies (when useNextStorage = true)
-    if (ext.AsyncStorageConfig.useNextStorage) {
-        implementation "androidx.room:room-runtime:${ext.AsyncStorageConfig.roomVersion}"
-        implementation "androidx.room:room-ktx:${ext.AsyncStorageConfig.roomVersion}"
-        ksp "androidx.room:room-compiler:${ext.AsyncStorageConfig.roomVersion}"
-        
-        implementation ext.AsyncStorageLibs.coroutines
-    }
+
+    // AsyncStorage + Room support
+    def roomVersion = "2.5.0"
+    def coroutinesVersion = "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4"
+
+    implementation "androidx.room:room-runtime:$roomVersion"
+    implementation "androidx.room:room-ktx:$roomVersion"
+    ksp "androidx.room:room-compiler:$roomVersion"
+    implementation coroutinesVersion
 }
