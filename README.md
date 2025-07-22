@@ -8,7 +8,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 ## Installation
 
 ```sh
-npm install @metarouter/react-native-sdk
+npm install @metarouter/react-native-sdk @react-native-async-storage/async-storage react-native-device-info
 ```
 
 ## Usage
