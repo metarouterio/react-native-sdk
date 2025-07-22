@@ -18,11 +18,3 @@ export const MetaRouterProvider = ({
     </MetaRouterContext.Provider>
   );
 };
-
-export const useMetaRouter = (): MetaRouterInterface => {
-  const ctx = useContext(MetaRouterContext);
-  if (!ctx) {
-    throw new Error("useMetaRouter must be used within a MetaRouterProvider");
-  }
-  return ctx;
-};

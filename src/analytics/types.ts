@@ -25,6 +25,8 @@ export interface AnalyticsInterface {
   alias: (newUserId: string) => void;
   flush: () => void;
   cleanup: () => void;
+  enableDebugLogging?: () => void;
+  getDebugInfo?: () => Record<string, any>;
 }
 
 export interface EventContext {
