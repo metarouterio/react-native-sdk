@@ -16,10 +16,10 @@ npm install @metarouter/react-native-sdk
 ### Basic Setup
 
 ```js
-import { createMetaRouterClient } from "@metarouter/react-native-sdk";
+import MetaRouter from "@metarouter/react-native-sdk";
 
 // Initialize the analytics client
-const analytics = createMetaRouterClient({
+const analytics = await MetaRouter.analytics.init({
   writeKey: "your-write-key",
   ingestionEndpoint: "https://your-ingestion-endpoint.com/events",
   debug: true, // Optional: enable debug mode
@@ -30,21 +30,38 @@ const analytics = createMetaRouterClient({
 ### React Context Usage
 
 ```jsx
-import React from "react";
-import {
-  createMetaRouterClient,
+import React, { useEffect, useState } from "react";
+import MetaRouter, {
   MetaRouterProvider,
   useMetaRouter,
 } from "@metarouter/react-native-sdk";
 
 const App = () => {
-  const analytics = createMetaRouterClient({
-    writeKey: "your-write-key",
-    ingestionEndpoint: "https://your-ingestion-endpoint.com/events",
-  });
+  const [metaRouterInstance, setMetaRouterInstance] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const initializeAnalytics = async () => {
+      try {
+        // Initialize the analytics client
+        await MetaRouter.analytics.init({
+          writeKey: "your-write-key",
+          ingestionEndpoint: "https://your-ingestion-endpoint.com",
+        });
+
+        setMetaRouterInstance(MetaRouter);
+      } catch (error) {
+        console.error("Failed to initialize analytics:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initializeAnalytics();
+  }, []);
 
   return (
-    <MetaRouterProvider client={analytics}>
+    <MetaRouterProvider instance={metaRouterInstance}>
       <YourApp />
     </MetaRouterProvider>
   );
@@ -52,7 +69,8 @@ const App = () => {
 
 // Use analytics in any component
 const MyComponent = () => {
-  const analytics = useMetaRouter();
+  const metaRouter = useMetaRouter();
+  const analytics = metaRouter.analytics.getClient();
 
   const handleButtonPress = () => {
     analytics.track("Button Pressed", {
@@ -68,10 +86,10 @@ const MyComponent = () => {
 ### Direct Usage
 
 ```js
-import { createMetaRouterClient } from "@metarouter/react-native-sdk";
+import MetaRouter from "@metarouter/react-native-sdk";
 
 // Initialize
-const analytics = createMetaRouterClient({
+const analytics = await MetaRouter.analytics.init({
   writeKey: "your-write-key",
   ingestionEndpoint: "https://your-ingestion-endpoint.com/events",
 });
@@ -104,23 +122,31 @@ analytics.flush();
 
 // Cleanup when done
 analytics.cleanup();
+
+// Reset analytics (useful for testing or logout)
+await MetaRouter.analytics.reset();
 ```
 
 ## API Reference
 
-### createMetaRouterClient(options)
+### MetaRouter.analytics.init(options)
 
-Creates and initializes the analytics client.
+Initializes the analytics client and returns a promise that resolves to the client instance.
 
 **Options:**
 
 - `writeKey` (string, required): Your write key
 - `ingestionEndpoint` (string, required): Your custom ingestion endpoint URL
 - `debug` (boolean, optional): Enable debug mode
-- `flushAt` (number, optional): Number of events to batch before sending
 - `flushInterval` (number, optional): Interval in seconds to flush events
-- `trackLifecycleEvents` (boolean, optional): Track app lifecycle events
-- `maxBatchSize` (number, optional): Maximum batch size for events
+
+### MetaRouter.analytics.getClient()
+
+Returns the current analytics client instance. Must be called after initialization.
+
+### MetaRouter.analytics.reset()
+
+Resets the analytics client and clears all stored data. Returns a promise.
 
 ### Analytics Interface
 
@@ -136,19 +162,20 @@ The analytics client provides the following methods:
 
 ### React Hooks
 
-- `useMetaRouter()`: Hook to access the analytics client within a `MetaRouterProvider`
+- `useMetaRouter()`: Hook to access the MetaRouter instance within a `MetaRouterProvider`
 
 ### Components
 
-- `MetaRouterProvider`: React context provider for analytics client
+- `MetaRouterProvider`: React context provider for MetaRouter instance
 
 ## Features
 
 - 🎯 **Custom Endpoints**: Send events to your own ingestion endpoints
-- 📱 **React Native Optimized**: Built on top of Segment's analytics-react-native
+- 📱 **React Native Optimized**: Built specifically for React Native
 - 🎣 **React Hooks**: Easy integration with React components
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
+- 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
 
 ## License
 
@@ -160,4 +187,4 @@ MIT
 
 This library includes code from the following third-party packages:
 
-- [@segment/analytics-react-native](https://github.com/segmentio/analytics-react-native), MIT License
+- [uuid](https://github.com/uuidjs/uuid), MIT License
