@@ -176,6 +176,47 @@ The analytics client provides the following methods:
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
+- 🐛 **Debug Support**: Built-in debugging tools for troubleshooting
+
+## Debugging
+
+If you're not seeing API calls being made, here are some steps to troubleshoot:
+
+### 1. Enable Debug Logging
+
+```js
+// Initialize with debug enabled
+const analytics = await MetaRouter.analytics.init({
+  writeKey: "your-write-key",
+  ingestionEndpoint: "https://your-ingestion-endpoint.com",
+  debug: true, // This enables detailed logging
+});
+
+// Or enable debug logging after initialization
+analytics.enableDebugLogging?.();
+```
+
+### 2. Check Debug Information
+
+```js
+// Get current state information
+const debugInfo = analytics.getDebugInfo?.();
+console.log("Analytics debug info:", debugInfo);
+```
+
+### 3. Force Flush Events
+
+```js
+// Manually flush events to see if they're being sent
+await analytics.flush();
+```
+
+### 4. Common Issues
+
+- **Network Permissions**: Ensure your app has network permissions
+- **AsyncStorage**: The SDK uses AsyncStorage for anonymous ID persistence
+- **Endpoint URL**: Verify your ingestion endpoint is correct and accessible
+- **Write Key**: Ensure your write key is valid
 
 ## License
 

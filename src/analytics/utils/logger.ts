@@ -9,5 +9,11 @@ export function log(...args: any[]) {
 }
 
 export function warn(...args: any[]) {
-  if (enabled) console.warn('[MetaRouter]', ...args);
+  // Always log warnings, even when debug is disabled
+  console.warn('[MetaRouter]', ...args);
+}
+
+export function error(...args: any[]) {
+  // Always log errors, even when debug is disabled
+  console.error('[MetaRouter]', ...args);
 }

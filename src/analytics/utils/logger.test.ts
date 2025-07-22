@@ -1,9 +1,10 @@
-import { setDebugLogging, log, warn } from './logger';
+import { setDebugLogging, log, warn, error } from './logger';
 
 describe('MetaRouter Logger', () => {
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -11,14 +12,28 @@ describe('MetaRouter Logger', () => {
     setDebugLogging(false); // reset for safety
   });
 
-  it('does not log when debug is disabled', () => {
+  it('does not log regular messages when debug is disabled', () => {
     setDebugLogging(false);
 
     log('should not print');
-    warn('should not warn');
 
     expect(console.log).not.toHaveBeenCalled();
-    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('always logs warnings regardless of debug setting', () => {
+    setDebugLogging(false);
+
+    warn('should always warn');
+
+    expect(console.warn).toHaveBeenCalledWith('[MetaRouter]', 'should always warn');
+  });
+
+  it('always logs errors regardless of debug setting', () => {
+    setDebugLogging(false);
+
+    error('should always error');
+
+    expect(console.error).toHaveBeenCalledWith('[MetaRouter]', 'should always error');
   });
 
   it('logs to console.log when debug is enabled', () => {

@@ -1,4 +1,5 @@
 import { getAnonymousId } from "./utils/anonymousId";
+import { log, warn } from "./utils/logger";
 
 export class IdentityManager {
     private anonymousId: string | null = null;
@@ -7,7 +8,15 @@ export class IdentityManager {
 
   
     async init(): Promise<void> {
-      this.anonymousId = await getAnonymousId(); // load or generate
+      try {
+        this.anonymousId = await getAnonymousId(); // load or generate
+        log('IdentityManager initialized with anonymous ID:', this.anonymousId);
+      } catch (error) {
+        warn('Failed to initialize IdentityManager, using fallback anonymous ID', error);
+        // Fallback: generate a temporary anonymous ID
+        this.anonymousId = `fallback-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+        log('Using fallback anonymous ID:', this.anonymousId);
+      }
     }
   
     getAnonymousId(): string | null {
@@ -16,11 +25,12 @@ export class IdentityManager {
   
     identify(userId: string) {
       this.userId = userId;
-
+      log('User identified:', userId);
     }
   
     group(groupId: string) {
       this.groupId = groupId;
+      log('User grouped:', groupId);
     }
   
     getUserId(): string | undefined {
@@ -44,5 +54,6 @@ export class IdentityManager {
       this.anonymousId = null;
       this.userId = undefined;
       this.groupId = undefined;
+      log('IdentityManager reset');
     }
   }
