@@ -12,7 +12,7 @@ import java.util.List;
 // Import the bundled packages
 import com.reactnativecommunity.asyncstorage.AsyncStoragePackage;
 import com.segmentanalyticsreactnative.AnalyticsReactNativePackage;
-import com.reactnativesovran.Sovran;
+import com.sovranreactnative.Sovran;
 import org.linusu.RNGetRandomValuesPackage;
 
 public class MetaRouterReactNativeSDKPackage implements ReactPackage {

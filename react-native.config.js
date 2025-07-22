@@ -1,15 +1,36 @@
+// @metarouter/react-native-sdk/react-native.config.js
 module.exports = {
-  dependencies: {
-    '@segment/analytics-react-native': {},
-    '@segment/sovran-react-native': {},
-    'react-native-get-random-values': {},
-    '@react-native-async-storage/async-storage': {},
-  },
   dependency: {
     platforms: {
-      ios: {},
       android: {
-        sourceDir: './android',
+        packageInstance: 'new MetaRouterReactNativeSDKPackage()',
+        packageImportPath: 'com.metarouter.reactnativesdk.MetaRouterReactNativeSDKPackage',
+      },
+    },
+  },
+  dependencies: {
+    '@segment/analytics-react-native': {
+      platforms: {
+        android: null,
+        ios: null,
+      },
+    },
+    '@segment/sovran-react-native': {
+      platforms: {
+        android: null,
+        ios: null,
+      },
+    },
+    'react-native-get-random-values': {
+      platforms: {
+        android: null,
+        ios: null,
+      },
+    },
+    '@react-native-async-storage/async-storage': {
+      platforms: {
+        android: null,
+        ios: null,
       },
     },
   },
