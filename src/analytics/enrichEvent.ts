@@ -1,6 +1,6 @@
 import {   EnrichedEventPayload, EventWithIdentity } from "./types";
 import { getContextInfo } from "./utils/contextInfo";
-import { v4 as uuidv4 } from 'uuid';
+
 
 export function enrichEvent(
   event: EventWithIdentity,
@@ -9,8 +9,7 @@ export function enrichEvent(
   const enriched = {
     ...event,
     writeKey,
-    anonymousId: uuidv4(),
-    messageId: uuidv4(),  
+    messageId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     sentAt: new Date().toISOString(),
     context: getContextInfo(),
   };

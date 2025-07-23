@@ -1,4 +1,3 @@
-import { getContextInfo } from './contextInfo';
 
 jest.mock('./timezone', () => ({
   getTimeZone: jest.fn(() => 'America/New_York'),
@@ -31,22 +30,36 @@ describe('getContextInfo', () => {
     const context = getContextInfoMocked();
 
     expect(context).toEqual({
+      app: {
+        build: '567',
+        name: 'metarouter-react-native',
+        namespace: 'unknown',
+        version: '2.3.4',
+      },
+      device: {
+        manufacturer: 'Apple',
+        model: 'iPhone 14',
+        name: 'unknown',
+        type: 'ios',
+      },
       library: {
         name: 'metarouter-react-native-sdk',
         version: '1.2.3',
       },
-      locale: expect.stringMatching(/^[a-z]{2}-[A-Z]{2}$/), // from Intl
+      locale: expect.stringMatching(/^[a-z]{2}-[A-Z]{2}$/),
+      network: {
+        wifi: true,
+      },
+      os: {
+        name: 'iOS',
+        version: '17.0',
+      },
+      screen: {
+        density: 2,
+        height: 0,
+        width: 0,
+      },
       timezone: 'America/New_York',
-      device: {
-        manufacturer: 'Apple',
-        model: 'iPhone 14',
-        osName: 'iOS',
-        osVersion: '17.0',
-      },
-      app: {
-        version: '2.3.4',
-        build: '567',
-      },
     });
   });
 

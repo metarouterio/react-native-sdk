@@ -175,8 +175,6 @@ import { enrichEvent } from "./enrichEvent";
         ...event,
         sentAt: new Date().toISOString(),
       }));
-
-      console.log('batch', batch);
     
       this.queue = [];
 
