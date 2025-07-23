@@ -10,6 +10,17 @@ export interface EventPayload {
   timestamp?: string;
 }
 
+export interface EventWithIdentity extends EventPayload {
+  anonymousId: string;
+}
+
+export interface EnrichedEventPayload extends EventWithIdentity {
+  messageId: string;
+  sentAt: string;
+  context: EventContext;
+  writeKey: string;
+}
+
 export interface InitOptions {
   writeKey: string;
   ingestionEndpoint: string;
@@ -49,10 +60,3 @@ export interface EventContext {
   [key: string]: any; // allow arbitrary context
 }
 
-export interface EnrichedEventPayload extends EventPayload {
-  anonymousId: string;
-  messageId: string;
-  sentAt: string;
-  context: EventContext;
-  writeKey: string;
-}

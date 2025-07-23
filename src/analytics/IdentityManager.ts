@@ -1,5 +1,6 @@
 import { getAnonymousId } from "./utils/anonymousId";
 import { log, warn } from "./utils/logger";
+import { EventPayload, EventWithIdentity } from "./types";
 
 export class IdentityManager {
     private anonymousId: string | null = null;
@@ -41,10 +42,10 @@ export class IdentityManager {
       return this.groupId;
     }
   
-    addIdentityInfo<T extends Record<string, any>>(event: T): T {
+    addIdentityInfo<T extends EventPayload>(event: T): EventWithIdentity {   
       return {
         ...event,
-        anonymousId: this.anonymousId,
+        anonymousId: this.anonymousId ?? 'unknown',
         userId: event.userId ?? this.userId,
         groupId: event.groupId ?? this.groupId,
       };

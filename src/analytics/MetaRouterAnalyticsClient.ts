@@ -1,8 +1,9 @@
-import { EventPayload, InitOptions } from "./types";
+import { EventPayload, EventWithIdentity, InitOptions } from "./types";
 import { AppState, AppStateStatus } from 'react-native';
 import { retryWithBackoff } from "./utils/retry";
 import { log, setDebugLogging, warn } from "./utils/logger";
 import { IdentityManager } from "./IdentityManager";
+import { enrichEvent } from "./enrichEvent";
 
   
   export class MetaRouterAnalyticsClient {
@@ -72,8 +73,9 @@ import { IdentityManager } from "./IdentityManager";
   
     private enqueue(event: EventPayload) {
       const eventWithIdentity = this.identityManager.addIdentityInfo(event);
-      log('Enqueuing event', eventWithIdentity);
-      this.queue.push(eventWithIdentity);
+      const enrichedEvent = enrichEvent(eventWithIdentity, this.writeKey);
+      log('Enqueuing event', enrichedEvent);
+      this.queue.push(enrichedEvent);
     }
 
     private setupAppStateListener() {

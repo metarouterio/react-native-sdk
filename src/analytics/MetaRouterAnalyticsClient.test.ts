@@ -24,7 +24,7 @@ describe('MetaRouterAnalyticsClient', () => {
     jest.clearAllMocks()
   })
 
-  it('adds a track event to the queue', () => {
+  it('adds a track event to the queue', async () => {
     const client = new MetaRouterAnalyticsClient(opts)
     client.track('Product Viewed', { sku: '123' })
 
