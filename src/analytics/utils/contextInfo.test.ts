@@ -13,33 +13,35 @@ describe('getContextInfo', () => {
     jest.clearAllMocks();
   });
 
-  it('returns context info with DeviceInfo present', () => {
+  it('returns context info with DeviceInfo present', async () => {
     // Mock DeviceInfo module
     jest.doMock('react-native-device-info', () => ({
-      getManufacturer: () => 'Apple',
+      getManufacturer: () => Promise.resolve('Apple'),
       getModel: () => 'iPhone 14',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
       getVersion: () => '2.3.4',
       getBuildNumber: () => '567',
+      getDeviceName: () => Promise.resolve('iPhone 14'),
+      isWifiEnabled: () => Promise.resolve(true),
     }));
 
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = getContextInfoMocked();
+    const context = await getContextInfoMocked();
 
     expect(context).toEqual({
       app: {
         build: '567',
-        name: 'metarouter-react-native',
+        name: 'unknown',
         namespace: 'unknown',
         version: '2.3.4',
       },
       device: {
         manufacturer: 'Apple',
         model: 'iPhone 14',
-        name: 'unknown',
+        name: 'iPhone 14',
         type: 'ios',
       },
       library: {
@@ -55,7 +57,7 @@ describe('getContextInfo', () => {
         version: '17.0',
       },
       screen: {
-        density: 2,
+        density: 1,
         height: 0,
         width: 0,
       },
@@ -63,7 +65,7 @@ describe('getContextInfo', () => {
     });
   });
 
-  it('returns fallback values when DeviceInfo is not available', () => {
+  it('returns fallback values when DeviceInfo is not available', async () => {
     // Mock DeviceInfo module to throw an error
     jest.doMock('react-native-device-info', () => {
       throw new Error('Module not available');
@@ -72,7 +74,7 @@ describe('getContextInfo', () => {
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = getContextInfoMocked();
+    const context = await getContextInfoMocked();
 
     expect(context.device.manufacturer).toBe('unknown');
     expect(context.device.model).toBe('unknown');

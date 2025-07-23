@@ -1,9 +1,10 @@
-import { EventPayload, EventWithIdentity, InitOptions } from "./types";
+import { EventContext, EventPayload, EventWithIdentity, InitOptions } from "./types";
 import { AppState, AppStateStatus } from 'react-native';
 import { retryWithBackoff } from "./utils/retry";
 import { error, log, setDebugLogging, warn } from "./utils/logger";
 import { IdentityManager } from "./IdentityManager";
 import { enrichEvent } from "./enrichEvent";
+import { getContextInfo } from "./utils/contextInfo";
 
   
   export class MetaRouterAnalyticsClient {
@@ -14,6 +15,7 @@ import { enrichEvent } from "./enrichEvent";
     private flushTimer: NodeJS.Timeout | null = null;
     private endpoint: string;
     private writeKey: string;
+    private context!: EventContext;
     private appState: AppStateStatus = AppState.currentState;
     private appStateSubscription: { remove?: () => void } | null = null;
     private identityManager: IdentityManager;
@@ -48,6 +50,8 @@ import { enrichEvent } from "./enrichEvent";
         
         this.setupAppStateListener();
         log('App state listener setup completed');
+
+        this.context = await getContextInfo();
         
         this.initialized = true;
         log('Analytics client initialization completed successfully');
@@ -73,7 +77,7 @@ import { enrichEvent } from "./enrichEvent";
   
     private enqueue(event: EventPayload) {
       const eventWithIdentity = this.identityManager.addIdentityInfo(event);
-      const enrichedEvent = enrichEvent(eventWithIdentity, this.writeKey);
+      const enrichedEvent = enrichEvent(eventWithIdentity, this.writeKey, this.context);
       log('Enqueuing event', enrichedEvent);
       this.queue.push(enrichedEvent);
     }
