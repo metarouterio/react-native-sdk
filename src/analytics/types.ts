@@ -41,22 +41,35 @@ export interface AnalyticsInterface {
 }
 
 export interface EventContext {
+  app: {
+    name: string;
+    version: string;
+    build: string;
+    namespace: string;
+  };
+  device: {
+    manufacturer: string;
+    model: string;
+    name: string;
+    type: string;
+  };
   library: {
     name: string;
     version: string;
   };
-  locale?: string;
-  timezone?: string;
-  device: {
-    manufacturer: string;
-    model: string;
-    osName: string;
-    osVersion: string;
-  };
-  app: {
+  os: {
+    name: string;
     version: string;
-    build: string;
   };
+  screen: {
+    density: number;
+    width: number;
+    height: number;
+  };
+  network: {
+    wifi: boolean;
+  };
+  locale: string;
+  timezone: string;
   [key: string]: any; // allow arbitrary context
 }
-
