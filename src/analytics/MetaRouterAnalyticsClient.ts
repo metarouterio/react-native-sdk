@@ -1,7 +1,7 @@
 import { EventPayload, EventWithIdentity, InitOptions } from "./types";
 import { AppState, AppStateStatus } from 'react-native';
 import { retryWithBackoff } from "./utils/retry";
-import { log, setDebugLogging, warn } from "./utils/logger";
+import { error, log, setDebugLogging, warn } from "./utils/logger";
 import { IdentityManager } from "./IdentityManager";
 import { enrichEvent } from "./enrichEvent";
 
@@ -173,11 +173,10 @@ import { enrichEvent } from "./enrichEvent";
     
       const batch = this.queue.map((event) => ({
         ...event,
-        anonymousId: anonId,
-        writeKey: this.writeKey,
-        messageId: `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
         sentAt: new Date().toISOString(),
       }));
+
+      console.log('batch', batch);
     
       this.queue = [];
 
@@ -195,6 +194,7 @@ import { enrichEvent } from "./enrichEvent";
           });
           
           if (!response.ok) {
+            error('HTTP error', response);
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
           }
           
