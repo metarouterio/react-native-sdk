@@ -4,6 +4,12 @@ import { log, warn } from './logger';
 
 const STORAGE_KEY = 'metarouter:anonymous_id';
 
+/**
+ * Retrieves or generates a persistent anonymous ID for the user/device.
+ * - Attempts to load from AsyncStorage.
+ * - If not found or storage fails, generates a new UUIDv4.
+ * - Always returns a valid string.
+ */
 export async function getAnonymousId(): Promise<string> {
   try {
     const existing = await AsyncStorage.getItem(STORAGE_KEY);

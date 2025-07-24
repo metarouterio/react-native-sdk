@@ -1,6 +1,6 @@
 import { enrichEvent } from './enrichEvent';
-import { EventContext, EventPayload, EventWithIdentity } from './types';
-import packageJson from '../../package.json'; // Adjust the path as necessary
+import { EventContext, EventPayload, EventWithIdentity } from '../types';
+import packageJson from '../../../package.json'; // Adjust the path as necessary
 
 const context: EventContext = {
   library: {

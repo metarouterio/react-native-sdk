@@ -1,7 +1,8 @@
 import { getTimeZone } from './timezone';
 import pkg from '../../../package.json';
+import { EventContext } from '../types';
 
-let cachedContext: any = null;
+let cachedContext: EventContext | null = null;
 let DeviceInfo: any = null;
 
 try {
@@ -10,7 +11,17 @@ try {
   DeviceInfo = null;
 }
 
-export async function getContextInfo(): Promise<any> {
+/**
+ * Gathers and caches device, app, and environment context information for analytics events.
+ *
+ * - Collects details such as app name/version, device model/type, OS, screen size, locale, timezone, and network status.
+ * - Uses `react-native-device-info` and the current environment to populate fields.
+ * - Caches the result for the lifetime of the app to avoid redundant async calls.
+ * - Returns a context object suitable for event enrichment.
+ *
+ * @returns {Promise<EventContext>} A promise that resolves to the context information object.
+ */
+export async function getContextInfo(): Promise<EventContext> {
   if (cachedContext) return cachedContext;
 
   let locale = 'en-US';

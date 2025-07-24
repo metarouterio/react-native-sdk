@@ -47,4 +47,15 @@ describe('proxyClient', () => {
     proxyClient.track('Event C');
     expect(mockClient.track).not.toHaveBeenCalled();
   });
+
+  it('logs a warning if the pending call queue exceeds 100', () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    for (let i = 0; i < 101; i++) {
+      proxyClient.track(`Event ${i}`);
+    }
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Proxy queue exceeds 100 pending calls')
+    );
+  });
+
 });

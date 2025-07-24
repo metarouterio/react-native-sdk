@@ -25,3 +25,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
       clear: jest.fn(() => Promise.resolve()),
     },
   }));
+
+  // Suppress console.warn and console.error in tests to keep output clean
+  console.warn = jest.fn();
+  console.error = jest.fn();

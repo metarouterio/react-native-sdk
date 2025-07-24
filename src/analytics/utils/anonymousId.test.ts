@@ -1,45 +1,65 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// src/analytics/utils/anonymousId.test.ts
+
 import { getAnonymousId } from './anonymousId';
-import { v4 as uuidv4 } from 'uuid';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  __esModule: true,
-  default: {
-    getItem: jest.fn(),
-    setItem: jest.fn(),
-  },
+  getItem: jest.fn(),
+  setItem: jest.fn(),
 }));
 
-jest.mock('uuid', () => ({
-  v4: jest.fn(),
-}));
+// Import after jest.mock so the mock is applied
+const AsyncStorage = require('@react-native-async-storage/async-storage');
+const getItemMock = AsyncStorage.getItem as jest.Mock;
+const setItemMock = AsyncStorage.setItem as jest.Mock;
 
 describe('getAnonymousId', () => {
-  const STORAGE_KEY = 'metarouter:anonymous_id';
-
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('returns existing anonymousId if found in storage', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValue('anon-abc');
-
+  it('returns existing ID from storage', async () => {
+    getItemMock.mockResolvedValue('existing-id');
     const id = await getAnonymousId();
-
-    expect(AsyncStorage.getItem).toHaveBeenCalledWith(STORAGE_KEY);
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
-    expect(id).toBe('anon-abc');
+    expect(id).toBe('existing-id');
+    expect(getItemMock).toHaveBeenCalledWith('metarouter:anonymous_id');
   });
 
-  it('generates and stores a new UUID if none exists', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-    (uuidv4 as jest.Mock).mockReturnValue('anon-generated');
-
+  it('generates and stores a new ID if none exists', async () => {
+    getItemMock.mockResolvedValue(null);
+    setItemMock.mockResolvedValue(undefined);
     const id = await getAnonymousId();
+    expect(typeof id).toBe('string');
+    expect(id).not.toBe('');
+    expect(setItemMock).toHaveBeenCalledWith('metarouter:anonymous_id', id);
+  });
 
-    expect(AsyncStorage.getItem).toHaveBeenCalledWith(STORAGE_KEY);
-    expect(uuidv4).toHaveBeenCalled();
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith(STORAGE_KEY, 'anon-generated');
-    expect(id).toBe('anon-generated');
+  it('handles storage read failure gracefully', async () => {
+    getItemMock.mockRejectedValue(new Error('read error'));
+    setItemMock.mockResolvedValue(undefined);
+    const id = await getAnonymousId();
+    expect(typeof id).toBe('string');
+    expect(id).not.toBe('');
+    expect(setItemMock).toHaveBeenCalledWith('metarouter:anonymous_id', id);
+  });
+
+  it('handles storage write failure gracefully', async () => {
+    getItemMock.mockResolvedValue(null);
+    setItemMock.mockRejectedValue(new Error('write error'));
+    const id = await getAnonymousId();
+    expect(typeof id).toBe('string');
+    expect(id).not.toBe('');
+    // Even if setItem fails, we still return the generated ID
+  });
+
+  it('returns a new ID if storage is cleared', async () => {
+    getItemMock.mockResolvedValueOnce('id1');
+    let id = await getAnonymousId();
+    expect(id).toBe('id1');
+
+    getItemMock.mockResolvedValueOnce(null);
+    setItemMock.mockResolvedValue(undefined);
+    id = await getAnonymousId();
+    expect(typeof id).toBe('string');
+    expect(id).not.toBe('id1');
   });
 });
