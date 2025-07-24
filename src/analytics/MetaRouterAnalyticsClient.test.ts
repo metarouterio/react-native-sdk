@@ -9,8 +9,13 @@ jest
 
 global.fetch = jest.fn(() => Promise.resolve({ ok: true })) as any;
 
-jest.mock("./utils/anonymousId", () => ({
-  getAnonymousId: jest.fn(() => Promise.resolve("anon-123")),
+jest.mock("./utils/identityStorage", () => ({
+  getIdentityField: jest.fn(),
+  setIdentityField: jest.fn(),
+  removeIdentityField: jest.fn(),
+  ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
+  USER_ID_KEY: 'metarouter:user_id',
+  GROUP_ID_KEY: 'metarouter:group_id',
 }));
 
 const opts: InitOptions = {
@@ -22,6 +27,13 @@ const opts: InitOptions = {
 describe("MetaRouterAnalyticsClient", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const identityStorage = require('./utils/identityStorage');
+    (identityStorage.getIdentityField as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === identityStorage.ANONYMOUS_ID_KEY) return 'anon-123';
+      return undefined;
+    });
+    (identityStorage.setIdentityField as jest.Mock).mockResolvedValue(undefined);
+    (identityStorage.removeIdentityField as jest.Mock).mockResolvedValue(undefined);
   });
 
   it("adds a track event to the queue", async () => {
