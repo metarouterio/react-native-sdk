@@ -50,11 +50,11 @@ describe('proxyClient', () => {
 
   it('logs a warning if the pending call queue exceeds 100', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
-    for (let i = 0; i < 101; i++) {
+    for (let i = 0; i < 21; i++) {
       proxyClient.track(`Event ${i}`);
     }
     expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Proxy queue exceeds 100 pending calls')
+      expect.stringContaining('Proxy queue reached max size (20). Oldest call dropped.')
     );
   });
 
