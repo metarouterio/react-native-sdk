@@ -1,6 +1,7 @@
 import type { AnalyticsInterface } from '../types';
 
 const pendingCalls: Array<() => void> = [];
+const MAX_PENDING_CALLS = 20;
 let realClient: AnalyticsInterface | null = null;
 
 function handleMethodCall<T extends keyof AnalyticsInterface>(
@@ -11,8 +12,10 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     return (realClient[methodName] as any)(...args);
   }
 
-  if (pendingCalls.length > 100) {
-    console.warn(`[MetaRouter] Proxy queue exceeds 100 pending calls: ${methodName}`);
+  if (pendingCalls.length >= MAX_PENDING_CALLS) {
+    // Drop the oldest call
+    pendingCalls.shift();
+    console.warn(`[MetaRouter] Proxy queue reached max size (${MAX_PENDING_CALLS}). Oldest call dropped.`);
   }
 
   pendingCalls.push(() => {

@@ -4,7 +4,7 @@ import type { InitOptions, AnalyticsInterface } from './types';
 
 let initialized = false;
 let client: MetaRouterAnalyticsClient | null = null;
-let analyticsInterface: AnalyticsInterface | null = null;
+let analyticsClient: AnalyticsInterface | null = null;
 
 /**
  * Initializes the analytics client singleton.
@@ -14,14 +14,14 @@ let analyticsInterface: AnalyticsInterface | null = null;
  * @returns The analytics interface.
  */
 export async function initAnalytics(options: InitOptions): Promise<AnalyticsInterface> {
-  if (initialized) return analyticsInterface!;
+  if (initialized) return analyticsClient!;
 
   client = new MetaRouterAnalyticsClient(options);
   
   // Wait for the client to fully initialize (including anonymous ID loading)
   await client.waitForInitialization();
   
-  analyticsInterface = {
+  analyticsClient = {
     track: (event, props) => client!.track(event, props),
     identify: (userId, traits) => client!.identify(userId, traits),
     group: (groupId, traits) => client!.group(groupId, traits),
@@ -34,8 +34,8 @@ export async function initAnalytics(options: InitOptions): Promise<AnalyticsInte
   };
 
   initialized = true;
-  setRealClient(analyticsInterface);
-  return analyticsInterface;
+  setRealClient(analyticsClient);
+  return analyticsClient;
 }
 
 /**
@@ -44,7 +44,7 @@ export async function initAnalytics(options: InitOptions): Promise<AnalyticsInte
  * @returns The analytics interface.
  */
 export function getAnalyticsClient(): AnalyticsInterface {
-  return initialized ? analyticsInterface! : proxyClient;
+  return initialized ? analyticsClient! : proxyClient;
 }
 
 /**
@@ -55,7 +55,7 @@ export function getAnalyticsClient(): AnalyticsInterface {
 export async function resetAnalytics(): Promise<void> {
   await client?.cleanup();
   client = null;
-  analyticsInterface = null;
+  analyticsClient = null;
   initialized = false;
   setRealClient(null);
 }
