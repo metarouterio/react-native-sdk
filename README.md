@@ -21,7 +21,7 @@ import MetaRouter from "@metarouter/react-native-sdk";
 // Initialize the analytics client
 const analytics = await MetaRouter.analytics.init({
   writeKey: "your-write-key",
-  ingestionEndpoint: "https://your-ingestion-endpoint.com/events",
+  ingestionHost: "https://your-ingestion-endpoint.com",
   debug: true, // Optional: enable debug mode
   flushInterval: 30, // Optional: flush events every 30 seconds
 });
@@ -46,7 +46,7 @@ const App = () => {
         // Initialize the analytics client
         await MetaRouter.analytics.init({
           writeKey: "your-write-key",
-          ingestionEndpoint: "https://your-ingestion-endpoint.com",
+          ingestionHost: "https://your-ingestion-endpoint.com",
         });
 
         setMetaRouterInstance(MetaRouter);
@@ -91,7 +91,7 @@ import MetaRouter from "@metarouter/react-native-sdk";
 // Initialize
 const analytics = await MetaRouter.analytics.init({
   writeKey: "your-write-key",
-  ingestionEndpoint: "https://your-ingestion-endpoint.com/events",
+  ingestionHost: "https://your-ingestion-endpoint.com/events",
 });
 
 // Track events
@@ -136,7 +136,7 @@ Initializes the analytics client and returns a promise that resolves to the clie
 **Options:**
 
 - `writeKey` (string, required): Your write key
-- `ingestionEndpoint` (string, required): Your custom ingestion endpoint URL
+- `ingestionHost` (string, required): Your MetaRouter ingestor host
 - `debug` (boolean, optional): Enable debug mode
 - `flushInterval` (number, optional): Interval in seconds to flush events
 
@@ -188,7 +188,7 @@ If you're not seeing API calls being made, here are some steps to troubleshoot:
 // Initialize with debug enabled
 const analytics = await MetaRouter.analytics.init({
   writeKey: "your-write-key",
-  ingestionEndpoint: "https://your-ingestion-endpoint.com",
+  ingestionHost: "https://your-ingestion-endpoint.com",
   debug: true, // This enables detailed logging
 });
 
