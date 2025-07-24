@@ -6,6 +6,13 @@ let initialized = false;
 let client: MetaRouterAnalyticsClient | null = null;
 let analyticsInterface: AnalyticsInterface | null = null;
 
+/**
+ * Initializes the analytics client singleton.
+ * Waits for async setup (e.g., identity loading) before returning the interface.
+ * Returns the same instance on subsequent calls.
+ * @param options Analytics initialization options.
+ * @returns The analytics interface.
+ */
 export async function initAnalytics(options: InitOptions): Promise<AnalyticsInterface> {
   if (initialized) return analyticsInterface!;
 
@@ -31,10 +38,20 @@ export async function initAnalytics(options: InitOptions): Promise<AnalyticsInte
   return analyticsInterface;
 }
 
+/**
+ * Retrieves the analytics client singleton.
+ * Returns the proxy client before initialization, and the real client after.
+ * @returns The analytics interface.
+ */
 export function getAnalyticsClient(): AnalyticsInterface {
   return initialized ? analyticsInterface! : proxyClient;
 }
 
+/**
+ * Resets the analytics client singleton.
+ * Cleans up the client and sets it to null.
+ * @returns A promise that resolves when the client is reset.
+ */
 export async function resetAnalytics(): Promise<void> {
   await client?.cleanup();
   client = null;

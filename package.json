@@ -1,6 +1,6 @@
 {
   "name": "@metarouter/react-native-sdk",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -18,7 +18,7 @@
     "clean": "rm -rf lib",
     "build": "tsc --project tsconfig.build.json",
     "prepare": "npm run build",
-    "prePublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run clean && npm run build",
     "test": "jest"
   },
   "publishConfig": {

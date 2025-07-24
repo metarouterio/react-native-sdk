@@ -22,6 +22,20 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   });
 }
 
+/**
+ * proxyClient implements a proxy pattern for the AnalyticsInterface.
+ *
+ * It allows analytics method calls (track, identify, etc.) to be made before the real analytics client
+ * is fully initialized. Calls are queued and replayed once the real client is set via setRealClient.
+ * This ensures that analytics events are not lost if called early in the app lifecycle.
+ *
+ * The proxy also provides a fallback for getDebugInfo, returning proxy state if the real client is not ready.
+ *
+ * Usage:
+ *   - Use proxyClient as the default analytics client before initialization.
+ *   - Call setRealClient(realClientInstance) once the real client is ready.
+ */
+
 export const proxyClient: AnalyticsInterface = {
   track: (event, props) => handleMethodCall('track', event, props),
   identify: (userId, traits) => handleMethodCall('identify', userId, traits),

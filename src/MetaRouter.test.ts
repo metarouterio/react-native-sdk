@@ -24,10 +24,6 @@ describe('MetaRouter.analytics', () => {
     jest.clearAllMocks()
   })
 
-  it('delegates init to initAnalytics', async () => {
-    await MetaRouter.analytics.init(opts)
-    expect(initAnalytics).toHaveBeenCalledWith(opts)
-  })
 
   it('delegates getClient to getAnalyticsClient', () => {
     MetaRouter.analytics.getClient()
@@ -38,4 +34,28 @@ describe('MetaRouter.analytics', () => {
     await MetaRouter.analytics.reset()
     expect(resetAnalytics).toHaveBeenCalled()
   })
+
+  it('calls analytics.init and returns a client', async () => {
+    const client = await MetaRouter.analytics.init(opts);
+    expect(initAnalytics).toHaveBeenCalledWith(opts);
+    expect(client).toHaveProperty('track');
+  });
+
+  it('calls analytics.getClient and returns a client', () => {
+    const client = MetaRouter.analytics.getClient();
+    expect(getAnalyticsClient).toHaveBeenCalled();
+    expect(client).toHaveProperty('track');
+  });
+
+  it('calls analytics.reset and resolves', async () => {
+    await expect(MetaRouter.analytics.reset()).resolves.toBeUndefined();
+    expect(resetAnalytics).toHaveBeenCalled();
+  });
+
+  it('exposes the expected analytics API shape', () => {
+    expect(MetaRouter.analytics).toHaveProperty('init');
+    expect(MetaRouter.analytics).toHaveProperty('getClient');
+    expect(MetaRouter.analytics).toHaveProperty('reset');
+  });
+
 })
