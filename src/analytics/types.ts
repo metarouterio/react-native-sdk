@@ -1,4 +1,10 @@
-export type EventType = 'track' | 'identify' | 'group' | 'screen' | 'alias' | 'page';
+export type EventType =
+  | "track"
+  | "identify"
+  | "group"
+  | "screen"
+  | "alias"
+  | "page";
 
 export interface EventPayload {
   type: EventType;
@@ -23,7 +29,7 @@ export interface EnrichedEventPayload extends EventWithIdentity {
 
 export interface InitOptions {
   writeKey: string;
-  ingestionEndpoint: string;
+  ingestionHost: string;
   flushInterval?: number;
   debug?: boolean;
 }
