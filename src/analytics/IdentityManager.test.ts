@@ -93,4 +93,14 @@ describe('IdentityManager', () => {
     expect(removeIdentityField).toHaveBeenCalledWith(identityStorage.USER_ID_KEY);
     expect(removeIdentityField).toHaveBeenCalledWith(identityStorage.GROUP_ID_KEY);
   });
+
+  it('generates and stores a new anonymousId if not found in storage', async () => {
+    getIdentityField.mockResolvedValueOnce(null); // No anon ID in storage
+    await manager.init();
+
+    const anonId = manager.getAnonymousId();
+
+    expect(anonId).toMatch(/^anon-\d+-[a-z0-9]+$/); // basic shape check
+    expect(setIdentityField).toHaveBeenCalledWith(identityStorage.ANONYMOUS_ID_KEY, anonId);
+  });
 });
