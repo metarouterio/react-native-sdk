@@ -20,14 +20,22 @@ export class IdentityManager {
    */
     async init(): Promise<void> {
       try {
-        // Load userId and groupId from storage
-        this.anonymousId = await getIdentityField(ANONYMOUS_ID_KEY) 
+        const storedAnonId = await getIdentityField(ANONYMOUS_ID_KEY);
+        if (!storedAnonId) {
+          const newId = `anon-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+          await setIdentityField(ANONYMOUS_ID_KEY, newId);
+          this.anonymousId = newId;
+          log('Generated and stored new anonymous ID:', newId);
+        } else {
+          this.anonymousId = storedAnonId;
+          log('Loaded stored anonymous ID:', storedAnonId);
+        }
+    
         this.userId = await getIdentityField(USER_ID_KEY) || undefined;
         this.groupId = await getIdentityField(GROUP_ID_KEY) || undefined;
         log('IdentityManager initialized with anonymous ID:', this.anonymousId, 'userId:', this.userId, 'groupId:', this.groupId);
       } catch (error) {
         warn('Failed to initialize IdentityManager, using fallback anonymous ID', error);
-        // Fallback: generate a temporary anonymous ID
         this.anonymousId = `fallback-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
         log('Using fallback anonymous ID:', this.anonymousId);
       }
