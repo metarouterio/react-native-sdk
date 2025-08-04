@@ -1,8 +1,4 @@
-import {
-  EventContext,
-  EventPayload,
-  InitOptions,
-} from "./types";
+import { EventContext, EventPayload, InitOptions } from "./types";
 import { AppState, AppStateStatus } from "react-native";
 import { retryWithBackoff } from "./utils/retry";
 import { error, log, setDebugLogging, warn } from "./utils/logger";
@@ -37,7 +33,26 @@ export class MetaRouterAnalyticsClient {
    */
   constructor(options: InitOptions) {
     log("Initializing analytics client", options);
+
     const { writeKey, ingestionHost, flushInterval } = options;
+
+    if (!writeKey || typeof writeKey !== "string" || writeKey.trim() === "") {
+      throw new Error(
+        "MetaRouterAnalyticsClient initialization failed: `writeKey` is required and must be a non-empty string."
+      );
+    }
+
+    try {
+      const url = new URL(ingestionHost);
+      if (url.pathname !== "/" && ingestionHost.endsWith("/")) {
+        throw new Error();
+      }
+    } catch {
+      throw new Error(
+        "MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash."
+      );
+    }
+
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
     this.flushIntervalMs = flushInterval ?? 10000;
@@ -112,7 +127,9 @@ export class MetaRouterAnalyticsClient {
    */
   private enqueue(event: EventPayload) {
     if (this.queue.length >= MetaRouterAnalyticsClient.MAX_QUEUE_SIZE) {
-      log(`Event queue reached max size (${MetaRouterAnalyticsClient.MAX_QUEUE_SIZE}). Attempting to flush queued events before adding new.`);
+      log(
+        `Event queue reached max size (${MetaRouterAnalyticsClient.MAX_QUEUE_SIZE}). Attempting to flush queued events before adding new.`
+      );
       this.flush();
     }
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
