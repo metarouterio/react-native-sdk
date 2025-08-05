@@ -126,12 +126,6 @@ export class MetaRouterAnalyticsClient {
    * @param event - The event to enqueue.
    */
   private enqueue(event: EventPayload) {
-    if (this.queue.length >= MetaRouterAnalyticsClient.MAX_QUEUE_SIZE) {
-      log(
-        `Event queue reached max size (${MetaRouterAnalyticsClient.MAX_QUEUE_SIZE}). Attempting to flush queued events before adding new.`
-      );
-      this.flush();
-    }
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
     const enrichedEvent = enrichEvent(
       eventWithIdentity,
@@ -140,6 +134,13 @@ export class MetaRouterAnalyticsClient {
     );
     log("Enqueuing event", enrichedEvent);
     this.queue.push(enrichedEvent);
+
+    if (this.queue.length >= MetaRouterAnalyticsClient.MAX_QUEUE_SIZE) {
+      log(
+        `Event queue reached max size (${MetaRouterAnalyticsClient.MAX_QUEUE_SIZE}). Flushing queued events.`
+      );
+      this.flush();
+    }
   }
 
   /**
