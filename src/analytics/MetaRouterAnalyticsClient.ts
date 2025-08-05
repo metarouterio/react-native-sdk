@@ -15,7 +15,6 @@ import { getContextInfo } from "./utils/contextInfo";
  */
 export class MetaRouterAnalyticsClient {
   private initialized = false;
-  private initPromise: Promise<void>;
   private queue: EventPayload[] = [];
   private flushIntervalMs = 10000;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -60,7 +59,7 @@ export class MetaRouterAnalyticsClient {
       : 10000;
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.initPromise = this.init();
+    this.init();
     log(
       "Analytics client constructor completed, initialization in progress..."
     );
@@ -98,14 +97,6 @@ export class MetaRouterAnalyticsClient {
       this.initialized = true;
       throw error;
     }
-  }
-
-  /**
-   * Waits for the analytics client to be initialized.
-   * @returns A promise that resolves when the client is initialized.
-   */
-  async waitForInitialization(): Promise<void> {
-    await this.initPromise;
   }
 
   /**

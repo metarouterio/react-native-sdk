@@ -11,11 +11,10 @@ let proxyBound = false;
  * @param options Initialization options.
  * @returns A fully initialized analytics interface.
  */
-export async function createAnalyticsClient(
+export function createAnalyticsClient(
   options: InitOptions
-): Promise<AnalyticsInterface> {
+): AnalyticsInterface {
   const instance = new MetaRouterAnalyticsClient(options);
-  await instance.waitForInitialization();
 
   const analyticsInterface: AnalyticsInterface = {
     track: (event, props) => instance.track(event, props),
