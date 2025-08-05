@@ -1,101 +1,76 @@
-// Set up mocks before importing the module
-jest.mock("./proxy/proxyClient", () => ({
-  proxyClient: {
-    track: jest.fn(),
-    identify: jest.fn(),
-    group: jest.fn(),
-    screen: jest.fn(),
-    alias: jest.fn(),
-    flush: jest.fn(),
-    cleanup: jest.fn(),
-  },
-  setRealClient: jest.fn(),
-}));
+import type { InitOptions } from "./types";
 
-// Mock fetch globally
+// Mock fetch and identity storage as in MetaRouterAnalyticsClient.test.ts
+
 global.fetch = jest.fn(() => Promise.resolve({ ok: true })) as any;
 
-// Now import after mocks are set up
-import { initAnalytics, getAnalyticsClient, resetAnalytics } from "./init";
-import type { InitOptions } from "./types";
-import { setRealClient } from "./proxy/proxyClient";
+jest.mock("./utils/identityStorage", () => ({
+  getIdentityField: jest.fn(),
+  setIdentityField: jest.fn(),
+  removeIdentityField: jest.fn(),
+  ANONYMOUS_ID_KEY: "metarouter:anonymous_id",
+  USER_ID_KEY: "metarouter:user_id",
+  GROUP_ID_KEY: "metarouter:group_id",
+}));
 
 const opts: InitOptions = {
   ingestionHost: "https://example.com",
   writeKey: "test_write_key",
-  flushInterval: 5000,
+  flushIntervalSeconds: 5,
 };
 
-describe("initAnalytics()", () => {
+describe("createAnalyticsClient", () => {
   beforeEach(() => {
+    jest.resetModules(); // Reset module registry to clear proxy state
     jest.clearAllMocks();
-  });
-
-  afterEach(async () => {
-    // Clean up after each test
-    await resetAnalytics();
-  });
-
-  it("initializes and returns a functional analytics client", async () => {
-    const client = await initAnalytics(opts);
-    expect(client.track).toBeDefined();
-    expect(client.flush).toBeDefined();
-    expect(client.identify).toBeDefined();
-    expect(client.group).toBeDefined();
-    expect(client.screen).toBeDefined();
-    expect(client.alias).toBeDefined();
-    expect(client.cleanup).toBeDefined();
-  });
-
-  it("returns the same client on multiple init calls", async () => {
-    const client1 = await initAnalytics(opts);
-    const client2 = await initAnalytics(opts);
-    expect(client1).toBe(client2);
-  });
-
-  it("calls setRealClient once initialized", async () => {
-    await initAnalytics(opts);
-    expect(setRealClient).toHaveBeenCalledTimes(1);
-    expect(setRealClient).toHaveBeenCalledWith(
-      expect.objectContaining({
-        track: expect.any(Function),
-      })
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+      async (key: string) => {
+        if (key === identityStorage.ANONYMOUS_ID_KEY) return "anon-123";
+        return undefined;
+      }
+    );
+    (identityStorage.setIdentityField as jest.Mock).mockResolvedValue(
+      undefined
+    );
+    (identityStorage.removeIdentityField as jest.Mock).mockResolvedValue(
+      undefined
     );
   });
-});
 
-describe("getAnalyticsClient()", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+  it("creates a client with all analytics methods", async () => {
+    const { createAnalyticsClient } = require("./init");
+    const client = await createAnalyticsClient(opts);
+    expect(typeof client.track).toBe("function");
+    expect(typeof client.identify).toBe("function");
+    expect(typeof client.group).toBe("function");
+    expect(typeof client.screen).toBe("function");
+    expect(typeof client.page).toBe("function");
+    expect(typeof client.alias).toBe("function");
+    expect(typeof client.flush).toBe("function");
+    expect(typeof client.reset).toBe("function");
+    expect(typeof client.enableDebugLogging).toBe("function");
+    expect(typeof client.getDebugInfo).toBe("function");
   });
 
-  afterEach(async () => {
-    await resetAnalytics();
-  });
-
-  it("returns the proxy client if not initialized", () => {
-    const client = getAnalyticsClient();
-    expect(client.track).toBeDefined();
-    expect(client.flush).toBeDefined();
-  });
-});
-
-describe("resetAnalytics()", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it("clears the client and state", async () => {
-    const client1 = await initAnalytics(opts);
-    await resetAnalytics();
-    const client2 = await initAnalytics(opts);
-    // Should be different instances after reset
+  it("returns a new analytics interface each time", async () => {
+    const { createAnalyticsClient } = require("./init");
+    const client1 = await createAnalyticsClient(opts);
+    const client2 = await createAnalyticsClient(opts);
     expect(client1).not.toBe(client2);
   });
 
-  it("calls setRealClient(null) on reset", async () => {
-    await initAnalytics(opts);
-    await resetAnalytics();
-    expect(setRealClient).toHaveBeenCalledWith(null);
+  it("binds the first client to the proxy", async () => {
+    // Spy before requiring the module to catch the call
+    const setRealClientSpy = jest.fn();
+    jest.doMock("./proxy/proxyClient", () => ({
+      setRealClient: setRealClientSpy,
+      proxyClient: {},
+    }));
+    const { createAnalyticsClient } = require("./init");
+    await createAnalyticsClient(opts);
+    expect(setRealClientSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ track: expect.any(Function) })
+    );
   });
 });

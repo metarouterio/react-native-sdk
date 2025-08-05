@@ -30,7 +30,7 @@ export interface EnrichedEventPayload extends EventWithIdentity {
 export interface InitOptions {
   writeKey: string;
   ingestionHost: string;
-  flushInterval?: number;
+  flushIntervalSeconds?: number;
   debug?: boolean;
 }
 
@@ -39,9 +39,10 @@ export interface AnalyticsInterface {
   identify: (userId: string, traits?: Record<string, any>) => void;
   group: (groupId: string, traits?: Record<string, any>) => void;
   screen: (name: string, props?: Record<string, any>) => void;
+  page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
   flush: () => void;
-  cleanup: () => void;
+  reset: () => void;
   enableDebugLogging?: () => void;
   getDebugInfo?: () => Record<string, any>;
 }

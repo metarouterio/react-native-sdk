@@ -1,4 +1,4 @@
-import type { AnalyticsInterface } from '../types';
+import type { AnalyticsInterface } from "../types";
 
 const pendingCalls: Array<() => void> = [];
 const MAX_PENDING_CALLS = 20;
@@ -15,7 +15,9 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   if (pendingCalls.length >= MAX_PENDING_CALLS) {
     // Drop the oldest call
     pendingCalls.shift();
-    console.warn(`[MetaRouter] Proxy queue reached max size (${MAX_PENDING_CALLS}). Oldest call dropped.`);
+    console.warn(
+      `[MetaRouter] Proxy queue reached max size (${MAX_PENDING_CALLS}). Oldest call dropped.`
+    );
   }
 
   pendingCalls.push(() => {
@@ -40,16 +42,20 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
  */
 
 export const proxyClient: AnalyticsInterface = {
-  track: (event, props) => handleMethodCall('track', event, props),
-  identify: (userId, traits) => handleMethodCall('identify', userId, traits),
-  group: (groupId, traits) => handleMethodCall('group', groupId, traits),
-  screen: (name, props) => handleMethodCall('screen', name, props),
-  alias: (newUserId) => handleMethodCall('alias', newUserId),
-  flush: () => handleMethodCall('flush'),
-  cleanup: () => handleMethodCall('cleanup'),
-  enableDebugLogging: () => handleMethodCall('enableDebugLogging'),
+  track: (event, props) => handleMethodCall("track", event, props),
+  identify: (userId, traits) => handleMethodCall("identify", userId, traits),
+  group: (groupId, traits) => handleMethodCall("group", groupId, traits),
+  screen: (name, props) => handleMethodCall("screen", name, props),
+  page: (name, props) => handleMethodCall("page", name, props),
+  alias: (newUserId) => handleMethodCall("alias", newUserId),
+  flush: () => handleMethodCall("flush"),
+  reset: () => handleMethodCall("reset"),
+  enableDebugLogging: () => handleMethodCall("enableDebugLogging"),
   getDebugInfo: () =>
-    realClient?.getDebugInfo?.() ?? { proxy: true, pendingCalls: pendingCalls.length },
+    realClient?.getDebugInfo?.() ?? {
+      proxy: true,
+      pendingCalls: pendingCalls.length,
+    },
 };
 
 export function setRealClient(client: AnalyticsInterface | null) {

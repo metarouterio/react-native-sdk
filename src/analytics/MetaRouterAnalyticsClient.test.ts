@@ -21,7 +21,7 @@ jest.mock("./utils/identityStorage", () => ({
 const opts: InitOptions = {
   ingestionHost: "https://example.com",
   writeKey: "test_write_key",
-  flushInterval: 5000,
+  flushIntervalSeconds: 5,
 };
 
 describe("MetaRouterAnalyticsClient", () => {
@@ -133,7 +133,7 @@ describe("MetaRouterAnalyticsClient", () => {
   it("cleans up interval and queue", () => {
     const client = new MetaRouterAnalyticsClient(opts);
     client.track("Will be removed");
-    client.cleanup();
+    client.reset();
 
     expect(client["queue"]).toHaveLength(0);
     expect(client["flushTimer"]).toBeNull();
