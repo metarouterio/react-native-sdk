@@ -34,7 +34,7 @@ export class MetaRouterAnalyticsClient {
   constructor(options: InitOptions) {
     log("Initializing analytics client", options);
 
-    const { writeKey, ingestionHost, flushInterval } = options;
+    const { writeKey, ingestionHost, flushIntervalSeconds } = options;
 
     if (!writeKey || typeof writeKey !== "string" || writeKey.trim() === "") {
       throw new Error(
@@ -55,7 +55,9 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
-    this.flushIntervalMs = flushInterval ?? 10000;
+    this.flushIntervalMs = flushIntervalSeconds
+      ? flushIntervalSeconds * 1000
+      : 10000;
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
     this.initPromise = this.init();
@@ -321,22 +323,31 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
-   * Resets the analytics client.
+   * Resets the analytics client:
+   * - Clears identity (anonymousId, userId, groupId)
+   * - Clears queued events
+   * - Stops background flushing
+   * - Removes app state listeners
    */
   reset() {
-    this.identityManager.reset();
-    this.queue = [];
-    log("Analytics client reset");
-  }
+    log("Resetting analytics client");
 
-  /**
-   * Cleans up the analytics client.
-   */
-  cleanup() {
-    log("Cleaning up analytics client");
-    if (this.flushTimer) clearInterval(this.flushTimer);
+    // Identity reset
+    this.identityManager.reset();
+
+    // Clear event queue
     this.queue = [];
-    this.flushTimer = null;
+
+    // Clear flush interval
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    // Remove AppState listener
     this.appStateSubscription?.remove?.();
+    this.appStateSubscription = null;
+
+    log("Analytics client reset complete");
   }
 }

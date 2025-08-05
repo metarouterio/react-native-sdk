@@ -1,61 +1,40 @@
-import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
-import { proxyClient, setRealClient } from './proxy/proxyClient';
-import type { InitOptions, AnalyticsInterface } from './types';
+import { MetaRouterAnalyticsClient } from "./MetaRouterAnalyticsClient";
+import { proxyClient, setRealClient } from "./proxy/proxyClient";
+import type { InitOptions, AnalyticsInterface } from "./types";
 
-let initialized = false;
-let client: MetaRouterAnalyticsClient | null = null;
-let analyticsClient: AnalyticsInterface | null = null;
+// Tracks whether a client has already been bound to the proxy
+let proxyBound = false;
 
 /**
- * Initializes the analytics client singleton.
- * Waits for async setup (e.g., identity loading) before returning the interface.
- * Returns the same instance on subsequent calls.
- * @param options Analytics initialization options.
- * @returns The analytics interface.
+ * Modular factory for creating an independent analytics client.
+ * Binds the first created client to the proxy for queued events.
+ * @param options Initialization options.
+ * @returns A fully initialized analytics interface.
  */
-export async function initAnalytics(options: InitOptions): Promise<AnalyticsInterface> {
-  if (initialized) return analyticsClient!;
+export async function createAnalyticsClient(
+  options: InitOptions
+): Promise<AnalyticsInterface> {
+  const instance = new MetaRouterAnalyticsClient(options);
+  await instance.waitForInitialization();
 
-  client = new MetaRouterAnalyticsClient(options);
-  
-  // Wait for the client to fully initialize (including anonymous ID loading)
-  await client.waitForInitialization();
-  
-  analyticsClient = {
-    track: (event, props) => client!.track(event, props),
-    identify: (userId, traits) => client!.identify(userId, traits),
-    group: (groupId, traits) => client!.group(groupId, traits),
-    screen: (name, props) => client!.screen(name, props),
-    alias: (newUserId) => client!.alias(newUserId),
-    flush: () => client!.flush(),
-    cleanup: () => client!.cleanup(),
-    enableDebugLogging: () => client!.enableDebugLogging(),
-    getDebugInfo: () => client!.getDebugInfo(),
+  const analyticsInterface: AnalyticsInterface = {
+    track: (event, props) => instance.track(event, props),
+    identify: (userId, traits) => instance.identify(userId, traits),
+    group: (groupId, traits) => instance.group(groupId, traits),
+    screen: (name, props) => instance.screen(name, props),
+    page: (name, props) => instance.page(name, props),
+    alias: (newUserId) => instance.alias(newUserId),
+    flush: () => instance.flush(),
+    reset: () => instance.reset(),
+    enableDebugLogging: () => instance.enableDebugLogging(),
+    getDebugInfo: () => instance.getDebugInfo(),
   };
 
-  initialized = true;
-  setRealClient(analyticsClient);
-  return analyticsClient;
-}
+  // Forward proxy calls to this instance (only once)
+  if (!proxyBound) {
+    setRealClient(analyticsInterface);
+    proxyBound = true;
+  }
 
-/**
- * Retrieves the analytics client singleton.
- * Returns the proxy client before initialization, and the real client after.
- * @returns The analytics interface.
- */
-export function getAnalyticsClient(): AnalyticsInterface {
-  return initialized ? analyticsClient! : proxyClient;
-}
-
-/**
- * Resets the analytics client singleton.
- * Cleans up the client and sets it to null.
- * @returns A promise that resolves when the client is reset.
- */
-export async function resetAnalytics(): Promise<void> {
-  await client?.cleanup();
-  client = null;
-  analyticsClient = null;
-  initialized = false;
-  setRealClient(null);
+  return analyticsInterface;
 }

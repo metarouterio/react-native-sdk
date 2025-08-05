@@ -1,28 +1,29 @@
-import React, { createContext, useContext, ReactNode } from "react";
-import type { MetaRouterInterface } from "../types";
+import React, { createContext, ReactNode } from "react";
+import { AnalyticsInterface } from "../analytics/types";
 
-/**
- * Context for the MetaRouter analytics client.
- * @param instance - The analytics client instance.
- */
-export const MetaRouterContext = createContext<MetaRouterInterface | null>(
+export interface MetaRouterContextValue {
+  analytics: AnalyticsInterface;
+}
+
+export const MetaRouterContext = createContext<MetaRouterContextValue | null>(
   null
 );
 
-/**
- * Provider for the MetaRouter analytics client.
- * @param children - The children to render.
- * @param instance - The analytics client instance.
- */
+interface MetaRouterProviderProps {
+  children: ReactNode;
+  analyticsClient: AnalyticsInterface;
+}
+
 export const MetaRouterProvider = ({
   children,
-  instance,
-}: {
-  children: ReactNode;
-  instance: MetaRouterInterface;
-}) => {
+  analyticsClient,
+}: MetaRouterProviderProps) => {
+  const value: MetaRouterContextValue = {
+    analytics: analyticsClient,
+  };
+
   return (
-    <MetaRouterContext.Provider value={instance}>
+    <MetaRouterContext.Provider value={value}>
       {children}
     </MetaRouterContext.Provider>
   );

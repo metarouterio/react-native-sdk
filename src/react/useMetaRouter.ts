@@ -1,20 +1,18 @@
 import { useContext } from "react";
-import { MetaRouter } from "../MetaRouter";
+import { AnalyticsInterface } from "../analytics/types";
 import { MetaRouterContext } from "./context";
-import type { AnalyticsInterface } from "../analytics/types";
 
 /**
- * Custom hook to access the MetaRouter analytics client.
- * @returns The analytics client instance.
+ * Hook to access the analytics client from MetaRouter context.
  */
 export const useMetaRouter = (): { analytics: AnalyticsInterface } => {
-    const ctx = useContext(MetaRouterContext);
-    if (!ctx)
-      throw new Error("useMetaRouter must be used within MetaRouterProvider");
-    
-    return {
-      analytics: ctx.analytics.getClient(),
-    };
-  };
-  
-  
+  const context = useContext(MetaRouterContext);
+
+  if (!context?.analytics) {
+    throw new Error(
+      "useMetaRouter must be used within a <MetaRouterProvider> with an analytics client."
+    );
+  }
+
+  return { analytics: context.analytics };
+};

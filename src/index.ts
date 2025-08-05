@@ -1,8 +1,7 @@
-import { MetaRouter } from "./MetaRouter";
+import "react-native-get-random-values";
 
-export default MetaRouter;
-export { MetaRouter };
+export { createAnalyticsClient } from "./analytics/init";
+
 export { MetaRouterProvider } from "./react/context";
 export { useMetaRouter } from "./react/useMetaRouter";
 export type { InitOptions, AnalyticsInterface } from "./analytics/types";
-export type { MetaRouterInterface } from "./types";
