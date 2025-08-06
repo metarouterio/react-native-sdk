@@ -1,12 +1,14 @@
-import { getTimeZone } from './timezone';
-import pkg from '../../../package.json';
-import { EventContext } from '../types';
+import { Dimensions, PixelRatio } from "react-native";
+
+import { getTimeZone } from "./timezone";
+import pkg from "../../../package.json";
+import { EventContext } from "../types";
 
 let cachedContext: EventContext | null = null;
 let DeviceInfo: any = null;
 
 try {
-  DeviceInfo = require('react-native-device-info');
+  DeviceInfo = require("react-native-device-info");
 } catch {
   DeviceInfo = null;
 }
@@ -24,42 +26,48 @@ try {
 export async function getContextInfo(): Promise<EventContext> {
   if (cachedContext) return cachedContext;
 
-  let locale = 'en-US';
-  if (typeof Intl !== 'undefined' && typeof Intl.DateTimeFormat === 'function') {
+  let locale = "en-US";
+  if (
+    typeof Intl !== "undefined" &&
+    typeof Intl.DateTimeFormat === "function"
+  ) {
     const resolved = Intl.DateTimeFormat().resolvedOptions();
     locale = resolved.locale ?? locale;
   }
 
+  const { width, height } = Dimensions.get("screen");
+  const density = Number(PixelRatio.get().toFixed(2));
+
   cachedContext = {
     library: {
-      name: 'metarouter-react-native-sdk',
-      version: pkg.version ?? '0.0.0',
+      name: "metarouter-react-native-sdk",
+      version: pkg.version ?? "0.0.0",
     },
     locale,
     timezone: getTimeZone(),
     device: {
-      manufacturer: await DeviceInfo?.getManufacturer?.() ?? 'unknown',
-      model: DeviceInfo?.getModel?.() ?? 'unknown',
-      name: await DeviceInfo?.getDeviceName?.() ?? 'unknown',
-      type: DeviceInfo?.getSystemName?.() === 'Android' ? 'android' : 'ios',
+      manufacturer: (await DeviceInfo?.getManufacturer?.()) ?? "unknown",
+      model: DeviceInfo?.getModel?.() ?? "unknown",
+      name: (await DeviceInfo?.getDeviceName?.()) ?? "unknown",
+      type: DeviceInfo?.getSystemName?.() === "Android" ? "android" : "ios",
     },
     os: {
-      name: DeviceInfo?.getSystemName?.() ?? 'unknown',
-      version: DeviceInfo?.getSystemVersion?.() ?? 'unknown',
+      name: DeviceInfo?.getSystemName?.() ?? "unknown",
+      version: DeviceInfo?.getSystemVersion?.() ?? "unknown",
     },
     app: {
-      name: DeviceInfo?.getApplicationName?.() ?? 'unknown',
-      version: DeviceInfo?.getVersion?.() ?? pkg.version ?? 'unknown',
-      build: DeviceInfo?.getBuildNumber?.() ?? 'unknown',
-      namespace: DeviceInfo?.getBundleId?.() ?? 'unknown',
+      name: DeviceInfo?.getApplicationName?.() ?? "unknown",
+      version: DeviceInfo?.getVersion?.() ?? pkg.version ?? "unknown",
+      build: DeviceInfo?.getBuildNumber?.() ?? "unknown",
+      namespace: DeviceInfo?.getBundleId?.() ?? "unknown",
     },
     screen: {
-      width: DeviceInfo?.getScreenWidth?.() ?? 0,
-      height: DeviceInfo?.getScreenHeight?.() ?? 0,
-      density: DeviceInfo?.getDensity?.() ?? 1,
+      width,
+      height,
+      density,
     },
     network: {
-      wifi: await DeviceInfo?.isWifiEnabled?.() ?? false,
+      wifi: (await DeviceInfo?.isWifiEnabled?.()) ?? false,
     },
   };
 
