@@ -13,7 +13,19 @@ jest.mock('react-native', () => ({
     addListener: jest.fn(),
     removeListener: jest.fn(),
   })),
+  Dimensions: {
+    get: jest.fn().mockImplementation(() => ({
+      width: 390,
+      height: 844,
+      scale: 3,
+      fontScale: 1,
+    })),
+  },
+  PixelRatio: {
+    get: jest.fn(() => 3),
+  },
 }));
+
 
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
