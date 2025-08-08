@@ -43,8 +43,8 @@ export interface AnalyticsInterface {
   alias: (newUserId: string) => void;
   flush: () => void;
   reset: () => void;
-  enableDebugLogging?: () => void;
-  getDebugInfo?: () => Record<string, any>;
+  enableDebugLogging: () => void;
+  getDebugInfo: () => Record<string, any>;
 }
 
 export interface EventContext {

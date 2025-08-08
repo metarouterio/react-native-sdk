@@ -173,6 +173,16 @@ The analytics client provides the following methods:
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
 - 🐛 **Debug Support**: Built-in debugging tools for troubleshooting
 
+## ✅ Compatibility
+
+| Component             | Supported Versions |
+| --------------------- | ------------------ |
+| React Native          | >= 0.63            |
+| React                 | >= 16.8            |
+| iOS Deployment Target | >= iOS 10          |
+| Android Min SDK       | >= API 16          |
+| Node.js               | >= 16              |
+
 ## Debugging
 
 If you're not seeing API calls being made, here are some steps to troubleshoot:

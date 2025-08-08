@@ -257,6 +257,7 @@ export class MetaRouterAnalyticsClient {
       anonymousId: this.identityManager.getAnonymousId(),
       userId: this.identityManager.getUserId(),
       groupId: this.identityManager.getGroupId(),
+      proxy: false,
     };
   }
 
