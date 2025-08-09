@@ -41,10 +41,10 @@ export interface AnalyticsInterface {
   screen: (name: string, props?: Record<string, any>) => void;
   page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
-  flush: () => void;
-  reset: () => void;
+  flush: () => Promise<void>;
+  reset: () => Promise<void>;
   enableDebugLogging: () => void;
-  getDebugInfo: () => Record<string, any>;
+  getDebugInfo: () => Promise<Record<string, any>>;
 }
 
 export interface EventContext {
@@ -80,3 +80,10 @@ export interface EventContext {
   timezone: string;
   [key: string]: any; // allow arbitrary context
 }
+
+export type Lifecycle =
+  | "idle"
+  | "initializing"
+  | "ready"
+  | "resetting"
+  | "disabled";

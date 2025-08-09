@@ -1,4 +1,4 @@
-import { EventContext, EventPayload, InitOptions } from "./types";
+import { EventContext, EventPayload, InitOptions, Lifecycle } from "./types";
 import { AppState, AppStateStatus } from "react-native";
 import { retryWithBackoff } from "./utils/retry";
 import { error, log, setDebugLogging, warn } from "./utils/logger";
@@ -14,7 +14,8 @@ import { getContextInfo } from "./utils/contextInfo";
  * - Provides debug and cleanup utilities.
  */
 export class MetaRouterAnalyticsClient {
-  private initialized = false;
+  private lifecycle: Lifecycle = "idle";
+  private initPromise: Promise<void> | null = null;
   private queue: EventPayload[] = [];
   private flushIntervalMs = 10000;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -25,6 +26,8 @@ export class MetaRouterAnalyticsClient {
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
   private static readonly MAX_QUEUE_SIZE = 20;
+  private flushInFlight: Promise<void> | null = null;
+  private readonly MAX_BATCH_SIZE = 100;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -59,7 +62,6 @@ export class MetaRouterAnalyticsClient {
       : 10000;
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.init();
     log(
       "Analytics client constructor completed, initialization in progress..."
     );
@@ -69,34 +71,47 @@ export class MetaRouterAnalyticsClient {
    * Initializes the analytics client.
    * @returns A promise that resolves when the client is initialized.
    */
-  private async init() {
-    if (this.initialized) {
-      log("Analytics client already initialized");
+  public async init() {
+    if (this.lifecycle === "ready") {
+      log("Analytics client already ready");
+      return;
+    }
+    if (this.lifecycle === "initializing" && this.initPromise) {
+      log("Analytics client initialization already in-flight");
+      return this.initPromise;
+    }
+
+    if (this.lifecycle === "disabled") {
+      warn("Analytics client is disabled — init skipped");
       return;
     }
 
+    this.lifecycle = "initializing";
     log("Starting analytics client initialization...");
 
-    try {
-      await this.identityManager.init();
-      log("IdentityManager initialized successfully");
+    this.initPromise = (async () => {
+      try {
+        await this.identityManager.init();
+        log("IdentityManager initialized successfully");
 
-      this.startFlushLoop();
-      log("Flush loop started with interval:", this.flushIntervalMs, "ms");
+        this.startFlushLoop();
+        log("Flush loop started with interval:", this.flushIntervalMs, "ms");
 
-      this.setupAppStateListener();
-      log("App state listener setup completed");
+        this.setupAppStateListener();
+        log("App state listener setup completed");
 
-      this.context = await getContextInfo();
+        this.context = await getContextInfo();
 
-      this.initialized = true;
-      log("Analytics client initialization completed successfully");
-    } catch (error) {
-      warn("Analytics client initialization failed:", error);
-      // Still mark as initialized to prevent infinite retries
-      this.initialized = true;
-      throw error;
-    }
+        this.lifecycle = "ready";
+        log("Analytics client initialization completed successfully");
+      } catch (error) {
+        this.lifecycle = "idle"; // allow retry
+        warn("Analytics client initialization failed:", error);
+        throw error;
+      }
+    })();
+
+    return this.initPromise;
   }
 
   /**
@@ -104,6 +119,53 @@ export class MetaRouterAnalyticsClient {
    */
   private startFlushLoop() {
     this.flushTimer = setInterval(() => this.flush(), this.flushIntervalMs);
+  }
+
+  /**
+   * Checks if the analytics client can operate.
+   * @returns True if the client is ready to operate, false otherwise.
+   */
+  private canOperate() {
+    return this.lifecycle === "ready";
+  }
+
+  /**
+   * Fetches with a timeout.
+   * @param url - The URL to fetch.
+   * @param init - The request init.
+   * @param timeoutMs - The timeout in milliseconds.
+   * @returns The response.
+   */
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number
+  ): Promise<Response> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const t = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Fetch timeout after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+
+      fetch(url, init)
+        .then((res) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(t);
+            resolve(res);
+          }
+        })
+        .catch((err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(t);
+            reject(err);
+          }
+        });
+    });
   }
 
   /**
@@ -119,6 +181,11 @@ export class MetaRouterAnalyticsClient {
    * @param event - The event to enqueue.
    */
   private enqueue(event: EventPayload) {
+    if (!this.canOperate()) {
+      warn("Analytics client is not ready to operate");
+      return;
+    }
+
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
     const enrichedEvent = enrichEvent(
       eventWithIdentity,
@@ -247,9 +314,9 @@ export class MetaRouterAnalyticsClient {
   /**
    * Get current state for debugging
    */
-  getDebugInfo() {
+  async getDebugInfo() {
     return {
-      initialized: this.initialized,
+      lifecycle: this.lifecycle,
       queueLength: this.queue.length,
       ingestionHost: this.ingestionHost,
       writeKey: this.writeKey ? "***" + this.writeKey.slice(-4) : undefined,
@@ -265,80 +332,104 @@ export class MetaRouterAnalyticsClient {
    * Flushes the event queue to the ingestion endpoint.
    */
   async flush() {
+    if (!this.canOperate()) return;
+    if (!this.queue.length) return;
+
+    if (this.flushInFlight) return this.flushInFlight; // coalesce
+
     const anonId = this.identityManager.getAnonymousId();
     if (!anonId) {
       warn("Anonymous ID not yet ready, delaying flush");
-      // Anon ID not yet ready, delay flushing
       return;
     }
 
-    if (this.queue.length === 0) {
-      log("No events to flush");
-      return;
-    }
-
-    const batch = this.queue.map((event) => ({
-      ...event,
+    const batch = this.queue.map((e) => ({
+      ...e,
       sentAt: new Date().toISOString(),
     }));
+    this.queue = []; // optimistic clear; we’ll put them back on failure
 
-    this.queue = [];
+    const doFlush = async () => {
+      await retryWithBackoff(
+        async () => {
+          if (!this.canOperate())
+            throw new Error("Client not ready during flush");
 
-    log(`Flushing ${batch.length} events to ${this.ingestionHost}/v1/batch`);
+          log("Making API call to:", this.ingestionHost + "/v1/batch");
 
-    try {
-      await retryWithBackoff(async () => {
-        log("Making API call to:", this.ingestionHost + "/v1/batch");
-        const response = await fetch(this.ingestionHost + "/v1/batch", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ batch }),
-        });
+          const response = await this.fetchWithTimeout(
+            this.ingestionHost + "/v1/batch",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ batch }),
+            },
+            8000 // timeout per attempt
+          );
 
-        if (!response.ok) {
-          error("HTTP error", response);
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          if (!response.ok) {
+            error("HTTP error", response.status, response.statusText);
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          log("API call successful, status:", response.status);
+        },
+        {
+          retries: 5,
+          baseDelayMs: 1000,
+          shouldContinue: () => this.canOperate(),
         }
-
-        log("API call successful, status:", response.status);
-        return response;
-      });
+      );
 
       log("Flush completed successfully");
-      return batch;
-    } catch (err) {
-      warn("Flush failed, re-queueing events", err);
-      this.queue.unshift(...batch);
-    }
+    };
+
+    this.flushInFlight = doFlush()
+      .catch((err) => {
+        if (this.canOperate()) {
+          // Put events back at the **front** in original order
+          warn("Flush failed, re-queueing events", err);
+          this.queue.unshift(...batch);
+        } else {
+          warn("Flush failed, but client is not ready to operate");
+        }
+        throw err;
+      })
+      .finally(() => {
+        this.flushInFlight = null;
+      });
+
+    return this.flushInFlight;
   }
 
   /**
-   * Resets the analytics client:
-   * - Clears identity (anonymousId, userId, groupId)
-   * - Clears queued events
-   * - Stops background flushing
-   * - Removes app state listeners
+   * Resets the analytics client.
    */
-  reset() {
+  public async reset(): Promise<void> {
     log("Resetting analytics client");
 
-    // Identity reset
-    this.identityManager.reset();
+    // Flip lifecycle first so other paths see we're resetting
+    this.lifecycle = "resetting";
 
-    // Clear event queue
-    this.queue = [];
-
-    // Clear flush interval
+    // Stop background work
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
-
-    // Remove AppState listener
     this.appStateSubscription?.remove?.();
     this.appStateSubscription = null;
+
+    // Drop queued events
+    this.queue = [];
+
+    // Clear identity (must remove persisted IDs)
+    await this.identityManager.reset();
+
+    // Allow a clean future init
+    this.initPromise = null;
+
+    // Back to idle: explicit init required
+    this.lifecycle = "idle";
 
     log("Analytics client reset complete");
   }

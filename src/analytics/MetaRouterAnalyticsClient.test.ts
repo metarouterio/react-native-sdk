@@ -1,3 +1,5 @@
+import * as retryMod from "./utils/retry";
+
 import { MetaRouterAnalyticsClient } from "./MetaRouterAnalyticsClient";
 import type { InitOptions } from "./types";
 import { AppState } from "react-native";
@@ -6,8 +8,6 @@ const mockAddEventListener = jest.fn();
 jest
   .spyOn(AppState, "addEventListener")
   .mockImplementation(mockAddEventListener);
-
-global.fetch = jest.fn(() => Promise.resolve({ ok: true })) as any;
 
 jest.mock("./utils/identityStorage", () => ({
   getIdentityField: jest.fn(),
@@ -27,6 +27,10 @@ const opts: InitOptions = {
 describe("MetaRouterAnalyticsClient", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default fetch resolves OK; override per-test with mockResolvedValueOnce
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200 });
     const identityStorage = require("./utils/identityStorage");
     (identityStorage.getIdentityField as jest.Mock).mockImplementation(
       async (key: string) => {
@@ -68,6 +72,7 @@ describe("MetaRouterAnalyticsClient", () => {
 
   it("adds a track event to the queue", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.track("Product Viewed", { sku: "123" });
 
     expect(client["queue"]).toHaveLength(1);
@@ -78,8 +83,9 @@ describe("MetaRouterAnalyticsClient", () => {
     });
   });
 
-  it("adds identify event with userId", () => {
+  it("adds identify event with userId", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.identify("user-123", { plan: "pro" });
 
     expect(client["queue"][0]).toMatchObject({
@@ -91,6 +97,7 @@ describe("MetaRouterAnalyticsClient", () => {
 
   it("flushes queued events to the endpoint", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.track("Test Event");
 
     // Wait for initialization to complete
@@ -111,6 +118,7 @@ describe("MetaRouterAnalyticsClient", () => {
 
   it("clears the queue after successful flush", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.track("Flush Test");
     expect(client["queue"]).toHaveLength(1);
 
@@ -121,11 +129,24 @@ describe("MetaRouterAnalyticsClient", () => {
   });
 
   it("re-queues events on flush failure", async () => {
-    global.fetch = jest.fn(() => Promise.reject("Network error")) as any;
+    jest
+      .spyOn(retryMod, "retryWithBackoff")
+      .mockImplementationOnce(async (fn: any) => {
+        await fn();
+        throw new Error("fail");
+      });
+
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "err",
+    });
 
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.track("Event Retry");
-    await client.flush();
+    await expect(client.flush()).rejects.toBeTruthy();
+    expect(client["queue"]).toHaveLength(1);
 
     expect(client["queue"]).toHaveLength(1);
   });
@@ -139,16 +160,18 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["flushTimer"]).toBeNull();
   });
 
-  it("adds userId to subsequent events after identify()", () => {
+  it("adds userId to subsequent events after identify()", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.identify("user-999");
     client.track("Event with identity");
 
     expect(client["queue"][1].userId).toBe("user-999");
   });
 
-  it("adds groupId to subsequent events after group()", () => {
+  it("adds groupId to subsequent events after group()", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.group("group-123");
     client.track("Event with group");
 
@@ -157,6 +180,7 @@ describe("MetaRouterAnalyticsClient", () => {
 
   it("flushes when app goes to background", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
     client.track("Lifecycle Event");
 
     // Wait for initialization to complete
