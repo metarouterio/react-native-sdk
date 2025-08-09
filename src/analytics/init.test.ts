@@ -53,11 +53,11 @@ describe("createAnalyticsClient", () => {
     expect(typeof client.getDebugInfo).toBe("function");
   });
 
-  it("returns a new analytics interface each time", async () => {
+  it("returns the same proxy (rebound under the hood)", async () => {
     const { createAnalyticsClient } = require("./init");
     const client1 = await createAnalyticsClient(opts);
     const client2 = await createAnalyticsClient(opts);
-    expect(client1).not.toBe(client2);
+    expect(client1).toBe(client2); // proxy surface is stable
   });
 
   it("binds the first client to the proxy", async () => {

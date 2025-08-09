@@ -2,38 +2,49 @@ import { MetaRouterAnalyticsClient } from "./MetaRouterAnalyticsClient";
 import { proxyClient, setRealClient } from "./proxy/proxyClient";
 import type { InitOptions, AnalyticsInterface } from "./types";
 
-// Tracks whether a client has already been bound to the proxy
-let proxyBound = false;
+// Single-flight guard so concurrent callers don't double-init
+let inFlight: Promise<AnalyticsInterface> | null = null;
 
-/**
- * Modular factory for creating an independent analytics client.
- * Binds the first created client to the proxy for queued events.
- * @param options Initialization options.
- * @returns A fully initialized analytics interface.
- */
-export function createAnalyticsClient(
+export async function createAnalyticsClient(
   options: InitOptions
-): AnalyticsInterface {
-  const instance = new MetaRouterAnalyticsClient(options);
+): Promise<AnalyticsInterface> {
+  if (inFlight) return inFlight;
 
-  const analyticsInterface: AnalyticsInterface = {
-    track: (event, props) => instance.track(event, props),
-    identify: (userId, traits) => instance.identify(userId, traits),
-    group: (groupId, traits) => instance.group(groupId, traits),
-    screen: (name, props) => instance.screen(name, props),
-    page: (name, props) => instance.page(name, props),
-    alias: (newUserId) => instance.alias(newUserId),
-    flush: () => instance.flush(),
-    reset: () => instance.reset(),
-    enableDebugLogging: () => instance.enableDebugLogging(),
-    getDebugInfo: () => instance.getDebugInfo(),
-  };
+  inFlight = (async () => {
+    // 1) Build the real client and fully initialize it
+    const instance = new MetaRouterAnalyticsClient(options);
+    await instance.init();
 
-  // Forward proxy calls to this instance (only once)
-  if (!proxyBound) {
-    setRealClient(analyticsInterface);
-    proxyBound = true;
+    // 2) Wrap the real instance with the public interface
+    //    Note: reset() also detaches the proxy so you’re "off" until you call createAnalyticsClient() again.
+    const boundClient: AnalyticsInterface = {
+      track: (event, props) => instance.track(event, props),
+      identify: (userId, traits) => instance.identify(userId, traits),
+      group: (groupId, traits) => instance.group(groupId, traits),
+      screen: (name, props) => instance.screen(name, props),
+      page: (name, props) => instance.page(name, props),
+      alias: (newUserId) => instance.alias(newUserId),
+      enableDebugLogging: () => instance.enableDebugLogging(),
+      getDebugInfo: () => instance.getDebugInfo(),
+      flush: () => instance.flush(),
+
+      // Detach the proxy after a successful reset so nothing leaks out
+      reset: async () => {
+        await instance.reset();
+        setRealClient(null, { dropPending: true }); // proxy goes idle; calls will queue or no-op
+      },
+    };
+
+    // 3) Bind the proxy to this fully-initialized client
+    setRealClient(boundClient);
+
+    // 4) Return the proxy as the single public handle
+    return proxyClient;
+  })();
+
+  try {
+    return await inFlight;
+  } finally {
+    inFlight = null;
   }
-
-  return analyticsInterface;
 }
