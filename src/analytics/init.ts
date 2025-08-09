@@ -25,6 +25,7 @@ export function createAnalyticsClient(
         reset: async () => {
           await instance.reset();
           setRealClient(null, { dropPending: true });
+          initPromise = null;
         },
       };
       setRealClient(boundClient);
