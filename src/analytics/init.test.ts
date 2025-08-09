@@ -69,6 +69,7 @@ describe("createAnalyticsClient", () => {
     }));
     const { createAnalyticsClient } = require("./init");
     await createAnalyticsClient(opts);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(setRealClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({ track: expect.any(Function) })
     );
