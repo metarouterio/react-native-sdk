@@ -62,8 +62,8 @@ export async function getContextInfo(): Promise<EventContext> {
       namespace: DeviceInfo?.getBundleId?.() ?? "unknown",
     },
     screen: {
-      width,
-      height,
+      width: Math.round(width),
+      height: Math.round(height),
       density,
     },
     network: {
