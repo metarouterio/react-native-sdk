@@ -45,8 +45,13 @@ export class MetaRouterAnalyticsClient {
     }
 
     try {
-      const url = new URL(ingestionHost);
-      if (url.pathname !== "/" && ingestionHost.endsWith("/")) {
+      // Validate it's a proper absolute URL
+      // and ensure it does not end with a trailing slash
+      // e.g., "https://example.com" or "https://example.com/api" are valid,
+      // but "https://example.com/" or "https://example.com/api/" are not.
+      // eslint-disable-next-line no-new
+      new URL(ingestionHost);
+      if (ingestionHost.endsWith("/")) {
         throw new Error();
       }
     } catch {
@@ -114,10 +119,15 @@ export class MetaRouterAnalyticsClient {
     return this.initPromise;
   }
 
+  private endpoint(path: string) {
+    return `${this.ingestionHost}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+
   /**
    * Starts the flush loop.
    */
   private startFlushLoop() {
+    if (this.flushTimer) clearInterval(this.flushTimer);
     this.flushTimer = setInterval(() => this.flush(), this.flushIntervalMs);
   }
 
@@ -140,32 +150,15 @@ export class MetaRouterAnalyticsClient {
     url: string,
     init: RequestInit,
     timeoutMs: number
-  ): Promise<Response> {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const t = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          reject(new Error(`Fetch timeout after ${timeoutMs}ms`));
-        }
-      }, timeoutMs);
-
-      fetch(url, init)
-        .then((res) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(t);
-            resolve(res);
-          }
-        })
-        .catch((err) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(t);
-            reject(err);
-          }
-        });
-    });
+  ) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: ctrl.signal });
+      return res;
+    } finally {
+      clearTimeout(to);
+    }
   }
 
   /**
@@ -181,6 +174,7 @@ export class MetaRouterAnalyticsClient {
    * @param event - The event to enqueue.
    */
   private enqueue(event: EventPayload) {
+    // All calls route via proxy; direct calls pre‑ready are intentionally dropped
     if (!this.canOperate()) {
       warn("Analytics client is not ready to operate");
       return;
@@ -201,6 +195,14 @@ export class MetaRouterAnalyticsClient {
       );
       this.flush();
     }
+  }
+
+  private drainBatch(): EventPayload[] {
+    const n = Math.min(this.queue.length, this.MAX_BATCH_SIZE);
+    const batch = this.queue
+      .splice(0, n)
+      .map((e) => ({ ...e, sentAt: this.now() }));
+    return batch;
   }
 
   /**
@@ -325,17 +327,18 @@ export class MetaRouterAnalyticsClient {
       userId: this.identityManager.getUserId(),
       groupId: this.identityManager.getGroupId(),
       proxy: false,
+      flushInFlight: !!this.flushInFlight,
     };
   }
 
   /**
-   * Flushes the event queue to the ingestion endpoint.
+   * Flushes the event queue to the ingestion endpoint in chunks.
+   * Singleflight: coalesces concurrent callers.
    */
   async flush() {
     if (!this.canOperate()) return;
     if (!this.queue.length) return;
-
-    if (this.flushInFlight) return this.flushInFlight; // coalesce
+    if (this.flushInFlight) return this.flushInFlight;
 
     const anonId = this.identityManager.getAnonymousId();
     if (!anonId) {
@@ -343,61 +346,65 @@ export class MetaRouterAnalyticsClient {
       return;
     }
 
-    const batch = this.queue.map((e) => ({
-      ...e,
-      sentAt: new Date().toISOString(),
-    }));
-    this.queue = []; // optimistic clear; we’ll put them back on failure
-
     const doFlush = async () => {
-      await retryWithBackoff(
-        async () => {
-          if (!this.canOperate())
-            throw new Error("Client not ready during flush");
+      // Keep sending while there is work. New events enqueued during the loop
+      // will be included in this same flush cycle.
+      while (this.queue.length) {
+        const chunk = this.drainBatch();
 
-          log("Making API call to:", this.ingestionHost + "/v1/batch");
+        // Retry this *chunk* only; on permanent failure, requeue it and abort.
+        await retryWithBackoff(
+          async () => {
+            if (!this.canOperate())
+              throw new Error("Client not ready during flush");
 
-          const response = await this.fetchWithTimeout(
-            this.ingestionHost + "/v1/batch",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ batch }),
-            },
-            8000 // timeout per attempt
-          );
+            log("Making API call to:", this.endpoint("/v1/batch"));
 
-          if (!response.ok) {
-            error("HTTP error", response.status, response.statusText);
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            const response = await this.fetchWithTimeout(
+              this.endpoint("/v1/batch"),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ batch: chunk }),
+              },
+              8000
+            );
+
+            if (!response.ok) {
+              error("HTTP error", response.status, response.statusText);
+              throw new Error(
+                `HTTP ${response.status}: ${response.statusText}`
+              );
+            }
+
+            log("API call successful, status:", response.status);
+          },
+          {
+            retries: 5,
+            baseDelayMs: 1000,
+            shouldContinue: () => this.canOperate(),
           }
-
-          log("API call successful, status:", response.status);
-        },
-        {
-          retries: 5,
-          baseDelayMs: 1000,
-          shouldContinue: () => this.canOperate(),
-        }
-      );
+        ).catch((err) => {
+          // Only requeue if the client is still operable; otherwise drop.
+          if (this.canOperate()) {
+            warn("Flush failed, re-queueing current chunk", err);
+            this.queue.unshift(...chunk);
+          } else {
+            warn(
+              "Flush failed during reset/teardown; dropping current chunk",
+              err
+            );
+          }
+          throw err;
+        });
+      }
 
       log("Flush completed successfully");
     };
 
-    this.flushInFlight = doFlush()
-      .catch((err) => {
-        if (this.canOperate()) {
-          // Put events back at the **front** in original order
-          warn("Flush failed, re-queueing events", err);
-          this.queue.unshift(...batch);
-        } else {
-          warn("Flush failed, but client is not ready to operate");
-        }
-        throw err;
-      })
-      .finally(() => {
-        this.flushInFlight = null;
-      });
+    this.flushInFlight = doFlush().finally(() => {
+      this.flushInFlight = null;
+    });
 
     return this.flushInFlight;
   }
