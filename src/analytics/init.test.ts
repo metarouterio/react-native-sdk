@@ -23,6 +23,8 @@ describe("createAnalyticsClient", () => {
   beforeEach(() => {
     jest.resetModules(); // Reset module registry to clear proxy state
     jest.clearAllMocks();
+    jest.useRealTimers();
+    jest.unmock("./proxy/proxyClient"); //
     const identityStorage = require("./utils/identityStorage");
     (identityStorage.getIdentityField as jest.Mock).mockImplementation(
       async (key: string) => {
@@ -37,7 +39,6 @@ describe("createAnalyticsClient", () => {
       undefined
     );
   });
-
   it("creates a client with all analytics methods", async () => {
     const { createAnalyticsClient } = require("./init");
     const client = await createAnalyticsClient(opts);
@@ -73,5 +74,79 @@ describe("createAnalyticsClient", () => {
     expect(setRealClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({ track: expect.any(Function) })
     );
+  });
+
+  it("coalesces concurrent init into one instance", async () => {
+    jest.isolateModules(() => {
+      const actorCalls: any[] = [];
+
+      jest.doMock("./MetaRouterAnalyticsClient", () => {
+        return {
+          MetaRouterAnalyticsClient: class {
+            constructor(...args: any[]) {
+              actorCalls.push(args);
+            }
+            init = jest.fn(async () => {}); // pretend it succeeds
+            track = jest.fn();
+            identify = jest.fn();
+            group = jest.fn();
+            screen = jest.fn();
+            page = jest.fn();
+            alias = jest.fn();
+            enableDebugLogging = jest.fn();
+            getDebugInfo = jest.fn();
+            flush = jest.fn();
+            reset = jest.fn();
+          },
+        };
+      });
+
+      const { createAnalyticsClient } = require("./init");
+
+      // Fire multiple concurrent calls in the same tick
+      return Promise.all([
+        createAnalyticsClient(opts),
+        createAnalyticsClient(opts),
+        createAnalyticsClient(opts),
+      ]).then(() => {
+        expect(actorCalls.length).toBe(1); // only one `new`
+      });
+    });
+  });
+
+  it("buffers pre-init events and forwards after bind", async () => {
+    jest.useFakeTimers();
+    jest.isolateModules(async () => {
+      const realTrack = jest.fn();
+      jest.doMock("./MetaRouterAnalyticsClient", () => ({
+        MetaRouterAnalyticsClient: class {
+          init = jest.fn(async () => {});
+          track = realTrack;
+          identify = jest.fn();
+          group = jest.fn();
+          screen = jest.fn();
+          page = jest.fn();
+          alias = jest.fn();
+          enableDebugLogging = jest.fn();
+          getDebugInfo = jest.fn();
+          flush = jest.fn();
+          reset = jest.fn();
+        },
+      }));
+
+      const { createAnalyticsClient } = require("./init");
+      const client = createAnalyticsClient(opts);
+
+      console.log(client);
+
+      // Queue before bind completes
+      client.track("pre-init", { a: 1 });
+
+      // Let init microtask complete and binding happen
+      await Promise.resolve();
+      jest.runOnlyPendingTimers();
+
+      expect(realTrack).toHaveBeenCalledWith("pre-init", { a: 1 });
+    });
   });
 });
