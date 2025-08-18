@@ -88,10 +88,10 @@ const MyComponent = () => {
 ```js
 import { createAnalyticsClient } from "@metarouter/react-native-sdk";
 
-// Initialize
+// Initialize optionally await it but can use at anytime with events transmitted when client is available.
 const analytics = await createAnalyticsClient({
   writeKey: "your-write-key",
-  ingestionHost: "https://your-ingestion-endpoint.com/events",
+  ingestionHost: "https://your-ingestion-endpoint.com",
 });
 
 // Track events
@@ -128,11 +128,11 @@ await analytics.reset();
 
 ### createAnalyticsClient(options)
 
-Initializes the analytics client and returns a promise resolving to the client instance.
+Initializes the analytics client and returns a **live proxy** to the client instance.
 
-⚠️ createAnalyticsClient() is asynchronous, but you do not need to await it before using analytics methods.
+⚠️ `createAnalyticsClient()` is asynchronous, but you **do not** need to `await` it before using analytics methods.
 
-Calls to track, identify, etc. are queued and replayed once the client is fully initialized.
+Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and replayed **in order** once the client is fully initialized.
 
 **Options:**
 
@@ -140,6 +140,14 @@ Calls to track, identify, etc. are queued and replayed once the client is fully 
 - `ingestionHost` (string, required): Your MetaRouter ingestor host
 - `debug` (boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (number, optional): Interval in seconds to flush events
+- `maxQueueEvents` (number, optional): number of max events stored in memory
+
+**Proxy behavior (quick notes):**
+
+- Buffer is **in-memory only** (not persisted). Calls made before ready are lost if the process exits.
+- Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
+- On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
+- `sentAt` is stamped when the event enters the internal queue; pass your own `timestamp` property if you need occurrence time.
 
 ### Analytics Interface
 
@@ -205,7 +213,7 @@ analytics.enableDebugLogging?.();
 
 ```js
 // Get current state information
-const debugInfo = analytics.getDebugInfo?.();
+const debugInfo = await analytics.getDebugInfo?.();
 console.log("Analytics debug info:", debugInfo);
 ```
 
@@ -222,6 +230,36 @@ await analytics.flush();
 - **AsyncStorage**: The SDK uses AsyncStorage for anonymous ID persistence
 - **Endpoint URL**: Verify your ingestion endpoint is correct and accessible
 - **Write Key**: Ensure your write key is valid
+
+### Delivery & Backoff (How events flow under failures)
+
+Queue capacity: The SDK keeps up to 2,000 events in memory. When the cap is reached, the oldest events are dropped first (drop-oldest). You can change this via maxQueueEvents in createAnalyticsClient(options)
+
+This SDK uses a circuit breaker around network I/O. It keeps ordering stable, avoids tight retry loops, and backs off cleanly when your cluster is unhealthy or throttling.
+
+Queueing during backoff: While the breaker is OPEN, new events are accepted and appended to the in-memory queue; nothing is sent until the cooldown elapses.
+
+Ordering (FIFO): If a batch fails with a retryable error, that batch is requeued at the front (original order preserved). New events go to the tail. After cooldown, we try again; on success we continue draining in order.
+
+Half-open probe: After cooldown, one probe is allowed.
+Success → breaker CLOSED (keep flushing).
+Failure → breaker OPEN again with longer cooldown.
+
+sentAt semantics: sentAt is stamped when the event is enqueued. If the client is backing off, the actual transmit may be later; sentAt reflects when the event entered the queue.
+
+| Status / Failure                    | Action                                                               | Breaker | Queue effect                   |
+| ----------------------------------- | -------------------------------------------------------------------- | ------- | ------------------------------ |
+| `2xx`                               | Success                                                              | close   | Batch removed                  |
+| `5xx`                               | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
+| `408` (timeout)                     | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
+| `429` (throttle)                    | Retry: requeue **front**, wait = `max(Retry-After, breaker, 1000ms)` | open↑   | Requeued (front)               |
+| `413` (payload too large)           | Halve `maxBatchSize`; requeue and retry; if already `1`, **drop**    | close   | Requeued or dropped (`size=1`) |
+| `400`, `422`, other non-fatal `4xx` | **Drop** bad batch, continue                                         | close   | Dropped                        |
+| `401`, `403`, `404`                 | **Disable** client (stop timers), clear queue                        | close   | Cleared                        |
+| Network error / Abort / Timeout     | Retry: requeue **front**, schedule after cooldown                    | open↑   | Requeued (front)               |
+| Reset during flush                  | Do **not** requeue in-flight chunk; **drop** it                      | —       | Dropped                        |
+
+**Defaults:** `failureThreshold=3`, `cooldownMs=10s`, `maxCooldownMs=120s`, `jitter=±20%`, `halfOpenMaxConcurrent=1`.
 
 ## License
 

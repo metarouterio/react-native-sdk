@@ -22,7 +22,6 @@ export interface EventWithIdentity extends EventPayload {
 
 export interface EnrichedEventPayload extends EventWithIdentity {
   messageId: string;
-  sentAt: string;
   context: EventContext;
   writeKey: string;
 }
@@ -32,6 +31,8 @@ export interface InitOptions {
   ingestionHost: string;
   flushIntervalSeconds?: number;
   debug?: boolean;
+  /** Max events held in memory; oldest are dropped once cap is hit (default: 2000) */
+  maxQueueEvents?: number;
 }
 
 export interface AnalyticsInterface {

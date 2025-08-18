@@ -1,4 +1,5 @@
 import { log, warn } from "./utils/logger";
+import { v4 as uuidv4 } from "uuid";
 import { EventPayload, EventWithIdentity } from "./types";
 import {
   USER_ID_KEY,
@@ -29,9 +30,7 @@ export class IdentityManager {
     try {
       const storedAnonId = await getIdentityField(ANONYMOUS_ID_KEY);
       if (!storedAnonId) {
-        const newId = `anon-${Date.now()}-${Math.random()
-          .toString(36)
-          .substring(2, 10)}`;
+        const newId = uuidv4();
         await setIdentityField(ANONYMOUS_ID_KEY, newId);
         this.anonymousId = newId;
         log("Generated and stored new anonymous ID:", newId);
