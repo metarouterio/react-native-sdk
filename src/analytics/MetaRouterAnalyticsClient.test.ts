@@ -196,4 +196,145 @@ describe("MetaRouterAnalyticsClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 10)); // allow flush to run
     expect(fetch).toHaveBeenCalled();
   });
+
+  it("coalesces concurrent flush calls into one in-flight promise", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    // seed one event
+    client.track("e1");
+
+    // Hold fetch so both calls overlap
+    let resolveFetch!: () => void;
+    (global as any).fetch = jest.fn().mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveFetch = () => res({ ok: true, status: 200 });
+        })
+    );
+
+    const p1 = client.flush();
+    const p2 = client.flush();
+    expect(p1).toStrictEqual(p2); // singleflight
+
+    resolveFetch();
+    await expect(p1).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1); // only one network call
+  });
+
+  it("flushes in chunks of MAX_BATCH_SIZE preserving order", async () => {
+    const client = new MetaRouterAnalyticsClient({
+      ...opts,
+      flushIntervalSeconds: 3600,
+    });
+    await client.init();
+
+    // Seed queue directly to avoid threshold-triggered flush from track()
+    const q = (client as any).queue as any[];
+    for (let i = 0; i < 250; i++) {
+      q.push({ type: "track", event: `e${i}`, timestamp: "t" });
+    }
+
+    const calls: number[] = [];
+    (global as any).fetch = jest
+      .fn()
+      .mockImplementation((_url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        calls.push(body.batch.length);
+        return Promise.resolve({ ok: true, status: 200 });
+      });
+
+    await client.flush();
+
+    expect(calls).toEqual([100, 100, 50]);
+    expect((client as any).queue.length).toBe(0);
+  });
+
+  it("skips flush when anonymousId is missing", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client["identityManager"].getAnonymousId = () => ""; // force missing
+    client.track("e");
+
+    await client.flush();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not requeue if reset happens during flush", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    // seed a few
+    for (let i = 0; i < 5; i++) client.track(`e${i}`);
+
+    // Make fetch fail so we hit catch
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, statusText: "err" });
+
+    const flushP = client.flush(); // starts, will fail
+    const resetP = client.reset(); // reset during in-flight
+
+    await Promise.allSettled([flushP, resetP]);
+    expect(client["queue"]).toHaveLength(0); // no requeue post-reset
+  });
+
+  it("auto-flushes when queue reaches MAX_QUEUE_SIZE", async () => {
+    const client = new MetaRouterAnalyticsClient({
+      ...opts,
+      flushIntervalSeconds: 3600,
+    });
+    await client.init();
+
+    const fetchSpy = jest.spyOn(global as any, "fetch");
+    for (let i = 0; i < 19; i++) client.track(`e${i}`);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    client.track("e19"); // 20th, should trigger flush
+    // allow one microtask
+    await Promise.resolve();
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
+  it("init is idempotent: single Identity init and single interval", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    const initSpy = jest
+      .spyOn(client["identityManager"], "init")
+      .mockResolvedValue();
+
+    await Promise.all([client.init(), client.init()]);
+    expect(initSpy).toHaveBeenCalledTimes(1);
+
+    const startSpy = jest.spyOn(client as any, "startFlushLoop");
+    await client.init();
+    expect(startSpy).toHaveBeenCalledTimes(0); // no second start
+  });
+
+  it("flushes once on active -> background transition", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client.track("L");
+
+    const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+    (global as any).fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200 });
+
+    // initial state is whatever RN reports; simulate active->background edge
+    client["appState"] = "active";
+    handler("background");
+
+    await Promise.resolve();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects ingestionHost that ends with a slash", () => {
+    expect(
+      () =>
+        new MetaRouterAnalyticsClient({
+          ingestionHost: "https://example.com/",
+          writeKey: "k",
+        })
+    ).toThrow(
+      "MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash."
+    );
+  });
 });
