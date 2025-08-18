@@ -137,8 +137,6 @@ describe("createAnalyticsClient", () => {
       const { createAnalyticsClient } = require("./init");
       const client = createAnalyticsClient(opts);
 
-      console.log(client);
-
       // Queue before bind completes
       client.track("pre-init", { a: 1 });
 

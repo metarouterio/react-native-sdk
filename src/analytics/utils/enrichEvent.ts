@@ -1,4 +1,9 @@
-import {   EnrichedEventPayload, EventContext, EventWithIdentity } from "../types";
+import {
+  EnrichedEventPayload,
+  EventContext,
+  EventWithIdentity,
+} from "../types";
+import { v4 as uuidv4 } from "uuid";
 
 /**
  * Enriches an analytics event with additional metadata required for ingestion.
@@ -20,8 +25,7 @@ export function enrichEvent(
   const enriched = {
     ...event,
     writeKey,
-    messageId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    sentAt: new Date().toISOString(),
+    messageId: uuidv4(),
     context,
   };
 
