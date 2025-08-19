@@ -9,7 +9,6 @@ import {
   setIdentityField,
   removeIdentityField,
 } from "./utils/identityStorage";
-import { v4 } from "react-native-uuid/dist/v4";
 
 /**
  * Manages user, group, and anonymous identity for analytics events.
