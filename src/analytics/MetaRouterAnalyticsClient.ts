@@ -149,6 +149,13 @@ export class MetaRouterAnalyticsClient {
       maxCooldownMs: 120_000,
       jitterRatio: 0.2,
       halfOpenMaxConcurrent: 1,
+      onStateChange: (prev, next, meta) => {
+        log(
+          `[MetaRouter] Circuit ${prev} → ${next}` +
+            (meta.cooldownMs != null ? ` (cooldown=${meta.cooldownMs}ms)` : ""),
+          { failures: meta.failures, openCount: meta.openCount }
+        );
+      },
     });
   }
 
@@ -253,6 +260,14 @@ export class MetaRouterAnalyticsClient {
     }
   }
 
+  private clearNextTimer() {
+    if (this.nextTimer) {
+      clearTimeout(this.nextTimer);
+      this.nextTimer = null;
+    }
+    this.nextScheduledAt = null;
+  }
+
   private parseRetryAfter(h: string | null): number | null {
     if (!h) return null;
     const secs = Number(h);
@@ -277,6 +292,12 @@ export class MetaRouterAnalyticsClient {
    */
   private handleAppStateChange = (nextState: AppStateStatus) => {
     if (this.appState === "active" && nextState.match(/inactive|background/)) {
+      this.flush(); // try to get events out
+      this.stopFlushLoop(); // pause periodic loop
+      this.clearNextTimer(); // cancel probe timer
+    }
+    if (nextState === "active" && this.lifecycle === "ready") {
+      this.startFlushLoop(); // resume periodic loop
       this.flush();
     }
     this.appState = nextState;
@@ -386,8 +407,7 @@ export class MetaRouterAnalyticsClient {
       proxy: false,
       flushInFlight: !!this.flushInFlight,
       circuitState: state,
-      circuitRemainingMs:
-        state === "OPEN" ? this.circuit.remainingCooldownMs() : 0,
+      circuitRemainingMs: this.circuit.remainingCooldownMs(),
       maxQueueEvents: this.maxQueueEvents,
     };
   }
@@ -412,10 +432,9 @@ export class MetaRouterAnalyticsClient {
       // will be included in this same flush cycle.
       while (this.queue.length) {
         if (!this.circuit.allowRequest()) {
+          const state = this.circuit.getState();
           const wait = this.circuit.remainingCooldownMs();
-          log(
-            `[MetaRouter] Circuit ${this.circuit.getState()} — skip; wait ${wait}ms`
-          );
+          log(`[MetaRouter] Circuit ${state} — skip; wait ${wait}ms`);
           this.scheduleFlushIn(wait);
           return;
         }
@@ -482,17 +501,17 @@ export class MetaRouterAnalyticsClient {
 
             // Fatal config
             if (s === 401 || s === 403 || s === 404) {
-              this.circuit.onSuccess(); // cluster reachable
               error(`Fatal config error ${s}. Disabling client.`);
               this.lifecycle = "disabled";
               this.queue = [];
+              this.clearNextTimer();
               this.stopFlushLoop();
               return;
             }
 
             // Too large: shrink batch and retry later
             if (s === 413) {
-              this.circuit.onSuccess(); // reachable
+              this.circuit.onNonRetryable();
               if (this.maxBatchSize > 1) {
                 this.maxBatchSize = Math.max(
                   1,
@@ -513,7 +532,7 @@ export class MetaRouterAnalyticsClient {
               return;
             }
             // Other 4xx: drop bad payload
-            this.circuit.onSuccess(); // reachable; don't accumulate failures
+            this.circuit.onNonRetryable();
             warn(`Dropping batch due to client error ${s}`);
             continue;
           }
@@ -580,6 +599,7 @@ export class MetaRouterAnalyticsClient {
 
     // Back to idle: explicit init required
     this.lifecycle = "idle";
+    this.clearNextTimer();
 
     log("Analytics client reset complete");
   }
