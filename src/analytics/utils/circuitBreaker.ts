@@ -131,6 +131,9 @@ export default class CircuitBreaker {
 
   /** Current state (normalized view: OPEN auto-shows HALF_OPEN after cooldown) */
   getState(): CircuitState {
+    // Report HALF_OPEN if cooldown has elapsed,
+    // but do not mutate state here — halfOpenInFlight
+    // is reset when allowRequest() actually admits a probe.
     if (this.state === "OPEN" && this.now() >= this.openUntil) {
       return "HALF_OPEN";
     }

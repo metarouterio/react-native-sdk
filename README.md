@@ -147,7 +147,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - Buffer is **in-memory only** (not persisted). Calls made before ready are lost if the process exits.
 - Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
 - On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
-- `sentAt` is stamped when the event enters the internal queue; pass your own `timestamp` property if you need occurrence time.
+- `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
 
 ### Analytics Interface
 
@@ -261,6 +261,11 @@ sentAt semantics: sentAt is stamped when the event is enqueued. If the client is
 
 **Defaults:** `failureThreshold=3`, `cooldownMs=10s`, `maxCooldownMs=120s`, `jitter=±20%`, `halfOpenMaxConcurrent=1`.
 
+**Identifiers:**
+
+- `anonymousId` is a stable, persisted UUID for the device/user before identify; it does **not** include timestamps.
+- `messageId` is generated as `<epochMillis>-<uuid>` (e.g., `1734691572843-6f0c7e85-...`) to aid debugging.
+
 ## License
 
 MIT
@@ -271,4 +276,4 @@ MIT
 
 This library includes code from the following third-party packages:
 
-- [uuid](https://github.com/uuidjs/uuid), MIT License
+- [react-native-uuid](https://github.com/eugenehp/react-native-uuid), MIT License
