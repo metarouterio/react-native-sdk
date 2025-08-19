@@ -3,7 +3,7 @@ import {
   EventContext,
   EventWithIdentity,
 } from "../types";
-import { v4 as uuidv4 } from "uuid";
+import uuid from "react-native-uuid";
 
 /**
  * Enriches an analytics event with additional metadata required for ingestion.
@@ -25,7 +25,7 @@ export function enrichEvent(
   const enriched = {
     ...event,
     writeKey,
-    messageId: uuidv4(),
+    messageId: uuid.v4(),
     context,
   };
 

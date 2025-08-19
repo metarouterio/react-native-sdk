@@ -1,5 +1,5 @@
 import { log, warn } from "./utils/logger";
-import { v4 as uuidv4 } from "uuid";
+import uuid from "react-native-uuid";
 import { EventPayload, EventWithIdentity } from "./types";
 import {
   USER_ID_KEY,
@@ -9,6 +9,7 @@ import {
   setIdentityField,
   removeIdentityField,
 } from "./utils/identityStorage";
+import { v4 } from "react-native-uuid/dist/v4";
 
 /**
  * Manages user, group, and anonymous identity for analytics events.
@@ -30,7 +31,7 @@ export class IdentityManager {
     try {
       const storedAnonId = await getIdentityField(ANONYMOUS_ID_KEY);
       if (!storedAnonId) {
-        const newId = uuidv4();
+        const newId = uuid.v4();
         await setIdentityField(ANONYMOUS_ID_KEY, newId);
         this.anonymousId = newId;
         log("Generated and stored new anonymous ID:", newId);
