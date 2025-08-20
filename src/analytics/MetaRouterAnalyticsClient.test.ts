@@ -1,5 +1,3 @@
-import * as retryMod from "./utils/retry";
-
 import { MetaRouterAnalyticsClient } from "./MetaRouterAnalyticsClient";
 import type { InitOptions } from "./types";
 import { AppState } from "react-native";
@@ -128,27 +126,36 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["queue"]).toHaveLength(0);
   });
 
-  it("re-queues events on flush failure", async () => {
-    jest
-      .spyOn(retryMod, "retryWithBackoff")
-      .mockImplementationOnce(async (fn: any) => {
-        await fn();
-        throw new Error("fail");
-      });
-
+  it("re-queues events and schedules retry on 5xx", async () => {
+    // fetch returns 500 with no Retry-After
     (global as any).fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 500,
       statusText: "err",
+      headers: { get: () => null },
     });
 
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
-    client.track("Event Retry");
-    await expect(client.flush()).rejects.toBeTruthy();
-    expect(client["queue"]).toHaveLength(1);
 
-    expect(client["queue"]).toHaveLength(1);
+    // enqueue one event
+    client.track("Event Retry");
+    const firstId = (client as any).queue[0].messageId;
+
+    // spy on the private scheduler (runtime-available even if TS-private)
+    const scheduleSpy = jest.spyOn<any, any>(client as any, "scheduleFlushIn");
+
+    // NEW contract: flush resolves; it does not throw on retryable failures
+    await client.flush();
+
+    // chunk should have been drained then requeued -> length still 1, same messageId
+    expect((client as any).queue).toHaveLength(1);
+    expect((client as any).queue[0].messageId).toBe(firstId);
+
+    // ensure a retry was scheduled; after 1 failure (threshold=3) it should be >= 1000ms
+    expect(scheduleSpy).toHaveBeenCalled();
+    const [delay] = scheduleSpy.mock.calls[0];
+    expect(delay).toBeGreaterThanOrEqual(1000);
   });
 
   it("cleans up interval and queue", () => {
@@ -336,5 +343,44 @@ describe("MetaRouterAnalyticsClient", () => {
     ).toThrow(
       "MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash."
     );
+  });
+
+  it("enforces maxQueueEvents by dropping oldest and preserves order", async () => {
+    // Use a small cap so we don't trigger the 20-item auto-flush
+    const client = new MetaRouterAnalyticsClient({
+      ...opts,
+      flushIntervalSeconds: 3600, // keep background loop quiet
+      maxQueueEvents: 10,
+    });
+
+    await client.init();
+
+    // Belt & suspenders: if enqueue hits 20 somewhere else, do not actually flush
+    jest.spyOn(client as any, "flush").mockResolvedValue(undefined);
+
+    // Seed one and capture its id so we can prove it gets dropped
+    client.track("seed0");
+    const firstId = (client as any).queue[0].messageId;
+
+    // Add 15 more => total attempted = 16, cap = 10 => drop 6 oldest
+    for (let i = 1; i <= 15; i++) {
+      client.track(`e${i}`);
+    }
+
+    // Queue should be capped
+    expect((client as any).queue.length).toBe(10);
+
+    // The very first event should have been dropped
+    expect(
+      (client as any).queue.find((e: any) => e.messageId === firstId)
+    ).toBeUndefined();
+
+    // Ordering should be preserved for the tail: remaining should be e6..e15
+    const names = (client as any).queue.map((e: any) => e.event);
+    expect(names[0]).toBe("e6");
+    expect(names[names.length - 1]).toBe("e15");
+
+    // No network calls needed for this test
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
