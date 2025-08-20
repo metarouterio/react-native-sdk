@@ -1,5 +1,3 @@
-import "react-native-get-random-values";
-
 export { createAnalyticsClient } from "./analytics/init";
 
 export { MetaRouterProvider } from "./react/context";
