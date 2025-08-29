@@ -74,7 +74,7 @@ export interface EventContext {
     width: number;
     height: number;
   };
-  network: {
+  network?: {
     wifi: boolean;
   };
   locale: string;
