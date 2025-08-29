@@ -48,9 +48,6 @@ describe("getContextInfo", () => {
         version: "1.2.3",
       },
       locale: expect.stringMatching(/^[a-z]{2}-[A-Z]{2}$/),
-      network: {
-        wifi: true,
-      },
       os: {
         name: "iOS",
         version: "17.0",
