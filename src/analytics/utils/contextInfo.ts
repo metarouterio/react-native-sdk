@@ -1,4 +1,4 @@
-import { Dimensions, PixelRatio } from "react-native";
+import { Dimensions, PixelRatio, Platform } from "react-native";
 
 import { getTimeZone } from "./timezone";
 import pkg from "../../../package.json";
@@ -66,9 +66,13 @@ export async function getContextInfo(): Promise<EventContext> {
       height: Math.round(height),
       density,
     },
-    network: {
-      wifi: (await DeviceInfo?.isWifiEnabled?.()) ?? false,
-    },
+    ...(Platform.OS === "android"
+      ? {
+          network: {
+            wifi: (await DeviceInfo?.isWifiEnabled?.()) ?? false,
+          },
+        }
+      : {}),
   };
 
   return cachedContext;
