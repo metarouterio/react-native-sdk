@@ -17,7 +17,7 @@ export class MetaRouterAnalyticsClient {
   private lifecycle: Lifecycle = "idle";
   private initPromise: Promise<void> | null = null;
   private queue: EventPayload[] = [];
-  private flushIntervalMs = 10000;
+  private flushIntervalSeconds = 10;
   private flushTimer: NodeJS.Timeout | null = null;
   private ingestionHost: string;
   private writeKey: string;
@@ -66,9 +66,7 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
-    this.flushIntervalMs = flushIntervalSeconds
-      ? flushIntervalSeconds * 1000
-      : 10000;
+    this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
@@ -107,7 +105,11 @@ export class MetaRouterAnalyticsClient {
         log("IdentityManager initialized successfully");
 
         this.startFlushLoop();
-        log("Flush loop started with interval:", this.flushIntervalMs, "ms");
+        log(
+          "Flush loop started with interval:",
+          this.flushIntervalSeconds,
+          "seconds"
+        );
 
         this.setupAppStateListener();
         log("App state listener setup completed");
@@ -135,7 +137,10 @@ export class MetaRouterAnalyticsClient {
    */
   private startFlushLoop() {
     if (this.flushTimer) clearInterval(this.flushTimer);
-    this.flushTimer = setInterval(() => this.flush(), this.flushIntervalMs);
+    this.flushTimer = setInterval(
+      () => this.flush(),
+      this.flushIntervalSeconds * 1000
+    );
   }
 
   private isReady(): boolean {
@@ -400,7 +405,7 @@ export class MetaRouterAnalyticsClient {
       queueLength: this.queue.length,
       ingestionHost: this.ingestionHost,
       writeKey: this.writeKey ? "***" + this.writeKey.slice(-4) : undefined,
-      flushIntervalMs: this.flushIntervalMs,
+      flushIntervalSeconds: this.flushIntervalSeconds,
       anonymousId: this.identityManager.getAnonymousId(),
       userId: this.identityManager.getUserId(),
       groupId: this.identityManager.getGroupId(),
