@@ -383,4 +383,74 @@ describe("MetaRouterAnalyticsClient", () => {
     // No network calls needed for this test
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("accepts track with empty payload", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    client.track("Event Without Props");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0]).toMatchObject({
+      type: "track",
+      event: "Event Without Props",
+    });
+    expect(client["queue"][0].properties).toBeUndefined();
+  });
+
+  it("accepts screen with empty payload", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    client.screen("Home");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0]).toMatchObject({
+      type: "screen",
+      event: "Home",
+    });
+    expect(client["queue"][0].properties).toBeUndefined();
+  });
+
+  it("accepts page with empty payload", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    client.page("Settings");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0]).toMatchObject({
+      type: "page",
+      event: "Settings",
+    });
+    expect(client["queue"][0].properties).toBeUndefined();
+  });
+
+  it("accepts identify with empty traits", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    client.identify("user-empty-traits");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0]).toMatchObject({
+      type: "identify",
+      userId: "user-empty-traits",
+    });
+    expect(client["queue"][0].traits).toBeUndefined();
+  });
+
+  it("accepts group with empty traits", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    client.group("group-empty-traits");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0]).toMatchObject({
+      type: "group",
+      groupId: "group-empty-traits",
+    });
+    expect(client["queue"][0].traits).toBeUndefined();
+  });
 });
