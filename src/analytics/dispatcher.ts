@@ -118,7 +118,11 @@ export default class Dispatcher {
 
   private drainBatch(): EventPayload[] {
     const n = Math.min(this.queue.length, this.maxBatchSize);
-    const batch = this.queue.splice(0, n);
+    const nowIso = new Date().toISOString();
+    const batch = this.queue.splice(0, n).map((e) => ({
+      ...(e as any),
+      sentAt: nowIso,
+    }));
     return batch;
   }
 
