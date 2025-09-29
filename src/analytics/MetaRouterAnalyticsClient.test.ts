@@ -261,7 +261,7 @@ describe("MetaRouterAnalyticsClient", () => {
 
     await client.init();
 
-    // Belt & suspenders: ensure dispatcher won't auto-flush in this test
+    // Ensure dispatcher won't auto-flush in this test
     jest.spyOn(client as any, "flush").mockResolvedValue(undefined);
     // Also raise the dispatcher's threshold defensively (private access at runtime)
     (client as any).dispatcher &&
