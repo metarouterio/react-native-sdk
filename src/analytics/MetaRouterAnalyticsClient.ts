@@ -26,14 +26,8 @@ export class MetaRouterAnalyticsClient {
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
   private static readonly MAX_QUEUE_SIZE = 20;
-  private flushInFlight: Promise<void> | null = null;
-  private maxBatchSize = 100;
-  private circuit!: CircuitBreaker;
-  private nextTimer: NodeJS.Timeout | null = null;
-  private nextScheduledAt: number | null = null;
-  private maxQueueEvents: number;
+  private maxQueueEvents: number = 2000;
   private dispatcher!: Dispatcher;
-  private flushTimer: NodeJS.Timeout | null = null;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -68,15 +62,11 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
-    this.flushIntervalSeconds = flushIntervalSeconds
-      ? flushIntervalSeconds
-      : 10;
+    this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.circuit = this.makeBreaker();
-    this.maxQueueEvents = options.maxQueueEvents ?? 2000;
-
+    this.maxQueueEvents = options.maxQueueEvents ?? this.maxQueueEvents;
     this.dispatcher = new Dispatcher({
       maxQueueEvents: this.maxQueueEvents,
       autoFlushThreshold: MetaRouterAnalyticsClient.MAX_QUEUE_SIZE,
@@ -153,7 +143,7 @@ export class MetaRouterAnalyticsClient {
         log(
           "Flush loop started with interval:",
           this.flushIntervalSeconds,
-          "s"
+          "seconds"
         );
 
         this.setupAppStateListener();
@@ -186,23 +176,6 @@ export class MetaRouterAnalyticsClient {
 
   private isReady(): boolean {
     return this.lifecycle === "ready";
-  }
-
-  private makeBreaker() {
-    return new CircuitBreaker({
-      failureThreshold: 3,
-      cooldownMs: 10_000,
-      maxCooldownMs: 120_000,
-      jitterRatio: 0.2,
-      halfOpenMaxConcurrent: 1,
-      onStateChange: (prev, next, meta) => {
-        log(
-          `[MetaRouter] Circuit ${prev} → ${next}` +
-            (meta.cooldownMs != null ? ` (cooldown=${meta.cooldownMs}ms)` : ""),
-          { failures: meta.failures, openCount: meta.openCount }
-        );
-      },
-    });
   }
 
   /**
@@ -255,10 +228,6 @@ export class MetaRouterAnalyticsClient {
     this.dispatcher.enqueue(enrichedEvent);
   }
 
-  private drainBatch(): EventPayload[] {
-    return [];
-  }
-
   private scheduleFlushIn(ms: number, opts?: { fromDispatcher?: boolean }) {
     if (opts?.fromDispatcher) return;
     this.dispatcher.scheduleFlushIn(ms);
@@ -270,14 +239,6 @@ export class MetaRouterAnalyticsClient {
 
   private clearNextTimer() {
     // Timers owned by dispatcher
-  }
-
-  private parseRetryAfter(h: string | null): number | null {
-    if (!h) return null;
-    const secs = Number(h);
-    if (!Number.isNaN(secs)) return secs * 1000;
-    const dateMs = Date.parse(h);
-    return Number.isNaN(dateMs) ? null : Math.max(0, dateMs - Date.now());
   }
 
   /**
