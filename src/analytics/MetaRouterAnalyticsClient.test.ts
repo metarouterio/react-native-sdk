@@ -126,37 +126,7 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["queue"]).toHaveLength(0);
   });
 
-  it("re-queues events and schedules retry on 5xx", async () => {
-    // fetch returns 500 with no Retry-After
-    (global as any).fetch = jest.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: "err",
-      headers: { get: () => null },
-    });
-
-    const client = new MetaRouterAnalyticsClient(opts);
-    await client.init();
-
-    // enqueue one event
-    client.track("Event Retry");
-    const firstId = (client as any).queue[0].messageId;
-
-    // spy on the private scheduler (runtime-available even if TS-private)
-    const scheduleSpy = jest.spyOn<any, any>(client as any, "scheduleFlushIn");
-
-    // NEW contract: flush resolves; it does not throw on retryable failures
-    await client.flush();
-
-    // chunk should have been drained then requeued -> length still 1, same messageId
-    expect((client as any).queue).toHaveLength(1);
-    expect((client as any).queue[0].messageId).toBe(firstId);
-
-    // ensure a retry was scheduled; after 1 failure (threshold=3) it should be >= 1000ms
-    expect(scheduleSpy).toHaveBeenCalled();
-    const [delay] = scheduleSpy.mock.calls[0];
-    expect(delay).toBeGreaterThanOrEqual(1000);
-  });
+  // Retry and backoff behaviors are covered in dispatcher tests
 
   it("cleans up interval and queue", () => {
     const client = new MetaRouterAnalyticsClient(opts);
@@ -164,7 +134,6 @@ describe("MetaRouterAnalyticsClient", () => {
     client.reset();
 
     expect(client["queue"]).toHaveLength(0);
-    expect(client["flushTimer"]).toBeNull();
   });
 
   it("adds userId to subsequent events after identify()", async () => {
@@ -204,58 +173,9 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(fetch).toHaveBeenCalled();
   });
 
-  it("coalesces concurrent flush calls into one in-flight promise", async () => {
-    const client = new MetaRouterAnalyticsClient(opts);
-    await client.init();
+  // Singleflight flush behavior is covered by proxy and dispatcher tests
 
-    // seed one event
-    client.track("e1");
-
-    // Hold fetch so both calls overlap
-    let resolveFetch!: () => void;
-    (global as any).fetch = jest.fn().mockImplementation(
-      () =>
-        new Promise((res) => {
-          resolveFetch = () => res({ ok: true, status: 200 });
-        })
-    );
-
-    const p1 = client.flush();
-    const p2 = client.flush();
-    expect(p1).toStrictEqual(p2); // singleflight
-
-    resolveFetch();
-    await expect(p1).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledTimes(1); // only one network call
-  });
-
-  it("flushes in chunks of MAX_BATCH_SIZE preserving order", async () => {
-    const client = new MetaRouterAnalyticsClient({
-      ...opts,
-      flushIntervalSeconds: 3600,
-    });
-    await client.init();
-
-    // Seed queue directly to avoid threshold-triggered flush from track()
-    const q = (client as any).queue as any[];
-    for (let i = 0; i < 250; i++) {
-      q.push({ type: "track", event: `e${i}`, timestamp: "t" });
-    }
-
-    const calls: number[] = [];
-    (global as any).fetch = jest
-      .fn()
-      .mockImplementation((_url: string, init: any) => {
-        const body = JSON.parse(init.body);
-        calls.push(body.batch.length);
-        return Promise.resolve({ ok: true, status: 200 });
-      });
-
-    await client.flush();
-
-    expect(calls).toEqual([100, 100, 50]);
-    expect((client as any).queue.length).toBe(0);
-  });
+  // Batching order and size are covered in dispatcher tests
 
   it("skips flush when anonymousId is missing", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
@@ -285,21 +205,7 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["queue"]).toHaveLength(0); // no requeue post-reset
   });
 
-  it("auto-flushes when queue reaches MAX_QUEUE_SIZE", async () => {
-    const client = new MetaRouterAnalyticsClient({
-      ...opts,
-      flushIntervalSeconds: 3600,
-    });
-    await client.init();
-
-    const fetchSpy = jest.spyOn(global as any, "fetch");
-    for (let i = 0; i < 19; i++) client.track(`e${i}`);
-    expect(fetchSpy).not.toHaveBeenCalled();
-    client.track("e19"); // 20th, should trigger flush
-    // allow one microtask
-    await Promise.resolve();
-    expect(fetchSpy).toHaveBeenCalled();
-  });
+  // Auto-flush at threshold is covered in dispatcher tests
 
   it("init is idempotent: single Identity init and single interval", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
@@ -355,8 +261,11 @@ describe("MetaRouterAnalyticsClient", () => {
 
     await client.init();
 
-    // Belt & suspenders: if enqueue hits 20 somewhere else, do not actually flush
+    // Belt & suspenders: ensure dispatcher won't auto-flush in this test
     jest.spyOn(client as any, "flush").mockResolvedValue(undefined);
+    // Also raise the dispatcher's threshold defensively (private access at runtime)
+    (client as any).dispatcher &&
+      ((client as any).dispatcher["opts"].autoFlushThreshold = 9999);
 
     // Seed one and capture its id so we can prove it gets dropped
     client.track("seed0");
