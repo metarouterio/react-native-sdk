@@ -126,6 +126,7 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["queue"]).toHaveLength(0);
   });
 
+<<<<<<< Updated upstream
   it("re-queues events and schedules retry on 5xx", async () => {
     // fetch returns 500 with no Retry-After
     (global as any).fetch = jest.fn().mockResolvedValue({
@@ -158,6 +159,8 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(delay).toBeGreaterThanOrEqual(1000);
   });
 
+=======
+>>>>>>> Stashed changes
   it("cleans up interval and queue", () => {
     const client = new MetaRouterAnalyticsClient(opts);
     client.track("Will be removed");
@@ -204,6 +207,7 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(fetch).toHaveBeenCalled();
   });
 
+<<<<<<< Updated upstream
   it("coalesces concurrent flush calls into one in-flight promise", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
@@ -257,6 +261,8 @@ describe("MetaRouterAnalyticsClient", () => {
     expect((client as any).queue.length).toBe(0);
   });
 
+=======
+>>>>>>> Stashed changes
   it("skips flush when anonymousId is missing", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
@@ -285,6 +291,7 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(client["queue"]).toHaveLength(0); // no requeue post-reset
   });
 
+<<<<<<< Updated upstream
   it("auto-flushes when queue reaches MAX_QUEUE_SIZE", async () => {
     const client = new MetaRouterAnalyticsClient({
       ...opts,
@@ -301,6 +308,8 @@ describe("MetaRouterAnalyticsClient", () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
+=======
+>>>>>>> Stashed changes
   it("init is idempotent: single Identity init and single interval", async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     const initSpy = jest
@@ -355,7 +364,11 @@ describe("MetaRouterAnalyticsClient", () => {
 
     await client.init();
 
+<<<<<<< Updated upstream
     // Belt & suspenders: if enqueue hits 20 somewhere else, do not actually flush
+=======
+    // Ensure dispatcher won't auto-flush in this test
+>>>>>>> Stashed changes
     jest.spyOn(client as any, "flush").mockResolvedValue(undefined);
 
     // Seed one and capture its id so we can prove it gets dropped
