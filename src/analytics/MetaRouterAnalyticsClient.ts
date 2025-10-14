@@ -371,11 +371,36 @@ export class MetaRouterAnalyticsClient {
       return;
     }
 
+    if (!advertisingId || typeof advertisingId !== 'string' || advertisingId.trim() === '') {
+      warn("Invalid advertising ID provided. Must be a non-empty string.");
+      return;
+    }
+
     log("Setting advertising ID");
     await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
     clearContextCache();
     this.context = await getContextInfo(advertisingId);
     log("Advertising ID updated, persisted, and context refreshed");
+  }
+
+  /**
+   * Clears the advertising identifier from storage and context.
+   * Use this method when users opt out of ad tracking or revoke consent.
+   *
+   * This is useful for GDPR/CCPA compliance when users want to stop sharing
+   * their advertising ID without performing a full analytics reset.
+   */
+  async clearAdvertisingId() {
+    if (!this.isReady()) {
+      warn("Analytics client is not ready. Call init() before clearAdvertisingId()");
+      return;
+    }
+
+    log("Clearing advertising ID");
+    await removeIdentityField(ADVERTISING_ID_KEY);
+    clearContextCache();
+    this.context = await getContextInfo();
+    log("Advertising ID cleared from storage and context");
   }
 
   /**

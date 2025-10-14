@@ -43,6 +43,7 @@ export interface AnalyticsInterface {
   page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
   setAdvertisingId: (advertisingId: string) => Promise<void>;
+  clearAdvertisingId: () => Promise<void>;
   flush: () => Promise<void>;
   reset: () => Promise<void>;
   enableDebugLogging: () => void;
