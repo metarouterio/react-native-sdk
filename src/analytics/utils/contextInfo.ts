@@ -15,6 +15,14 @@ try {
 }
 
 /**
+ * Clears the cached context information, forcing a refresh on the next getContextInfo call.
+ */
+export function clearContextCache(): void {
+  cachedContext = null;
+  cachedAdvertisingId = undefined;
+}
+
+/**
  * Gathers and caches device, app, and environment context information for analytics events.
  *
  * - Collects details such as app name/version, device model/type, OS, screen size, locale, timezone, and network status.
