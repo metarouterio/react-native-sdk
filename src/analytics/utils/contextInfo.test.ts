@@ -12,6 +12,10 @@ describe("getContextInfo", () => {
     jest.clearAllMocks();
   });
 
+  afterEach(() => {
+    jest.resetModules();
+  });
+
   it("returns context info with DeviceInfo present", async () => {
     // Mock DeviceInfo module
     jest.doMock("react-native-device-info", () => ({
