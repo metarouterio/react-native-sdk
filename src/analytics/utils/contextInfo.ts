@@ -34,6 +34,7 @@ export function clearContextCache(): void {
  * @returns {Promise<EventContext>} A promise that resolves to the context information object.
  */
 export async function getContextInfo(advertisingId?: string): Promise<EventContext> {
+  // Return cached context only if it exists AND the advertising ID hasn't changed
   if (cachedContext && cachedAdvertisingId === advertisingId) return cachedContext;
 
   let locale = "en-US";

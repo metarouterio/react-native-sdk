@@ -313,6 +313,8 @@ Once set, the `advertisingId` will be automatically included in the device conte
 
 ### iOS Example (with ATT)
 
+> **Note:** The examples below use third-party libraries for demonstration purposes. You should choose appropriate packages that fit your project's needs and are actively maintained.
+
 ```js
 import { AppTrackingTransparency } from 'react-native-tracking-transparency';
 import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library

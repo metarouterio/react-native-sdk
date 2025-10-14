@@ -147,8 +147,8 @@ export const proxyClient: AnalyticsInterface = {
   screen: (name, props) => handleMethodCall("screen", name, props),
   page: (name, props) => handleMethodCall("page", name, props),
   alias: (newUserId) => handleMethodCall("alias", newUserId),
-  setAdvertisingId: (advertisingId) => handleMethodCall("setAdvertisingId", advertisingId),
-  clearAdvertisingId: () => handleMethodCall("clearAdvertisingId"),
+  setAdvertisingId: (advertisingId) => handleMethodCall("setAdvertisingId", advertisingId) as Promise<void>,
+  clearAdvertisingId: () => handleMethodCall("clearAdvertisingId") as Promise<void>,
 
   flush: () => handleMethodCall("flush"),
   reset: () => handleMethodCall("reset"),
