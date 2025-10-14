@@ -158,8 +158,10 @@ The analytics client provides the following methods:
 - `group(groupId: string, traits?: Record<string, any>)`: Group users
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `alias(newUserId: string)`: Alias user IDs
+- `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
+- `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `flush()`: Flush events immediately
-- `reset()`: Reset analytics state and clear all stored data
+- `reset()`: Reset analytics state and clear all stored data (includes clearing advertising ID)
 - `enableDebugLogging()`: Enable debug logging
 - `getDebugInfo()`: Get current debug information
 
@@ -265,6 +267,113 @@ sentAt semantics: sentAt is stamped when the event is enqueued. If the client is
 
 - `anonymousId` is a stable, persisted UUID for the device/user before identify; it does **not** include timestamps.
 - `messageId` is generated as `<epochMillis>-<uuid>` (e.g., `1734691572843-6f0c7e85-...`) to aid debugging.
+
+## Advertising ID (IDFA/GAID)
+
+The SDK supports including advertising identifiers (IDFA on iOS, GAID on Android) in event context for ad tracking and attribution purposes.
+
+### Usage
+
+Use the `setAdvertisingId()` method to set the advertising identifier after initializing the analytics client:
+
+```js
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+});
+
+// Set advertising ID after initialization
+await analytics.setAdvertisingId("your-advertising-id"); // IDFA on iOS, GAID on Android
+```
+
+Once set, the `advertisingId` will be automatically included in the device context of all subsequent events:
+
+```json
+{
+  "context": {
+    "device": {
+      "advertisingId": "your-advertising-id",
+      "manufacturer": "Apple",
+      "model": "iPhone 14",
+      ...
+    }
+  }
+}
+```
+
+### Privacy & Compliance
+
+⚠️ **Important**: Advertising identifiers are Personally Identifiable Information (PII). Before collecting advertising IDs, you must:
+
+1. **Obtain User Consent**: Request explicit permission from users before tracking
+2. **Comply with Regulations**: Follow GDPR, CCPA, and other applicable privacy laws
+3. **App Store Requirements**:
+   - iOS: Follow Apple's [App Tracking Transparency (ATT)](https://developer.apple.com/documentation/apptrackingtransparency) framework
+   - Android: Follow Google Play's [advertising ID policies](https://support.google.com/googleplay/android-developer/answer/6048248)
+
+### iOS Example (with ATT)
+
+> **Note:** The examples below use third-party libraries for demonstration purposes. You should choose appropriate packages that fit your project's needs and are actively maintained.
+
+```js
+import { AppTrackingTransparency } from 'react-native-tracking-transparency';
+import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+
+// Initialize analytics first
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+});
+
+// Request tracking permission
+const trackingStatus = await AppTrackingTransparency.requestTrackingAuthorization();
+
+if (trackingStatus === 'authorized') {
+  // Get and set IDFA only if authorized
+  const advertisingId = await getAdvertisingId();
+  await analytics.setAdvertisingId(advertisingId);
+}
+```
+
+### Android Example
+
+```js
+import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+
+// Initialize analytics first
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+});
+
+// Check if user has opted out of personalized ads
+const { advertisingId, isLimitAdTrackingEnabled } = await getAdvertisingId();
+
+if (!isLimitAdTrackingEnabled && advertisingId) {
+  await analytics.setAdvertisingId(advertisingId);
+}
+```
+
+### Clearing Advertising ID
+
+When users opt out of ad tracking or revoke consent, use `clearAdvertisingId()` to remove the advertising ID from storage and context:
+
+```js
+// User opts out of ad tracking
+await analytics.clearAdvertisingId();
+
+// All subsequent events will not include advertisingId in context
+analytics.track("Event After Opt Out");
+```
+
+**Note:** The `reset()` method also clears the advertising ID along with all other analytics data.
+
+### Validation
+
+The SDK validates advertising IDs before setting them:
+- Must be a non-empty string
+- Cannot be only whitespace
+- Invalid values are rejected and logged as warnings
 
 ## License
 

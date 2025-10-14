@@ -5,12 +5,21 @@ import pkg from "../../../package.json";
 import { EventContext } from "../types";
 
 let cachedContext: EventContext | null = null;
+let cachedAdvertisingId: string | undefined = undefined;
 let DeviceInfo: any = null;
 
 try {
   DeviceInfo = require("react-native-device-info");
 } catch {
   DeviceInfo = null;
+}
+
+/**
+ * Clears the cached context information, forcing a refresh on the next getContextInfo call.
+ */
+export function clearContextCache(): void {
+  cachedContext = null;
+  cachedAdvertisingId = undefined;
 }
 
 /**
@@ -21,10 +30,12 @@ try {
  * - Caches the result for the lifetime of the app to avoid redundant async calls.
  * - Returns a context object suitable for event enrichment.
  *
+ * @param advertisingId - Optional advertising identifier (IDFA on iOS, GAID on Android) for ad tracking and attribution.
  * @returns {Promise<EventContext>} A promise that resolves to the context information object.
  */
-export async function getContextInfo(): Promise<EventContext> {
-  if (cachedContext) return cachedContext;
+export async function getContextInfo(advertisingId?: string): Promise<EventContext> {
+  // Return cached context only if it exists AND the advertising ID hasn't changed
+  if (cachedContext && cachedAdvertisingId === advertisingId) return cachedContext;
 
   let locale = "en-US";
   if (
@@ -50,6 +61,7 @@ export async function getContextInfo(): Promise<EventContext> {
       model: DeviceInfo?.getModel?.() ?? "unknown",
       name: (await DeviceInfo?.getDeviceName?.()) ?? "unknown",
       type: DeviceInfo?.getSystemName?.() === "Android" ? "android" : "ios",
+      ...(advertisingId ? { advertisingId } : {}),
     },
     os: {
       name: DeviceInfo?.getSystemName?.() ?? "unknown",
@@ -74,6 +86,8 @@ export async function getContextInfo(): Promise<EventContext> {
         }
       : {}),
   };
+
+  cachedAdvertisingId = advertisingId;
 
   return cachedContext;
 }

@@ -19,6 +19,8 @@ export function createAnalyticsClient(
         screen: (name, props) => instance.screen(name, props),
         page: (name, props) => instance.page(name, props),
         alias: (newUserId) => instance.alias(newUserId),
+        setAdvertisingId: (advertisingId) => instance.setAdvertisingId(advertisingId),
+        clearAdvertisingId: () => instance.clearAdvertisingId(),
         enableDebugLogging: () => instance.enableDebugLogging(),
         getDebugInfo: () => instance.getDebugInfo(),
         flush: () => instance.flush(),

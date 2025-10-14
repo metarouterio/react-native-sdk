@@ -14,6 +14,7 @@ jest.mock("./utils/identityStorage", () => ({
   ANONYMOUS_ID_KEY: "metarouter:anonymous_id",
   USER_ID_KEY: "metarouter:user_id",
   GROUP_ID_KEY: "metarouter:group_id",
+  ADVERTISING_ID_KEY: "metarouter:advertising_id",
 }));
 
 const opts: InitOptions = {
@@ -361,5 +362,235 @@ describe("MetaRouterAnalyticsClient", () => {
       groupId: "group-empty-traits",
     });
     expect(client["queue"][0].traits).toBeUndefined();
+  });
+
+  it("excludes advertisingId from event context when not set", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client.track("Test Event Without AdvertisingId");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("includes advertisingId in event context after setAdvertisingId is called", async () => {
+    const advertisingId = "IDFA-12345-67890-ABCDEF";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    await client.setAdvertisingId(advertisingId);
+    client.track("Test Event With AdvertisingId");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0].context.device.advertisingId).toBe(advertisingId);
+  });
+
+  it("includes advertisingId in all event types after setAdvertisingId is called", async () => {
+    const advertisingId = "GAID-98765-43210-FEDCBA";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    await client.setAdvertisingId(advertisingId);
+
+    client.track("Track Event");
+    client.identify("user-123");
+    client.screen("Screen Name");
+    client.page("Page Name");
+    client.group("group-123");
+    client.alias("new-user-123");
+
+    expect(client["queue"]).toHaveLength(6);
+    client["queue"].forEach((event) => {
+      expect(event.context.device.advertisingId).toBe(advertisingId);
+    });
+  });
+
+  it("does not set advertisingId if client is not ready", async () => {
+    const advertisingId = "IDFA-BEFORE-READY";
+    const client = new MetaRouterAnalyticsClient(opts);
+
+    // Don't call init() - client is not ready
+    await client.setAdvertisingId(advertisingId);
+
+    // Now init and track
+    await client.init();
+    client.track("Test Event");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("updates advertisingId when setAdvertisingId is called multiple times", async () => {
+    const firstAdId = "IDFA-FIRST";
+    const secondAdId = "IDFA-SECOND";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    // Set first advertising ID
+    await client.setAdvertisingId(firstAdId);
+    client.track("Event 1");
+
+    expect(client["queue"][0].context.device.advertisingId).toBe(firstAdId);
+
+    // Update to second advertising ID
+    await client.setAdvertisingId(secondAdId);
+    client.track("Event 2");
+
+    expect(client["queue"][1].context.device.advertisingId).toBe(secondAdId);
+  });
+
+  it("persists advertisingId to storage when setAdvertisingId is called", async () => {
+    const advertisingId = "IDFA-TO-PERSIST";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.setIdentityField as jest.Mock).mockClear();
+
+    await client.setAdvertisingId(advertisingId);
+
+    expect(identityStorage.setIdentityField).toHaveBeenCalledWith(
+      identityStorage.ADVERTISING_ID_KEY,
+      advertisingId
+    );
+  });
+
+  it("restores advertisingId from storage on init", async () => {
+    const persistedAdId = "IDFA-FROM-STORAGE";
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+      async (key: string) => {
+        if (key === identityStorage.ANONYMOUS_ID_KEY) return "anon-123";
+        if (key === identityStorage.ADVERTISING_ID_KEY) return persistedAdId;
+        return undefined;
+      }
+    );
+
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client.track("Event After Init");
+
+    expect(client["queue"][0].context.device.advertisingId).toBe(persistedAdId);
+  });
+
+  it("clears advertisingId from storage on reset", async () => {
+    const advertisingId = "IDFA-TO-CLEAR";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    await client.setAdvertisingId(advertisingId);
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.removeIdentityField as jest.Mock).mockClear();
+
+    await client.reset();
+
+    expect(identityStorage.removeIdentityField).toHaveBeenCalledWith(
+      identityStorage.ADVERTISING_ID_KEY
+    );
+  });
+
+  it("does not restore advertisingId if none is persisted", async () => {
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+      async (key: string) => {
+        if (key === identityStorage.ANONYMOUS_ID_KEY) return "anon-123";
+        if (key === identityStorage.ADVERTISING_ID_KEY) return null;
+        return undefined;
+      }
+    );
+
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client.track("Event After Init");
+
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("does not set advertisingId when provided an empty string", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.setIdentityField as jest.Mock).mockClear();
+
+    await client.setAdvertisingId("");
+
+    expect(identityStorage.setIdentityField).not.toHaveBeenCalled();
+    client.track("Test Event");
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("does not set advertisingId when provided a whitespace-only string", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.setIdentityField as jest.Mock).mockClear();
+
+    await client.setAdvertisingId("   ");
+
+    expect(identityStorage.setIdentityField).not.toHaveBeenCalled();
+    client.track("Test Event");
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("clears advertisingId from context after clearAdvertisingId is called", async () => {
+    const advertisingId = "IDFA-TO-CLEAR";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    // Set advertising ID first
+    await client.setAdvertisingId(advertisingId);
+    client.track("Event With Ad ID");
+    expect(client["queue"][0].context.device.advertisingId).toBe(advertisingId);
+
+    // Clear it
+    await client.clearAdvertisingId();
+    client.track("Event Without Ad ID");
+
+    expect(client["queue"][1].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("removes advertisingId from storage when clearAdvertisingId is called", async () => {
+    const advertisingId = "IDFA-TO-REMOVE";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    await client.setAdvertisingId(advertisingId);
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.removeIdentityField as jest.Mock).mockClear();
+
+    await client.clearAdvertisingId();
+
+    expect(identityStorage.removeIdentityField).toHaveBeenCalledWith(
+      identityStorage.ADVERTISING_ID_KEY
+    );
+  });
+
+  it("does not clear advertisingId if client is not ready", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.removeIdentityField as jest.Mock).mockClear();
+
+    // Don't call init() - client is not ready
+    await client.clearAdvertisingId();
+
+    expect(identityStorage.removeIdentityField).not.toHaveBeenCalled();
+  });
+
+  it("handles multiple clearAdvertisingId calls gracefully", async () => {
+    const advertisingId = "IDFA-MULTI-CLEAR";
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    await client.setAdvertisingId(advertisingId);
+    await client.clearAdvertisingId();
+    await client.clearAdvertisingId(); // second clear
+
+    client.track("Test Event");
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
   });
 });
