@@ -141,6 +141,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `debug` (boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (number, optional): Interval in seconds to flush events
 - `maxQueueEvents` (number, optional): number of max events stored in memory
+- `advertisingId` (string, optional): Advertising identifier for ad tracking and attribution (IDFA on iOS, GAID on Android). See [Advertising ID](#advertising-id-idfagaid) section below for usage and compliance requirements
 
 **Proxy behavior (quick notes):**
 
@@ -265,6 +266,82 @@ sentAt semantics: sentAt is stamped when the event is enqueued. If the client is
 
 - `anonymousId` is a stable, persisted UUID for the device/user before identify; it does **not** include timestamps.
 - `messageId` is generated as `<epochMillis>-<uuid>` (e.g., `1734691572843-6f0c7e85-...`) to aid debugging.
+
+## Advertising ID (IDFA/GAID)
+
+The SDK supports including advertising identifiers (IDFA on iOS, GAID on Android) in event context for ad tracking and attribution purposes.
+
+### Usage
+
+```js
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+  advertisingId: "your-advertising-id", // IDFA on iOS, GAID on Android
+});
+```
+
+The `advertisingId` will be automatically included in the device context of all events:
+
+```json
+{
+  "context": {
+    "device": {
+      "advertisingId": "your-advertising-id",
+      "manufacturer": "Apple",
+      "model": "iPhone 14",
+      ...
+    }
+  }
+}
+```
+
+### Privacy & Compliance
+
+⚠️ **Important**: Advertising identifiers are Personally Identifiable Information (PII). Before collecting advertising IDs, you must:
+
+1. **Obtain User Consent**: Request explicit permission from users before tracking
+2. **Comply with Regulations**: Follow GDPR, CCPA, and other applicable privacy laws
+3. **App Store Requirements**:
+   - iOS: Follow Apple's [App Tracking Transparency (ATT)](https://developer.apple.com/documentation/apptrackingtransparency) framework
+   - Android: Follow Google Play's [advertising ID policies](https://support.google.com/googleplay/android-developer/answer/6048248)
+
+### iOS Example (with ATT)
+
+```js
+import { AppTrackingTransparency } from 'react-native-tracking-transparency';
+import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+
+// Request tracking permission
+const trackingStatus = await AppTrackingTransparency.requestTrackingAuthorization();
+
+let advertisingId;
+if (trackingStatus === 'authorized') {
+  // Get IDFA only if authorized
+  advertisingId = await getAdvertisingId();
+}
+
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+  advertisingId, // Will be undefined if user didn't authorize
+});
+```
+
+### Android Example
+
+```js
+import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+
+// Check if user has opted out of personalized ads
+const { advertisingId, isLimitAdTrackingEnabled } = await getAdvertisingId();
+
+const analytics = await createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+  advertisingId: isLimitAdTrackingEnabled ? undefined : advertisingId,
+});
+```
 
 ## License
 

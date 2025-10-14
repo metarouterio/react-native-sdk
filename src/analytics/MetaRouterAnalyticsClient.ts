@@ -21,6 +21,7 @@ export class MetaRouterAnalyticsClient {
   private flushIntervalSeconds = 10;
   private ingestionHost: string;
   private writeKey: string;
+  private advertisingId?: string;
   private context!: EventContext;
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
@@ -36,7 +37,7 @@ export class MetaRouterAnalyticsClient {
   constructor(options: InitOptions) {
     log("Initializing analytics client", options);
 
-    const { writeKey, ingestionHost, flushIntervalSeconds } = options;
+    const { writeKey, ingestionHost, flushIntervalSeconds, advertisingId } = options;
 
     if (!writeKey || typeof writeKey !== "string" || writeKey.trim() === "") {
       throw new Error(
@@ -62,6 +63,7 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
+    this.advertisingId = advertisingId;
     this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
 
     setDebugLogging(options.debug ?? false);
@@ -149,7 +151,7 @@ export class MetaRouterAnalyticsClient {
         this.setupAppStateListener();
         log("App state listener setup completed");
 
-        this.context = await getContextInfo();
+        this.context = await getContextInfo(this.advertisingId);
 
         this.lifecycle = "ready";
         log("Analytics client initialization completed successfully");
