@@ -3,7 +3,8 @@ import { AppState, AppStateStatus } from "react-native";
 import { log, setDebugLogging, warn, error } from "./utils/logger";
 import { IdentityManager } from "./IdentityManager";
 import { enrichEvent } from "./utils/enrichEvent";
-import { getContextInfo } from "./utils/contextInfo";
+import { getContextInfo, clearContextCache } from "./utils/contextInfo";
+import { getIdentityField, setIdentityField, removeIdentityField, ADVERTISING_ID_KEY } from "./utils/identityStorage";
 import CircuitBreaker from "./utils/circuitBreaker";
 import Dispatcher from "./dispatcher";
 
@@ -21,7 +22,6 @@ export class MetaRouterAnalyticsClient {
   private flushIntervalSeconds = 10;
   private ingestionHost: string;
   private writeKey: string;
-  private advertisingId?: string;
   private context!: EventContext;
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
@@ -37,7 +37,7 @@ export class MetaRouterAnalyticsClient {
   constructor(options: InitOptions) {
     log("Initializing analytics client", options);
 
-    const { writeKey, ingestionHost, flushIntervalSeconds, advertisingId } = options;
+    const { writeKey, ingestionHost, flushIntervalSeconds } = options;
 
     if (!writeKey || typeof writeKey !== "string" || writeKey.trim() === "") {
       throw new Error(
@@ -63,7 +63,6 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
-    this.advertisingId = advertisingId;
     this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
 
     setDebugLogging(options.debug ?? false);
@@ -151,7 +150,14 @@ export class MetaRouterAnalyticsClient {
         this.setupAppStateListener();
         log("App state listener setup completed");
 
-        this.context = await getContextInfo(this.advertisingId);
+        // Load persisted advertising ID if available
+        const persistedAdvertisingId = await getIdentityField(ADVERTISING_ID_KEY);
+
+        this.context = await getContextInfo(persistedAdvertisingId || undefined);
+
+        if (persistedAdvertisingId) {
+          log("Restored advertising ID from storage");
+        }
 
         this.lifecycle = "ready";
         log("Analytics client initialization completed successfully");
@@ -350,6 +356,29 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
+   * Sets the advertising identifier for ad tracking and attribution.
+   * This will update the context for all subsequent events and persist it to storage.
+   *
+   * ⚠️ Important: Advertising identifiers are Personally Identifiable Information (PII).
+   * You must obtain user consent before collecting advertising IDs and comply with
+   * GDPR, CCPA, and App Store privacy requirements.
+   *
+   * @param advertisingId - The advertising identifier (IDFA on iOS, GAID on Android)
+   */
+  async setAdvertisingId(advertisingId: string) {
+    if (!this.isReady()) {
+      warn("Analytics client is not ready. Call init() before setAdvertisingId()");
+      return;
+    }
+
+    log("Setting advertising ID");
+    await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
+    clearContextCache();
+    this.context = await getContextInfo(advertisingId);
+    log("Advertising ID updated, persisted, and context refreshed");
+  }
+
+  /**
    * Enable debug logging for troubleshooting
    */
   enableDebugLogging() {
@@ -405,6 +434,9 @@ export class MetaRouterAnalyticsClient {
 
     // Clear identity (must remove persisted IDs)
     await this.identityManager.reset();
+
+    // Clear advertising ID from storage
+    await removeIdentityField(ADVERTISING_ID_KEY);
 
     // Allow a clean future init
     this.initPromise = null;

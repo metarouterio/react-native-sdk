@@ -33,13 +33,6 @@ export interface InitOptions {
   debug?: boolean;
   /** Max events held in memory; oldest are dropped once cap is hit (default: 2000) */
   maxQueueEvents?: number;
-  /**
-   * Advertising identifier for ad tracking and attribution (IDFA on iOS, GAID on Android).
-   * This is Personally Identifiable Information (PII).
-   * Must comply with GDPR, CCPA, and App Store privacy requirements.
-   * Users must consent before collection.
-   */
-  advertisingId?: string;
 }
 
 export interface AnalyticsInterface {
@@ -49,6 +42,7 @@ export interface AnalyticsInterface {
   screen: (name: string, props?: Record<string, any>) => void;
   page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
+  setAdvertisingId: (advertisingId: string) => Promise<void>;
   flush: () => Promise<void>;
   reset: () => Promise<void>;
   enableDebugLogging: () => void;

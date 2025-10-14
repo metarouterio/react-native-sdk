@@ -141,7 +141,6 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `debug` (boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (number, optional): Interval in seconds to flush events
 - `maxQueueEvents` (number, optional): number of max events stored in memory
-- `advertisingId` (string, optional): Advertising identifier for ad tracking and attribution (IDFA on iOS, GAID on Android). See [Advertising ID](#advertising-id-idfagaid) section below for usage and compliance requirements
 
 **Proxy behavior (quick notes):**
 
@@ -159,6 +158,7 @@ The analytics client provides the following methods:
 - `group(groupId: string, traits?: Record<string, any>)`: Group users
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `alias(newUserId: string)`: Alias user IDs
+- `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `flush()`: Flush events immediately
 - `reset()`: Reset analytics state and clear all stored data
 - `enableDebugLogging()`: Enable debug logging
@@ -273,15 +273,19 @@ The SDK supports including advertising identifiers (IDFA on iOS, GAID on Android
 
 ### Usage
 
+Use the `setAdvertisingId()` method to set the advertising identifier after initializing the analytics client:
+
 ```js
 const analytics = await createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
-  advertisingId: "your-advertising-id", // IDFA on iOS, GAID on Android
 });
+
+// Set advertising ID after initialization
+await analytics.setAdvertisingId("your-advertising-id"); // IDFA on iOS, GAID on Android
 ```
 
-The `advertisingId` will be automatically included in the device context of all events:
+Once set, the `advertisingId` will be automatically included in the device context of all subsequent events:
 
 ```json
 {
@@ -312,20 +316,20 @@ The `advertisingId` will be automatically included in the device context of all 
 import { AppTrackingTransparency } from 'react-native-tracking-transparency';
 import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
 
-// Request tracking permission
-const trackingStatus = await AppTrackingTransparency.requestTrackingAuthorization();
-
-let advertisingId;
-if (trackingStatus === 'authorized') {
-  // Get IDFA only if authorized
-  advertisingId = await getAdvertisingId();
-}
-
+// Initialize analytics first
 const analytics = await createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
-  advertisingId, // Will be undefined if user didn't authorize
 });
+
+// Request tracking permission
+const trackingStatus = await AppTrackingTransparency.requestTrackingAuthorization();
+
+if (trackingStatus === 'authorized') {
+  // Get and set IDFA only if authorized
+  const advertisingId = await getAdvertisingId();
+  await analytics.setAdvertisingId(advertisingId);
+}
 ```
 
 ### Android Example
@@ -333,14 +337,18 @@ const analytics = await createAnalyticsClient({
 ```js
 import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
 
-// Check if user has opted out of personalized ads
-const { advertisingId, isLimitAdTrackingEnabled } = await getAdvertisingId();
-
+// Initialize analytics first
 const analytics = await createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
-  advertisingId: isLimitAdTrackingEnabled ? undefined : advertisingId,
 });
+
+// Check if user has opted out of personalized ads
+const { advertisingId, isLimitAdTrackingEnabled } = await getAdvertisingId();
+
+if (!isLimitAdTrackingEnabled && advertisingId) {
+  await analytics.setAdvertisingId(advertisingId);
+}
 ```
 
 ## License
