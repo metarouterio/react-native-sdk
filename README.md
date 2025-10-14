@@ -159,8 +159,9 @@ The analytics client provides the following methods:
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `alias(newUserId: string)`: Alias user IDs
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
+- `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `flush()`: Flush events immediately
-- `reset()`: Reset analytics state and clear all stored data
+- `reset()`: Reset analytics state and clear all stored data (includes clearing advertising ID)
 - `enableDebugLogging()`: Enable debug logging
 - `getDebugInfo()`: Get current debug information
 
@@ -350,6 +351,27 @@ if (!isLimitAdTrackingEnabled && advertisingId) {
   await analytics.setAdvertisingId(advertisingId);
 }
 ```
+
+### Clearing Advertising ID
+
+When users opt out of ad tracking or revoke consent, use `clearAdvertisingId()` to remove the advertising ID from storage and context:
+
+```js
+// User opts out of ad tracking
+await analytics.clearAdvertisingId();
+
+// All subsequent events will not include advertisingId in context
+analytics.track("Event After Opt Out");
+```
+
+**Note:** The `reset()` method also clears the advertising ID along with all other analytics data.
+
+### Validation
+
+The SDK validates advertising IDs before setting them:
+- Must be a non-empty string
+- Cannot be only whitespace
+- Invalid values are rejected and logged as warnings
 
 ## License
 
