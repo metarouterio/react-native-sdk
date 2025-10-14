@@ -65,4 +65,26 @@ describe("enrichEvent()", () => {
       timezone: "America/Denver",
     });
   });
+
+  it("includes advertisingId in context when present", () => {
+    const contextWithAd: EventContext = {
+      ...context,
+      device: {
+        ...context.device,
+        advertisingId: "IDFA-12345-67890-ABCDEF",
+      },
+    };
+
+    const enriched = enrichEvent(baseEvent, writeKey, contextWithAd);
+
+    expect(enriched.context.device.advertisingId).toBe(
+      "IDFA-12345-67890-ABCDEF"
+    );
+  });
+
+  it("excludes advertisingId from context when not present", () => {
+    const enriched = enrichEvent(baseEvent, writeKey, context);
+
+    expect(enriched.context.device.advertisingId).toBeUndefined();
+  });
 });

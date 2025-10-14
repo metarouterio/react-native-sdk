@@ -11,10 +11,12 @@ const MAX_PENDING_CALLS = 20;
 let realClient: AnalyticsInterface | null = null;
 
 // Async-returning methods
-type AsyncMethod = "flush" | "getDebugInfo";
+type AsyncMethod = "flush" | "getDebugInfo" | "setAdvertisingId" | "clearAdvertisingId";
 const ASYNC_METHODS: Record<AsyncMethod, true> = {
   flush: true,
   getDebugInfo: true,
+  setAdvertisingId: true,
+  clearAdvertisingId: true,
 };
 const isAsyncMethod = (m: PropertyKey): m is AsyncMethod =>
   (ASYNC_METHODS as any)[m] === true;
@@ -145,6 +147,8 @@ export const proxyClient: AnalyticsInterface = {
   screen: (name, props) => handleMethodCall("screen", name, props),
   page: (name, props) => handleMethodCall("page", name, props),
   alias: (newUserId) => handleMethodCall("alias", newUserId),
+  setAdvertisingId: (advertisingId) => handleMethodCall("setAdvertisingId", advertisingId) as Promise<void>,
+  clearAdvertisingId: () => handleMethodCall("clearAdvertisingId") as Promise<void>,
 
   flush: () => handleMethodCall("flush"),
   reset: () => handleMethodCall("reset"),

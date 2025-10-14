@@ -42,6 +42,8 @@ export interface AnalyticsInterface {
   screen: (name: string, props?: Record<string, any>) => void;
   page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
+  setAdvertisingId: (advertisingId: string) => Promise<void>;
+  clearAdvertisingId: () => Promise<void>;
   flush: () => Promise<void>;
   reset: () => Promise<void>;
   enableDebugLogging: () => void;
@@ -60,6 +62,7 @@ export interface EventContext {
     model: string;
     name: string;
     type: string;
+    advertisingId?: string;
   };
   library: {
     name: string;
