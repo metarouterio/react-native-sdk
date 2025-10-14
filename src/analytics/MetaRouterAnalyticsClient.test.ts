@@ -362,4 +362,51 @@ describe("MetaRouterAnalyticsClient", () => {
     });
     expect(client["queue"][0].traits).toBeUndefined();
   });
+
+  it("includes advertisingId in event context when provided in InitOptions", async () => {
+    const advertisingId = "IDFA-12345-67890-ABCDEF";
+    const optsWithAd: InitOptions = {
+      ...opts,
+      advertisingId,
+    };
+
+    const client = new MetaRouterAnalyticsClient(optsWithAd);
+    await client.init();
+    client.track("Test Event With AdvertisingId");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0].context.device.advertisingId).toBe(advertisingId);
+  });
+
+  it("excludes advertisingId from event context when not provided in InitOptions", async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    client.track("Test Event Without AdvertisingId");
+
+    expect(client["queue"]).toHaveLength(1);
+    expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
+  });
+
+  it("includes advertisingId in all event types when provided", async () => {
+    const advertisingId = "GAID-98765-43210-FEDCBA";
+    const optsWithAd: InitOptions = {
+      ...opts,
+      advertisingId,
+    };
+
+    const client = new MetaRouterAnalyticsClient(optsWithAd);
+    await client.init();
+
+    client.track("Track Event");
+    client.identify("user-123");
+    client.screen("Screen Name");
+    client.page("Page Name");
+    client.group("group-123");
+    client.alias("new-user-123");
+
+    expect(client["queue"]).toHaveLength(6);
+    client["queue"].forEach((event) => {
+      expect(event.context.device.advertisingId).toBe(advertisingId);
+    });
+  });
 });

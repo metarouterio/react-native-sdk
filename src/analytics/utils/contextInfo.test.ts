@@ -76,4 +76,68 @@ describe("getContextInfo", () => {
     expect(context.device.model).toBe("unknown");
     expect(context.app.version).toBe("1.2.3"); // fallback to pkg.version
   });
+
+  it("includes advertisingId in device context when provided", async () => {
+    // Mock DeviceInfo module
+    jest.doMock("react-native-device-info", () => ({
+      getManufacturer: () => Promise.resolve("Apple"),
+      getModel: () => "iPhone 14",
+      getSystemName: () => "iOS",
+      getSystemVersion: () => "17.0",
+      getVersion: () => "2.3.4",
+      getBuildNumber: () => "567",
+      getDeviceName: () => Promise.resolve("iPhone 14"),
+      isWifiEnabled: () => Promise.resolve(true),
+    }));
+
+    // Re-import the module to get the mocked version
+    const { getContextInfo: getContextInfoMocked } = require("./contextInfo");
+
+    const advertisingId = "IDFA-12345-67890-ABCDEF";
+    const context = await getContextInfoMocked(advertisingId);
+
+    expect(context.device.advertisingId).toBe(advertisingId);
+  });
+
+  it("excludes advertisingId from device context when not provided", async () => {
+    // Mock DeviceInfo module
+    jest.doMock("react-native-device-info", () => ({
+      getManufacturer: () => Promise.resolve("Apple"),
+      getModel: () => "iPhone 14",
+      getSystemName: () => "iOS",
+      getSystemVersion: () => "17.0",
+      getVersion: () => "2.3.4",
+      getBuildNumber: () => "567",
+      getDeviceName: () => Promise.resolve("iPhone 14"),
+      isWifiEnabled: () => Promise.resolve(true),
+    }));
+
+    // Re-import the module to get the mocked version
+    const { getContextInfo: getContextInfoMocked } = require("./contextInfo");
+
+    const context = await getContextInfoMocked();
+
+    expect(context.device.advertisingId).toBeUndefined();
+  });
+
+  it("excludes advertisingId from device context when provided as undefined", async () => {
+    // Mock DeviceInfo module
+    jest.doMock("react-native-device-info", () => ({
+      getManufacturer: () => Promise.resolve("Apple"),
+      getModel: () => "iPhone 14",
+      getSystemName: () => "iOS",
+      getSystemVersion: () => "17.0",
+      getVersion: () => "2.3.4",
+      getBuildNumber: () => "567",
+      getDeviceName: () => Promise.resolve("iPhone 14"),
+      isWifiEnabled: () => Promise.resolve(true),
+    }));
+
+    // Re-import the module to get the mocked version
+    const { getContextInfo: getContextInfoMocked } = require("./contextInfo");
+
+    const context = await getContextInfoMocked(undefined);
+
+    expect(context.device.advertisingId).toBeUndefined();
+  });
 });
