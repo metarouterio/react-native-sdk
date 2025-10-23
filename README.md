@@ -5,6 +5,22 @@
 
 A lightweight React Native analytics SDK that transmits events to your MetaRouter cluster.
 
+## Table of Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic Setup](#basic-setup)
+  - [React Context Usage](#react-context-usage)
+  - [Direct Usage](#direct-usage)
+- [API Reference](#api-reference)
+- [Features](#features)
+- [Compatibility](#-compatibility)
+- [Debugging](#debugging)
+- [Identity Persistence](#identity-persistence)
+- [Advertising ID (IDFA/GAID)](#advertising-id-idfagaid)
+- [Using the alias() Method](#using-the-alias-method)
+- [License](#license)
+
 ## Installation
 
 ```sh
@@ -88,7 +104,8 @@ const MyComponent = () => {
 ```js
 import { createAnalyticsClient } from "@metarouter/react-native-sdk";
 
-// Initialize optionally await it but can use at anytime with events transmitted when client is available.
+// Initialize the client (optionally await it), but you can use it at any time
+// with events transmitted when the client is ready.
 const analytics = await createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
@@ -109,6 +126,12 @@ analytics.identify("user123", {
 // Track screen views
 analytics.screen("Home Screen", {
   category: "navigation",
+});
+
+// Track page views
+analytics.page("Home Page", {
+  url: "/home",
+  referrer: "/landing",
 });
 
 // Group users
@@ -157,7 +180,8 @@ The analytics client provides the following methods:
 - `identify(userId: string, traits?: Record<string, any>)`: Identify users
 - `group(groupId: string, traits?: Record<string, any>)`: Group users
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
-- `alias(newUserId: string)`: Alias user IDs
+- `page(name: string, properties?: Record<string, any>)`: Track page views
+- `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `flush()`: Flush events immediately
@@ -229,7 +253,7 @@ await analytics.flush();
 ### 4. Common Issues
 
 - **Network Permissions**: Ensure your app has network permissions
-- **AsyncStorage**: The SDK uses AsyncStorage for anonymous ID persistence
+- **AsyncStorage**: The SDK uses AsyncStorage for identity persistence (anonymousId, userId, groupId, advertisingId)
 - **Endpoint URL**: Verify your ingestion endpoint is correct and accessible
 - **Write Key**: Ensure your write key is valid
 
@@ -267,6 +291,301 @@ sentAt semantics: sentAt is stamped when the event is enqueued. If the client is
 
 - `anonymousId` is a stable, persisted UUID for the device/user before identify; it does **not** include timestamps.
 - `messageId` is generated as `<epochMillis>-<uuid>` (e.g., `1734691572843-6f0c7e85-...`) to aid debugging.
+
+## Identity Persistence
+
+The MetaRouter React Native SDK automatically manages and persists user identifiers across app sessions using React Native's AsyncStorage. This ensures consistent user tracking even after app restarts.
+
+### The Four Identity Fields
+
+#### 1. userId (Common User ID)
+
+The `userId` is set when you identify a user and represents their unique identifier in your system (e.g., database ID, email, employee ID).
+
+**How to set:**
+
+```js
+analytics.identify("user123", {
+  name: "John Doe",
+  email: "john@example.com",
+  role: "Sales Associate",
+});
+```
+
+**Behavior:**
+
+- Persisted to device storage (`AsyncStorage` key: `metarouter:user_id`)
+- Automatically loaded on app restart
+- Automatically included in **all** subsequent events (`track`, `page`, `screen`, `group`)
+- Remains set until `reset()` is called or app is uninstalled
+
+**Example flow:**
+
+```js
+// Day 1: User logs in
+analytics.identify("employeeID", { name: "Jane" });
+analytics.track("Product Viewed", { sku: "ABC123" });
+// Event includes: userId: "employeeID"
+
+// App restarts...
+
+// Day 2: User opens app
+analytics.track("App Opened");
+// Event STILL includes: userId: "employeeID" (auto-loaded from storage)
+```
+
+#### 2. anonymousId
+
+The `anonymousId` is a unique identifier automatically generated for each device/installation before a user is identified.
+
+**How it's set:**
+
+- **Automatically** generated as a UUID v4 on first SDK initialization
+- No manual action required
+
+**Behavior:**
+
+- Persisted to device storage (`AsyncStorage` key: `metarouter:anonymous_id`)
+- Automatically loaded on app restart
+- Automatically included in **all** events
+- Remains stable across app sessions until `reset()` is called
+- Cleared on `reset()` and a **new** UUID is generated on next `init()`
+
+**Use case:**
+Track user behavior before they log in or create an account, then connect pre-login and post-login activity using the `alias()` method.
+
+#### 3. groupId
+
+The `groupId` associates a user with an organization, team, account, or other group entity.
+
+**How to set:**
+
+```js
+analytics.group("company123", {
+  name: "Acme Corp",
+  plan: "Enterprise",
+  industry: "Technology",
+});
+```
+
+**Behavior:**
+
+- Persisted to device storage (`AsyncStorage` key: `metarouter:group_id`)
+- Automatically loaded on app restart
+- Automatically included in **all** subsequent events after being set
+- Remains set until `reset()` is called
+
+**Example use case:**
+
+```js
+// User logs into their company account
+analytics.identify("user123", { name: "Jane" });
+analytics.group("acme-corp", { name: "Acme Corp" });
+
+// All future events include both userId and groupId
+analytics.track("Report Generated");
+// Event includes: userId: "user123", groupId: "acme-corp"
+```
+
+#### 4. advertisingId (Optional)
+
+The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID on Android). See the [Advertising ID](#advertising-id-idfagaid) section below for detailed usage and compliance requirements.
+
+### Persistence Summary
+
+| Field             | Set By                   | Storage Key                 | Auto-Attached        | Cleared By                                |
+| ----------------- | ------------------------ | --------------------------- | -------------------- | ----------------------------------------- |
+| **userId**        | `identify(userId)`       | `metarouter:user_id`        | All events           | `reset()`                                 |
+| **anonymousId**   | Auto-generated (UUID v4) | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
+| **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
+| **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
+
+### Event Enrichment Flow
+
+Every event you send (track, page, screen, group) is automatically enriched with persisted identity information:
+
+```js
+// You call:
+analytics.track("Button Clicked", { buttonName: "Submit" });
+
+// SDK automatically adds:
+{
+  "type": "track",
+  "event": "Button Clicked",
+  "properties": { "buttonName": "Submit" },
+  "userId": "employeeID",        // ← Auto-added from storage
+  "anonymousId": "a1b2c3d4-...", // ← Auto-added from storage
+  "groupId": "company123",       // ← Auto-added from storage (if set)
+  "timestamp": "2025-10-23T...",
+  "context": {
+    "device": {
+      "advertisingId": "..."     // ← Auto-added from storage (if set)
+    }
+  }
+}
+```
+
+### Resetting Identity
+
+Call `reset()` to clear **all** identity data, typically when a user logs out:
+
+```js
+await analytics.reset();
+```
+
+**What `reset()` does:**
+
+- Clears `userId`, `anonymousId`, `groupId`, and `advertisingId` from memory
+- Removes all identity fields from AsyncStorage
+- Stops background flush loops
+- Clears event queue
+- Next `init()` will generate a **new** `anonymousId`
+
+**Common logout flow:**
+
+```js
+// User logs out
+await analytics.reset();
+
+// User is now tracked with a new anonymousId (auto-generated on next event)
+// No userId or groupId until they log in again
+```
+
+### Best Practices
+
+1. **On Login:** Call `identify()` immediately after successful authentication
+2. **On Logout:** Call `reset()` to clear user identity
+3. **Cross-Session Tracking:** The SDK handles this automatically - no action needed
+4. **Group Associations:** Set `groupId` after determining the user's organization/team
+5. **Pre-Login Tracking:** Events are tracked with `anonymousId` before login
+6. **Connecting Sessions:** Use `alias()` to connect pre-login and post-login activity
+
+### Example: Complete User Journey
+
+```js
+// App starts - SDK initializes
+const analytics = await createAnalyticsClient({...});
+// anonymousId: "abc-123" (auto-generated and persisted)
+
+// User browses before login
+analytics.track("Product Viewed", { sku: "XYZ" });
+// Includes: anonymousId: "abc-123"
+
+// User logs in
+analytics.identify("user456", { name: "John", email: "john@example.com" });
+// userId: "user456" is now persisted
+
+// User performs actions
+analytics.track("Added to Cart", { sku: "XYZ" });
+// Includes: userId: "user456", anonymousId: "abc-123"
+
+// App closes and reopens...
+
+// SDK auto-loads userId from storage
+analytics.track("App Reopened");
+// STILL includes: userId: "user456", anonymousId: "abc-123"
+
+// User logs out
+await analytics.reset();
+// All IDs cleared, new anonymousId will be generated on next init
+```
+
+### Storage Location
+
+All identity data is stored in **React Native AsyncStorage**, which provides:
+
+- Persistent storage across app sessions
+- Automatic data encryption on iOS (Keychain-backed)
+- Secure local storage on Android
+- Cleared only on app uninstall or explicit `reset()` call
+
+## Using the alias() Method
+
+The `alias()` method connects an **anonymous user** (tracked by `anonymousId`) to a **known user ID**. It's used to link pre-login activity to post-login identity.
+
+### When to Use alias()
+
+Use `alias()` when a user **signs up** or **logs in for the first time**, and you want to connect their pre-login browsing activity to their new account.
+
+**Primary use case:** Connecting anonymous browsing sessions to newly created user accounts.
+
+### How It Works
+
+```js
+analytics.alias(newUserId);
+```
+
+This does two things:
+
+1. Sets the new `userId` (same as `identify()`)
+2. Sends an `alias` event to your analytics backend, telling it: "This anonymousId and this userId are the same person"
+
+### Example: User Sign-Up Flow
+
+```js
+// App starts - user is anonymous
+const analytics = await createAnalyticsClient({...});
+// anonymousId: "abc-123" (auto-generated)
+
+// User browses anonymously
+analytics.track("Product Viewed", { productId: "XYZ" });
+analytics.track("Add to Cart", { productId: "XYZ" });
+// Both events tracked with anonymousId: "abc-123"
+
+// User creates an account / signs up
+analytics.alias("user-456");
+// Sends alias event connecting: anonymousId "abc-123" → userId "user-456"
+
+// Optionally add user traits
+analytics.identify("user-456", {
+  name: "John Doe",
+  email: "john@example.com"
+});
+
+// Future events now tracked as authenticated user
+analytics.track("Purchase Complete", { orderId: "789" });
+// Event includes: userId: "user-456", anonymousId: "abc-123"
+```
+
+### alias() vs identify()
+
+| Method           | When to Use                                                     | What It Does                                                   |
+| ---------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+| **`alias()`**    | **First-time sign-up/login** when connecting anonymous activity | Sets userId + sends `alias` event to link anonymousId → userId |
+| **`identify()`** | Subsequent logins or updating user traits                       | Sets userId + sends `identify` event with user traits          |
+
+### Best Practices
+
+1. **First-time sign-up:** Call `alias()` to connect anonymous activity to the new account
+2. **Subsequent logins:** Use `identify()` - no need to alias again
+3. **Backend support:** Ensure your analytics backend supports alias events for merging user profiles
+4. **One-time operation:** You typically only need `alias()` once per user - when they first create an account
+
+### Real-World Example: E-Commerce App
+
+```js
+// Day 1: Anonymous browsing
+analytics.track("App Opened");
+analytics.track("Product Viewed", { sku: "SHOE-123" });
+analytics.track("Product Viewed", { sku: "SHIRT-456" });
+// All tracked with anonymousId: "anon-xyz"
+
+// User signs up
+analytics.alias("user-789");
+analytics.identify("user-789", {
+  name: "Jane Doe",
+  email: "jane@example.com",
+});
+
+// User continues shopping (now authenticated)
+analytics.track("Added to Cart", { sku: "SHIRT-456" });
+analytics.track("Purchase", { total: 49.99 });
+
+// Your analytics platform can now show the complete customer journey:
+// - Pre-signup activity (anonymous product views)
+// - Post-signup activity (cart additions, purchase)
+// - Full conversion funnel from anonymous → identified → converted
+```
 
 ## Advertising ID (IDFA/GAID)
 
@@ -316,8 +635,8 @@ Once set, the `advertisingId` will be automatically included in the device conte
 > **Note:** The examples below use third-party libraries for demonstration purposes. You should choose appropriate packages that fit your project's needs and are actively maintained.
 
 ```js
-import { AppTrackingTransparency } from 'react-native-tracking-transparency';
-import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+import { AppTrackingTransparency } from "react-native-tracking-transparency";
+import { getAdvertisingId } from "@react-native-community/google-advertiser-id"; // or similar library
 
 // Initialize analytics first
 const analytics = await createAnalyticsClient({
@@ -326,9 +645,10 @@ const analytics = await createAnalyticsClient({
 });
 
 // Request tracking permission
-const trackingStatus = await AppTrackingTransparency.requestTrackingAuthorization();
+const trackingStatus =
+  await AppTrackingTransparency.requestTrackingAuthorization();
 
-if (trackingStatus === 'authorized') {
+if (trackingStatus === "authorized") {
   // Get and set IDFA only if authorized
   const advertisingId = await getAdvertisingId();
   await analytics.setAdvertisingId(advertisingId);
@@ -338,7 +658,7 @@ if (trackingStatus === 'authorized') {
 ### Android Example
 
 ```js
-import { getAdvertisingId } from '@react-native-community/google-advertiser-id'; // or similar library
+import { getAdvertisingId } from "@react-native-community/google-advertiser-id"; // or similar library
 
 // Initialize analytics first
 const analytics = await createAnalyticsClient({
@@ -371,6 +691,7 @@ analytics.track("Event After Opt Out");
 ### Validation
 
 The SDK validates advertising IDs before setting them:
+
 - Must be a non-empty string
 - Cannot be only whitespace
 - Invalid values are rejected and logged as warnings
