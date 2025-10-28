@@ -44,6 +44,7 @@ export interface AnalyticsInterface {
   alias: (newUserId: string) => void;
   setAdvertisingId: (advertisingId: string) => Promise<void>;
   clearAdvertisingId: () => Promise<void>;
+  setTracing: (enabled: boolean) => void;
   flush: () => Promise<void>;
   reset: () => Promise<void>;
   enableDebugLogging: () => void;
