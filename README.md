@@ -184,6 +184,7 @@ The analytics client provides the following methods:
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
+- `setTracing(enabled: boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately
 - `reset()`: Reset analytics state and clear all stored data (includes clearing advertising ID)
 - `enableDebugLogging()`: Enable debug logging

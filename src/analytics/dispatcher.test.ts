@@ -12,6 +12,7 @@ const baseOpts = () => ({
   ),
   canSend: () => true,
   isOperational: () => true,
+  isTracingEnabled: () => false,
   createBreaker: () =>
     new CircuitBreaker({
       failureThreshold: 3,
