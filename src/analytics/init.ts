@@ -21,6 +21,7 @@ export function createAnalyticsClient(
         alias: (newUserId) => instance.alias(newUserId),
         setAdvertisingId: (advertisingId) => instance.setAdvertisingId(advertisingId),
         clearAdvertisingId: () => instance.clearAdvertisingId(),
+        setTracing: (enabled) => instance.setTracing(enabled),
         enableDebugLogging: () => instance.enableDebugLogging(),
         getDebugInfo: () => instance.getDebugInfo(),
         flush: () => instance.flush(),

@@ -29,6 +29,7 @@ export class MetaRouterAnalyticsClient {
   private static readonly MAX_QUEUE_SIZE = 20;
   private maxQueueEvents: number = 2000;
   private dispatcher!: Dispatcher;
+  private tracingEnabled: boolean = false;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -79,6 +80,7 @@ export class MetaRouterAnalyticsClient {
       canSend: () =>
         this.lifecycle === "ready" && !!this.identityManager.getAnonymousId(),
       isOperational: () => this.lifecycle === "ready",
+      isTracingEnabled: () => this.tracingEnabled,
       createBreaker: () =>
         new CircuitBreaker({
           failureThreshold: 3,
@@ -404,6 +406,26 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
+   * Enable or disable tracing headers on outgoing requests.
+   * When enabled, a "Trace: true" header is included in all API calls to the cluster.
+   * This is useful for debugging and troubleshooting request flows.
+   *
+   * @param enabled - Whether to enable tracing headers
+   */
+  setTracing(enabled: boolean) {
+    log(`Tracing ${enabled ? 'enabled' : 'disabled'}`);
+    this.tracingEnabled = enabled;
+  }
+
+  /**
+   * Returns whether tracing is currently enabled.
+   * @returns True if tracing is enabled
+   */
+  isTracingEnabled(): boolean {
+    return this.tracingEnabled;
+  }
+
+  /**
    * Enable debug logging for troubleshooting
    */
   enableDebugLogging() {
@@ -430,6 +452,7 @@ export class MetaRouterAnalyticsClient {
       circuitState: d.circuitState,
       circuitRemainingMs: d.circuitRemainingMs,
       maxQueueEvents: d.maxQueueEvents,
+      tracingEnabled: this.tracingEnabled,
     };
   }
 
