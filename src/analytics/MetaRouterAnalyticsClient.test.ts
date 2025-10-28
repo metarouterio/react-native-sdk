@@ -593,4 +593,157 @@ describe("MetaRouterAnalyticsClient", () => {
     client.track("Test Event");
     expect(client["queue"][0].context.device.advertisingId).toBeUndefined();
   });
+
+  describe("tracing", () => {
+    it("does not include Trace header by default", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+      client.track("Test Event");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.not.objectContaining({
+            Trace: "true",
+          }),
+        })
+      );
+    });
+
+    it("includes Trace header when tracing is enabled", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+      client.setTracing(true);
+      client.track("Test Event");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Content-Type": "application/json",
+            Trace: "true",
+          }),
+        })
+      );
+    });
+
+    it("removes Trace header when tracing is disabled", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      // Enable, then disable
+      client.setTracing(true);
+      client.setTracing(false);
+      client.track("Test Event");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.not.objectContaining({
+            Trace: "true",
+          }),
+        })
+      );
+    });
+
+    it("can toggle tracing at runtime", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      // First request with tracing disabled
+      client.setTracing(false);
+      client.track("Event 1");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          headers: expect.not.objectContaining({
+            Trace: "true",
+          }),
+        })
+      );
+
+      // Second request with tracing enabled
+      client.setTracing(true);
+      client.track("Event 2");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        2,
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Trace: "true",
+          }),
+        })
+      );
+    });
+
+    it("returns tracing status via isTracingEnabled", () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+
+      expect(client.isTracingEnabled()).toBe(false);
+
+      client.setTracing(true);
+      expect(client.isTracingEnabled()).toBe(true);
+
+      client.setTracing(false);
+      expect(client.isTracingEnabled()).toBe(false);
+    });
+
+    it("includes tracingEnabled in getDebugInfo", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      let debugInfo = await client.getDebugInfo();
+      expect(debugInfo.tracingEnabled).toBe(false);
+
+      client.setTracing(true);
+      debugInfo = await client.getDebugInfo();
+      expect(debugInfo.tracingEnabled).toBe(true);
+
+      client.setTracing(false);
+      debugInfo = await client.getDebugInfo();
+      expect(debugInfo.tracingEnabled).toBe(false);
+    });
+
+    it("works before client is initialized", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+
+      // Set tracing before init
+      client.setTracing(true);
+      expect(client.isTracingEnabled()).toBe(true);
+
+      await client.init();
+      client.track("Test Event");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+
+      expect(fetch).toHaveBeenCalledWith(
+        `${opts.ingestionHost}/v1/batch`,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Trace: "true",
+          }),
+        })
+      );
+    });
+  });
 });

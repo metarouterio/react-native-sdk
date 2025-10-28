@@ -17,6 +17,7 @@ export interface DispatcherOptions {
   ) => Promise<Response>;
   canSend: () => boolean; // lifecycle + identity preflight
   isOperational: () => boolean; // whether to requeue on retryable failure
+  isTracingEnabled: () => boolean; // whether to include Trace header
   createBreaker: () => CircuitBreaker;
 
   log: (...args: any[]) => void;
@@ -153,11 +154,20 @@ export default class Dispatcher {
 
         try {
           this.opts.log("Making API call to:", this.opts.endpoint("/v1/batch"));
+
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json"
+          };
+
+          if (this.opts.isTracingEnabled()) {
+            headers["Trace"] = "true";
+          }
+
           const res = await this.opts.fetchWithTimeout(
             this.opts.endpoint("/v1/batch"),
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers,
               body: JSON.stringify({ batch: chunk }),
             },
             8000
