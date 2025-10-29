@@ -147,6 +147,33 @@ analytics.flush();
 await analytics.reset();
 ```
 
+### Reconfiguring the Analytics Client
+
+⚠️ **Important**: If you need to change the analytics configuration (e.g., different `writeKey` or `ingestionHost`), you must call `reset()` first:
+
+```js
+// Initial configuration
+const analytics = await createAnalyticsClient({
+  writeKey: "key-1",
+  ingestionHost: "https://endpoint-1.com",
+});
+
+// Later, if you need to change configuration:
+await analytics.reset(); // Must reset first!
+
+// Now reconfigure with new options
+const analytics = await createAnalyticsClient({
+  writeKey: "key-2",
+  ingestionHost: "https://endpoint-2.com",
+});
+```
+
+If you call `createAnalyticsClient()` with different options without resetting first, you'll see this warning:
+
+```
+[MetaRouter] Config changed but client not reset. Call await client.reset() before reinitializing with new options.
+```
+
 ## API Reference
 
 ### createAnalyticsClient(options)
