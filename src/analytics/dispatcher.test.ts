@@ -132,4 +132,79 @@ describe("Dispatcher", () => {
     expect(d.getQueueRef().length).toBe(0);
     expect(onFatal).toHaveBeenCalled();
   });
+
+  it("handles 10K events stress test: keeps newest 2K, drops oldest 8K", async () => {
+    const opts = baseOpts();
+    opts.maxQueueEvents = 2000;
+    opts.autoFlushThreshold = 9999; // disable auto-flush for predictable test
+    const d = new Dispatcher(opts);
+
+    // Enqueue 10K events with IDs 0-9999
+    for (let i = 0; i < 10000; i++) {
+      d.enqueue({ type: "track", event: `event_${i}`, properties: { id: i } } as any);
+    }
+
+    // Queue should be capped at 2000
+    expect(d.getQueueRef().length).toBe(2000);
+
+    // Verify oldest 8000 events were dropped (0-7999)
+    // and newest 2000 events remain (8000-9999)
+    const queue = d.getQueueRef();
+    const firstEventId = (queue[0] as any).properties.id;
+    const lastEventId = (queue[queue.length - 1] as any).properties.id;
+
+    expect(firstEventId).toBe(8000);
+    expect(lastEventId).toBe(9999);
+
+    // Verify all IDs in queue are contiguous (8000-9999)
+    for (let i = 0; i < 2000; i++) {
+      expect((queue[i] as any).properties.id).toBe(8000 + i);
+    }
+
+    // Verify warn was called 8000 times (once per dropped event)
+    expect((opts.warn as jest.Mock).mock.calls.length).toBe(8000);
+    expect((opts.warn as jest.Mock).mock.calls[0][0]).toContain("Queue cap 2000 reached");
+  });
+
+  it("stress test: all 2K queued events successfully transmit in batches", async () => {
+    const opts = baseOpts();
+    opts.maxQueueEvents = 2000;
+    opts.autoFlushThreshold = 9999; // disable auto-flush
+    opts.maxBatchSize = 100;
+
+    const transmittedEvents: any[] = [];
+    opts.fetchWithTimeout = jest.fn(async (_url: string, init: any) => {
+      const batch = JSON.parse(init.body).batch;
+      transmittedEvents.push(...batch);
+      return { ok: true, status: 200 } as any;
+    });
+
+    const d = new Dispatcher(opts);
+
+    // Enqueue 10K events
+    for (let i = 0; i < 10000; i++) {
+      d.enqueue({ type: "track", event: `event_${i}`, properties: { id: i } } as any);
+    }
+
+    // Flush all events
+    await d.flush();
+
+    // Queue should be empty after successful flush
+    expect(d.getQueueRef().length).toBe(0);
+
+    // Exactly 2000 events should have been transmitted
+    expect(transmittedEvents.length).toBe(2000);
+
+    // Verify they are events 8000-9999 in order
+    expect(transmittedEvents[0].properties.id).toBe(8000);
+    expect(transmittedEvents[1999].properties.id).toBe(9999);
+
+    // Verify all transmitted events are contiguous
+    for (let i = 0; i < 2000; i++) {
+      expect(transmittedEvents[i].properties.id).toBe(8000 + i);
+    }
+
+    // Verify 20 batch calls were made (2000 events / 100 per batch)
+    expect((opts.fetchWithTimeout as jest.Mock).mock.calls.length).toBe(20);
+  });
 });
