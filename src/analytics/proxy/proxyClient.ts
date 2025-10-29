@@ -35,11 +35,10 @@ let flushInFlight: Promise<void> | null = null;
  *
  * - **Pre-bind:**
  *   - Queues the call in `pendingCalls` for replay after binding.
- *   - For async methods (`flush`, `reset`, `getDebugInfo`), returns a Promise
- *     that resolves/rejects after replay. Keeps a `reject` handle so
+ *   - For async methods (`flush`, `getDebugInfo`, `setAdvertisingId`, `clearAdvertisingId`),
+ *     returns a Promise that resolves/rejects after replay. Keeps a `reject` handle so
  *     `dropPending` can fail them immediately.
  *   - For sync "fire-and-forget" methods, returns `void` immediately.
- *   - For `getDebugInfo`, returns an immediate proxy snapshot without queuing.
  *   - For `reset`, returns an immediate resolved Promise (no-op).
  *   - If the queue exceeds `MAX_PENDING_CALLS`, drops the oldest call
  *     (rejecting it if async) and logs a warning.
@@ -82,14 +81,6 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   }
 
   // Special-cases while unbound:
-  if (methodName === "getDebugInfo") {
-    // Return immediate proxy snapshot instead of queueing
-    return Promise.resolve({
-      proxy: true,
-      pendingCalls: pendingCalls.length,
-    }) as ReturnType<AnalyticsInterface[T]>;
-  }
-
   if (methodName === "reset") {
     // Nothing to reset pre-bind; resolve immediately
     return Promise.resolve() as ReturnType<AnalyticsInterface[T]>;

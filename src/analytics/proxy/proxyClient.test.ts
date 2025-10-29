@@ -13,6 +13,9 @@ describe("proxyClient", () => {
       screen: jest.fn(),
       page: jest.fn(),
       alias: jest.fn(),
+      setAdvertisingId: jest.fn().mockResolvedValue(undefined),
+      clearAdvertisingId: jest.fn().mockResolvedValue(undefined),
+      setTracing: jest.fn(),
       flush: jest.fn().mockResolvedValue(undefined),
       reset: jest.fn().mockResolvedValue(undefined),
       enableDebugLogging: jest.fn(),
@@ -129,12 +132,22 @@ describe("proxyClient", () => {
     expect(mockClient.reset).not.toHaveBeenCalled();
   });
 
-  it("getDebugInfo returns proxy snapshot pre-bind and delegates post-bind", async () => {
+  it("getDebugInfo queues pre-bind and resolves after real client is bound", async () => {
     const { proxyClient, setRealClient } = require("./proxyClient");
-    const pre = await proxyClient.getDebugInfo();
-    expect(pre).toMatchObject({ proxy: true, pendingCalls: 0 });
 
+    // Call getDebugInfo before client is bound - should queue and wait
+    const preBindPromise = proxyClient.getDebugInfo();
+
+    // Bind the real client
+    mockClient.getDebugInfo.mockResolvedValue({ maxQueueEvents: 2000, lifecycle: 'ready' });
     setRealClient(mockClient);
+
+    // Now the queued call should resolve with real client data
+    const result = await preBindPromise;
+    expect(result).toEqual({ maxQueueEvents: 2000, lifecycle: 'ready' });
+    expect(mockClient.getDebugInfo).toHaveBeenCalled();
+
+    // Post-bind calls work immediately
     mockClient.getDebugInfo.mockResolvedValue({ ok: true });
     const post = await proxyClient.getDebugInfo();
     expect(post).toEqual({ ok: true });
