@@ -147,4 +147,68 @@ describe("createAnalyticsClient", () => {
       expect(realTrack).toHaveBeenCalledWith("pre-init", { a: 1 });
     });
   });
+
+  it("supports reconfiguration after reset with new maxQueueEvents", async () => {
+    // Note: This test documents the proper pattern:
+    // 1. await reset() before reconfiguring
+    // 2. The warning added in createAnalyticsClient catches forgotten awaits
+
+    const { createAnalyticsClient } = require("./init");
+
+    // First client with maxQueueEvents: 1500
+    const client1 = createAnalyticsClient({
+      ...opts,
+      maxQueueEvents: 1500,
+    });
+
+    // Wait for init to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    let debug1 = await client1.getDebugInfo();
+    expect(debug1?.maxQueueEvents).toBe(1500);
+
+    // Properly await reset before reconfiguring
+    await client1.reset();
+
+    // Create new client with maxQueueEvents: 2000
+    const client2 = createAnalyticsClient({
+      ...opts,
+      maxQueueEvents: 2000,
+    });
+
+    // Wait for new init to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const debug2 = await client2.getDebugInfo();
+    expect(debug2?.maxQueueEvents).toBe(2000);
+  });
+
+  it("warns if reconfiguration attempted without awaiting reset", async () => {
+    const { createAnalyticsClient } = require("./init");
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // First client with maxQueueEvents: 1500
+    const client1 = createAnalyticsClient({
+      ...opts,
+      maxQueueEvents: 1500,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Reset WITHOUT awaiting
+    client1.reset(); // ❌ Not awaited!
+
+    // Immediately try to create with new config
+    const client2 = createAnalyticsClient({
+      ...opts,
+      maxQueueEvents: 2000,
+    });
+
+    // Should warn about config change
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[MetaRouter] Config changed but client not reset')
+    );
+
+    warnSpy.mockRestore();
+  });
 });

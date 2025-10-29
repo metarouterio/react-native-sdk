@@ -4,11 +4,23 @@ import type { InitOptions, AnalyticsInterface } from "./types";
 
 // Only one initialization in flight
 let initPromise: Promise<void> | null = null;
+let currentOptions: InitOptions | null = null;
 
 export function createAnalyticsClient(
   options: InitOptions
 ): AnalyticsInterface {
+  // Check if options have changed - if so, force reset first
+  const optionsChanged = currentOptions &&
+    JSON.stringify(currentOptions) !== JSON.stringify(options);
+
+  if (optionsChanged && initPromise) {
+    console.warn(
+      '[MetaRouter] Config changed but client not reset. Call await client.reset() before reinitializing with new options.'
+    );
+  }
+
   if (!initPromise) {
+    currentOptions = options;
     initPromise = (async () => {
       const instance = new MetaRouterAnalyticsClient(options);
       await instance.init();
@@ -29,6 +41,7 @@ export function createAnalyticsClient(
           await instance.reset();
           setRealClient(null, { dropPending: true });
           initPromise = null;
+          currentOptions = null;
         },
       };
       setRealClient(boundClient);
