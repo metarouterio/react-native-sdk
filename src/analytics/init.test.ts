@@ -62,18 +62,20 @@ describe("createAnalyticsClient", () => {
   });
 
   it("binds the first client to the proxy", async () => {
-    // Spy before requiring the module to catch the call
-    const setRealClientSpy = jest.fn();
-    jest.doMock("./proxy/proxyClient", () => ({
-      setRealClient: setRealClientSpy,
-      proxyClient: {},
-    }));
-    const { createAnalyticsClient } = require("./init");
-    await createAnalyticsClient(opts);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(setRealClientSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ track: expect.any(Function) })
-    );
+    await jest.isolateModulesAsync(async () => {
+      // Spy before requiring the module to catch the call
+      const setRealClientSpy = jest.fn();
+      jest.doMock("./proxy/proxyClient", () => ({
+        setRealClient: setRealClientSpy,
+        proxyClient: {},
+      }));
+      const { createAnalyticsClient } = require("./init");
+      createAnalyticsClient(opts);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(setRealClientSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ track: expect.any(Function) })
+      );
+    });
   });
 
   it("coalesces concurrent init into one instance", async () => {
@@ -116,42 +118,59 @@ describe("createAnalyticsClient", () => {
 
   it("buffers pre-init events and forwards after bind", async () => {
     jest.useFakeTimers();
-    jest.isolateModules(async () => {
-      const realTrack = jest.fn();
-      jest.doMock("./MetaRouterAnalyticsClient", () => ({
-        MetaRouterAnalyticsClient: class {
-          init = jest.fn(async () => {});
-          track = realTrack;
-          identify = jest.fn();
-          group = jest.fn();
-          screen = jest.fn();
-          page = jest.fn();
-          alias = jest.fn();
-          enableDebugLogging = jest.fn();
-          getDebugInfo = jest.fn();
-          flush = jest.fn();
-          reset = jest.fn();
-        },
-      }));
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const realTrack = jest.fn();
+        jest.doMock("./MetaRouterAnalyticsClient", () => ({
+          MetaRouterAnalyticsClient: class {
+            init = jest.fn(async () => {});
+            track = realTrack;
+            identify = jest.fn();
+            group = jest.fn();
+            screen = jest.fn();
+            page = jest.fn();
+            alias = jest.fn();
+            enableDebugLogging = jest.fn();
+            getDebugInfo = jest.fn();
+            flush = jest.fn();
+            reset = jest.fn();
+          },
+        }));
 
-      const { createAnalyticsClient } = require("./init");
-      const client = createAnalyticsClient(opts);
+        const { createAnalyticsClient } = require("./init");
+        const client = createAnalyticsClient(opts);
 
-      // Queue before bind completes
-      client.track("pre-init", { a: 1 });
+        // Queue before bind completes
+        client.track("pre-init", { a: 1 });
 
-      // Let init microtask complete and binding happen
-      await Promise.resolve();
-      jest.runOnlyPendingTimers();
+        // Let init microtask complete and binding happen
+        await Promise.resolve();
+        jest.runOnlyPendingTimers();
 
-      expect(realTrack).toHaveBeenCalledWith("pre-init", { a: 1 });
-    });
+        expect(realTrack).toHaveBeenCalledWith("pre-init", { a: 1 });
+      });
+    } finally {
+      jest.useRealTimers(); // Clean up fake timers after test
+    }
   });
 
   it("supports reconfiguration after reset with new maxQueueEvents", async () => {
     // Note: This test documents the proper pattern:
     // 1. await reset() before reconfiguring
     // 2. The warning added in createAnalyticsClient catches forgotten awaits
+
+    // Ensure we're using the real MetaRouterAnalyticsClient, not a mock
+    jest.unmock("./MetaRouterAnalyticsClient");
+    jest.resetModules();
+
+    // Re-setup identity storage mocks after resetModules
+    const identityStorage = require("./utils/identityStorage");
+    (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+      async (key: string) => {
+        if (key === identityStorage.ANONYMOUS_ID_KEY) return "anon-123";
+        return undefined;
+      }
+    );
 
     const { createAnalyticsClient } = require("./init");
 
@@ -210,5 +229,9 @@ describe("createAnalyticsClient", () => {
     );
 
     warnSpy.mockRestore();
+
+    // Clean up - properly await the reset that was left hanging
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await client2.reset();
   });
 });
