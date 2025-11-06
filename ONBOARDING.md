@@ -33,16 +33,25 @@ This guide is designed for:
 ### Prerequisites
 
 Before you begin, ensure you have:
-- ✅ React Native app (version 0.63 or higher)
+- ✅ React Native app (version 0.68 or higher)
 - ✅ Your MetaRouter **Write Key** (get this from your MetaRouter dashboard)
-- ✅ Your MetaRouter **Ingestion Host URL** (e.g., `https://platform.aws-us-east-1.mr-in.com`)
+- ✅ Your MetaRouter **Ingestion Host URL** (must be HTTPS, e.g., `https://platform.aws-us-east-1.mr-in.com`)
 - ✅ Node.js 16 or higher
 
-### Step 1: Install Dependencies (2 minutes)
+
+**For standard React Native apps:**
 
 ```bash
 npm install @metarouter/react-native-sdk @react-native-async-storage/async-storage react-native-device-info
 ```
+
+**For Expo managed apps:**
+
+```bash
+expo install @metarouter/react-native-sdk @react-native-async-storage/async-storage react-native-device-info
+```
+
+**Note:** In Expo managed workflow, no additional iOS manual steps are required beyond `expo prebuild` (if using config plugins). For bare workflow, follow the standard React Native installation steps below.
 
 
 ### Step 2: Initialize Analytics (5 minutes)
@@ -72,6 +81,12 @@ export default analytics;
   2. **React hook**: `const { analytics } = useMetaRouter()` (requires MetaRouterProvider)
 
 Both approaches use the **same underlying client instance**, so choose based on your preference and architecture.
+
+**Event Delivery Semantics:**
+- The client queues events in memory immediately upon calling `track()`, `screen()`, etc.
+- First flush starts after `anonymousId` is generated or loaded from AsyncStorage (typically < 100ms).
+- **In-memory queue only**: events are lost on app process kill. Track critical events after app resume as needed. Queue events are flushed when app is backgrounded or closed.
+- **Backoff**: exponential with jitter on network errors; continues retrying until success or app termination.
 
 ### Step 3: Wrap Your App with MetaRouterProvider (3 minutes)
 
@@ -133,7 +148,7 @@ export default MyComponent;
 ```typescript
 import React from 'react';
 import { View, Button } from 'react-native';
-import { analytics } from './services/analytics'; // Direct import
+import { analytics } from '../services/analytics'; // Direct import
 
 const MyComponent = () => {
   const handleButtonPress = () => {
@@ -161,7 +176,12 @@ export default MyComponent;
 1. Run your app: `npx react-native run-ios` or `npx react-native run-android`
 2. Press the button you just created
 3. Check your console for debug logs: `[MetaRouter] Flushing 1 events`
-4. Check your MetaRouter dashboard to see the event arrive (may take 1-2 minutes)
+4. Force a flush to verify immediately (optional):
+   ```typescript
+   await analytics.flush(); // Force-send for verification
+   ```
+5. **Expected network activity:** Look for HTTPS POST requests to your ingestion host in the network logs
+6. Check your MetaRouter dashboard to see the event arrive (may take 1-2 minutes)
 
 **🎉 Congratulations!** You've successfully integrated MetaRouter. Continue reading for production-ready patterns.
 
@@ -266,7 +286,17 @@ async function handleUserLogin(email: string, password: string) {
   });
 }
 
-// ✅ When a user logs out
+// ✅ When a user logs out - SAFE guardrail helper
+async function logoutAndResetSafely() {
+  try {
+    await analytics.track('User Logged Out');
+  } finally {
+    await analytics.flush();     // DO NOT REMOVE - ensures events are sent
+    await analytics.reset();     // Nukes queue + identity
+  }
+}
+
+// Alternative direct approach
 async function handleUserLogout() {
   analytics.track('User Logged Out');
 
@@ -295,7 +325,7 @@ If you don't call `flush()` first, any pending events (including your logout eve
 
 ### Pattern 2: Screen Tracking with React Navigation
 
-Automatically track screen views as users navigate through your app.
+Automatically track screen views as users navigate through your app, with debouncing to prevent tracking ultra-fast transitions.
 
 ```typescript
 import { useEffect, useRef } from 'react';
@@ -306,27 +336,43 @@ function App() {
   const { analytics } = useMetaRouter();
   const routeNameRef = useRef<string>();
   const navigationRef = useRef<any>();
+  const lastTrackTimeRef = useRef<number>(0);
+
+  const trackScreen = (currentRouteName?: string) => {
+    const previousRouteName = routeNameRef.current;
+
+    // Skip if no route name or same as previous
+    if (!currentRouteName || currentRouteName === previousRouteName) {
+      return;
+    }
+
+    // Debounce ultra-fast transitions (< 300ms)
+    const now = Date.now();
+    if (now - lastTrackTimeRef.current < 300) {
+      return;
+    }
+
+    // Track screen view
+    analytics.screen(currentRouteName, {
+      previousScreen: previousRouteName,
+    });
+
+    // Update refs
+    routeNameRef.current = currentRouteName;
+    lastTrackTimeRef.current = now;
+  };
 
   return (
     <NavigationContainer
       ref={navigationRef}
       onReady={() => {
-        routeNameRef.current = navigationRef.current?.getCurrentRoute()?.name;
+        const initialRouteName = navigationRef.current?.getCurrentRoute()?.name;
+        routeNameRef.current = initialRouteName;
+        trackScreen(initialRouteName);
       }}
-      onStateChange={async () => {
-        const previousRouteName = routeNameRef.current;
+      onStateChange={() => {
         const currentRouteName = navigationRef.current?.getCurrentRoute()?.name;
-
-        if (previousRouteName !== currentRouteName) {
-          // Track screen view
-          analytics.screen(currentRouteName, {
-            previousScreen: previousRouteName,
-            timestamp: new Date().toISOString(),
-          });
-        }
-
-        // Save the current route name for next time
-        routeNameRef.current = currentRouteName;
+        trackScreen(currentRouteName);
       }}
     >
       {/* Your app screens */}
@@ -337,7 +383,7 @@ function App() {
 
 ### Pattern 3: E-Commerce Event Tracking
 
-Track product views, cart actions, and purchases.
+Track product views, cart actions, and purchases using Segment's e-commerce spec naming conventions.
 
 ```typescript
 import { analytics } from './services/analytics';
@@ -345,8 +391,8 @@ import { analytics } from './services/analytics';
 // Product viewed
 function trackProductViewed(product: Product) {
   analytics.track('Product Viewed', {
-    productId: product.id,
-    productName: product.name,
+    product_id: product.id,
+    name: product.name,
     category: product.category,
     price: product.price,
     currency: 'USD',
@@ -355,33 +401,36 @@ function trackProductViewed(product: Product) {
 
 // Add to cart
 function trackAddToCart(product: Product, quantity: number) {
-  analytics.track('Product Added to Cart', {
-    productId: product.id,
-    productName: product.name,
+  analytics.track('Product Added', {
+    cart_id: getCurrentCartId(),
+    product_id: product.id,
+    name: product.name,
     price: product.price,
     quantity: quantity,
-    cartTotal: calculateCartTotal(),
+    currency: 'USD',
   });
 }
 
 // Purchase completed
 function trackPurchaseCompleted(order: Order) {
   analytics.track('Order Completed', {
-    orderId: order.id,
+    order_id: order.id,
     total: order.total,
     revenue: order.revenue,
     tax: order.tax,
     shipping: order.shipping,
     currency: 'USD',
     products: order.items.map(item => ({
-      productId: item.productId,
-      productName: item.name,
+      product_id: item.productId,
+      name: item.name,
       quantity: item.quantity,
       price: item.price,
     })),
   });
 }
 ```
+
+**Note:** This uses Segment's e-commerce spec naming conventions (`product_id`, `order_id`, etc.) for consistency across analytics tools. If your backend expects camelCase, adjust accordingly.
 
 ### Pattern 4: Group/Organization Tracking (B2B Apps)
 
@@ -472,7 +521,9 @@ If you're using advertising ID tracking, add these keys to `ios/YourApp/Info.pli
 
 #### 2. Privacy Manifest (iOS 17+)
 
-If required by Apple, declare your tracking domains in `ios/YourApp/PrivacyInfo.xcprivacy`:
+**Important:** Include `NSPrivacyTracking=true` **only if** you collect IDFA or engage in cross-app tracking. If you don't collect advertising IDs, omit both keys.
+
+If tracking is required, declare your tracking domains in `ios/YourApp/PrivacyInfo.xcprivacy`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -534,8 +585,8 @@ Ensure minimum SDK version in `android/app/build.gradle`:
 ```gradle
 android {
     defaultConfig {
-        minSdkVersion 16
-        targetSdkVersion 33 // or higher
+        minSdkVersion 21
+        targetSdkVersion 35
     }
 }
 ```
@@ -551,8 +602,10 @@ Enable debug logging to see events in your console:
 ```typescript
 import { analytics } from './services/analytics';
 
-// Enable debug mode
-analytics.enableDebugLogging();
+// Enable debug mode (typically only in development)
+if (__DEV__) {
+  analytics.enableDebugLogging();
+}
 
 // Track an event
 analytics.track('Test Event', { foo: 'bar' });
@@ -568,6 +621,115 @@ console.log('Analytics Debug Info:', debugInfo);
 [MetaRouter] Flushing 1 events...
 [MetaRouter] Batch sent successfully (1 events)
 ```
+
+### Testing Utilities (Jest)
+
+Use these utilities to unit test components that call analytics without making network requests:
+
+```typescript
+// test/utils/analyticsTestClient.ts
+export const mockAnalytics = () => ({
+  track: jest.fn(),
+  screen: jest.fn(),
+  identify: jest.fn(),
+  alias: jest.fn(),
+  group: jest.fn(),
+  flush: jest.fn().mockResolvedValue(undefined),
+  reset: jest.fn().mockResolvedValue(undefined),
+  setAdvertisingId: jest.fn().mockResolvedValue(undefined),
+  clearAdvertisingId: jest.fn().mockResolvedValue(undefined),
+  enableDebugLogging: jest.fn(),
+  getDebugInfo: jest.fn().mockResolvedValue({ lifecycle: 'running' }),
+});
+```
+
+**Provider override for testing:**
+
+```typescript
+// test/utils/testHelpers.tsx
+import { MetaRouterProvider } from '@metarouter/react-native-sdk';
+import { mockAnalytics } from './analyticsTestClient';
+
+export const withAnalytics = (
+  ui: React.ReactNode,
+  client = mockAnalytics()
+) => (
+  <MetaRouterProvider analyticsClient={client as any}>
+    {ui}
+  </MetaRouterProvider>
+);
+```
+
+**Example test:**
+
+```typescript
+import { render, fireEvent } from '@testing-library/react-native';
+import { withAnalytics, mockAnalytics } from '../test/utils';
+import { MyComponent } from './MyComponent';
+
+it('tracks button press', () => {
+  const analytics = mockAnalytics();
+  const { getByText } = render(withAnalytics(<MyComponent />, analytics));
+
+  fireEvent.press(getByText('Get Started'));
+
+  expect(analytics.track).toHaveBeenCalledWith('Button Pressed', {
+    buttonName: 'Get Started',
+    screen: 'Welcome',
+  });
+});
+```
+
+### Example Payload Reference
+
+Here's what a typical event batch looks like when sent to your ingestion host:
+
+<details>
+<summary>Click to expand payload example</summary>
+
+```json
+{
+  "writeKey": "wk_prod_***",
+  "batch": [
+    {
+      "type": "track",
+      "event": "Button Pressed",
+      "context": {
+        "library": {
+          "name": "@metarouter/react-native-sdk",
+          "version": "X.Y.Z"
+        },
+        "device": {
+          "manufacturer": "Apple",
+          "model": "iPhone15,3"
+        },
+        "os": {
+          "name": "iOS",
+          "version": "17.5"
+        },
+        "app": {
+          "name": "YourApp",
+          "version": "1.2.3",
+          "build": "123"
+        },
+        "screen": {
+          "width": 1179,
+          "height": 2556,
+          "density": 3
+        }
+      },
+      "anonymousId": "a-uuid",
+      "userId": null,
+      "timestamp": "2025-11-06T17:05:11.123Z",
+      "properties": {
+        "buttonName": "Get Started",
+        "screen": "Welcome"
+      }
+    }
+  ]
+}
+```
+</details>
 
 ---
 
@@ -657,7 +819,6 @@ import { getAnalyticsConfig } from '../config/analytics.config';
 const config = getAnalyticsConfig();
 
 export const analytics = createAnalyticsClient(config);
-```
 
 ---
 
@@ -734,6 +895,44 @@ analytics.track('Checkout Started', {
 });
 ```
 
+### Consent & Data Minimization
+
+**Store user consent** and respect their preferences when tracking:
+
+```typescript
+// Example: Store consent preference
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { analytics } from './services/analytics';
+
+// Check and store consent
+async function setAnalyticsConsent(hasConsent: boolean) {
+  await AsyncStorage.setItem('analytics_consent', JSON.stringify(hasConsent));
+
+  if (!hasConsent) {
+    // User opted out - stop tracking
+    await analytics.flush(); // Send pending events
+    await analytics.reset(); // Clear identity
+  }
+}
+
+// Before tracking, check consent
+async function trackEventWithConsent(eventName: string, properties: object) {
+  const consentStr = await AsyncStorage.getItem('analytics_consent');
+  const hasConsent = consentStr ? JSON.parse(consentStr) : false;
+
+  if (hasConsent) {
+    analytics.track(eventName, properties);
+  }
+}
+```
+
+**GDPR/CCPA Compliance Tips:**
+- Always obtain explicit consent before tracking in EU/CA
+- Provide clear opt-out mechanisms
+- Respect "Do Not Track" signals where applicable
+- Minimize data collection to what's necessary
+- Document your data retention policies
+
 ### 4. Identity Management Best Practices
 
 ```typescript
@@ -795,8 +994,18 @@ analytics.track('Event Name', { property: 'value' });
 **Key differences:**
 1. **Initialization:** `createAnalyticsClient()` instead of `Analytics.setup()`
 2. **Ingestion host:** Must provide your MetaRouter ingestion endpoint
-3. **No default plugins:** MetaRouter doesn't include destination plugins by default
+3. **No default plugins:** MetaRouter doesn't include destination plugins by default. Destinations are configured server-side in MetaRouter; the mobile SDK only sends to your ingestion host.
 4. **Simplified API:** Focused on core tracking, identity, and reset functionality
+
+**Identity Semantics Comparison:**
+
+| Concept        | Segment RN                          | MetaRouter RN SDK                         |
+|----------------|-------------------------------------|-------------------------------------------|
+| `anonymousId`  | Auto; persisted                     | Auto; persisted (loaded before first flush) |
+| `identify`     | Sets `userId` + traits              | Same                                       |
+| `alias`        | Link anon → new `userId` (signup)   | Same; call **before** `identify()` on first signup |
+| `_metadata`    | Present in web                      | Not set on mobile                          |
+| `integrations` | Destination flags                   | Ignored by SDK (handled server-side)       |
 
 ### From Firebase Analytics
 
