@@ -85,8 +85,8 @@ Both approaches use the **same underlying client instance**, so choose based on 
 **Event Delivery Semantics:**
 - The client queues events in memory immediately upon calling `track()`, `screen()`, etc.
 - First flush starts after `anonymousId` is generated or loaded from AsyncStorage (typically < 100ms).
-- **In-memory queue only**: events are lost on app process kill. Track critical events after app resume as needed. Queue events are flushed when app is backgrounded or closed.
-- **Backoff**: exponential with jitter on network errors; continues retrying until success or app termination.
+- **In-memory queue only**: Queue events are flushed when app is backgrounded or closed. Track critical events after app resume as needed. 
+- **Backoff**: Exponential with jitter on network errors; continues retrying until success or app termination.
 
 ### Step 3: Wrap Your App with MetaRouterProvider (3 minutes)
 
@@ -129,7 +129,6 @@ const MyComponent = () => {
     analytics.track('Button Pressed', {
       buttonName: 'Get Started',
       screen: 'Welcome',
-      timestamp: new Date().toISOString(),
     });
   };
 
@@ -176,14 +175,8 @@ export default MyComponent;
 1. Run your app: `npx react-native run-ios` or `npx react-native run-android`
 2. Press the button you just created
 3. Check your console for debug logs: `[MetaRouter] Flushing 1 events`
-4. Force a flush to verify immediately (optional):
-   ```typescript
-   await analytics.flush(); // Force-send for verification
-   ```
-5. **Expected network activity:** Look for HTTPS POST requests to your ingestion host in the network logs
-6. Check your MetaRouter dashboard to see the event arrive (may take 1-2 minutes)
-
-**🎉 Congratulations!** You've successfully integrated MetaRouter. Continue reading for production-ready patterns.
+4. **Expected network activity:** Look for HTTPS POST requests to your ingestion host in the network logs
+5. Check your MetaRouter dashboard to see the event arrive (may take 1-2 minutes)
 
 ---
 
@@ -286,27 +279,16 @@ async function handleUserLogin(email: string, password: string) {
   });
 }
 
-// ✅ When a user logs out - SAFE guardrail helper
-async function logoutAndResetSafely() {
+// ✅ When a user logs out
+async function onLogout() {
   try {
     await analytics.track('User Logged Out');
   } finally {
-    await analytics.flush();     // DO NOT REMOVE - ensures events are sent
-    await analytics.reset();     // Nukes queue + identity
+    await analytics.flush();     // Ensures events are sent
+    await analytics.reset();     // Clears queue + identity - will establish a new anonymous ID
   }
 }
 
-// Alternative direct approach
-async function handleUserLogout() {
-  analytics.track('User Logged Out');
-
-  // IMPORTANT: Flush events BEFORE reset
-  // reset() does NOT flush - it immediately clears the queue
-  await analytics.flush();
-
-  // Reset clears all identity data and generates a new anonymousId
-  await analytics.reset();
-}
 ```
 
 **Why this matters:**
@@ -336,7 +318,6 @@ function App() {
   const { analytics } = useMetaRouter();
   const routeNameRef = useRef<string>();
   const navigationRef = useRef<any>();
-  const lastTrackTimeRef = useRef<number>(0);
 
   const trackScreen = (currentRouteName?: string) => {
     const previousRouteName = routeNameRef.current;
@@ -345,21 +326,13 @@ function App() {
     if (!currentRouteName || currentRouteName === previousRouteName) {
       return;
     }
-
-    // Debounce ultra-fast transitions (< 300ms)
-    const now = Date.now();
-    if (now - lastTrackTimeRef.current < 300) {
-      return;
-    }
-
     // Track screen view
     analytics.screen(currentRouteName, {
       previousScreen: previousRouteName,
     });
 
-    // Update refs
+    // Update ref
     routeNameRef.current = currentRouteName;
-    lastTrackTimeRef.current = now;
   };
 
   return (
@@ -1098,4 +1071,3 @@ createAnalyticsClient({
 
 ---
 
-**You're all set!** You now have a production-ready MetaRouter integration. Happy tracking!
