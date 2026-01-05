@@ -17,7 +17,7 @@
   "scripts": {
     "clean": "rm -rf lib",
     "build": "tsc --project tsconfig.build.json",
-    "prepare": "npm run build",
+    "prepare": "husky",
     "prepublishOnly": "npm run clean && npm run build",
     "test": "jest"
   },
@@ -45,13 +45,20 @@
     "react-native-device-info": "^14.0.4"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.3.0",
+    "@commitlint/config-conventional": "^20.3.0",
     "@react-native-async-storage/async-storage": ">=2.2.0",
     "@types/jest": "^30.0.0",
     "@types/react": "^19.1.8",
+    "husky": "^9.1.7",
     "jest": "^30.0.4",
+    "lint-staged": "^16.2.7",
     "metro-react-native-babel-preset": "^0.77.0",
     "react-native-device-info": "^14.0.4",
     "typescript": "^5.8.3"
   },
-  "react-native": "./lib/index.js"
+  "react-native": "./lib/index.js",
+  "lint-staged": {
+    "*.{ts,js}": "eslint --fix"
+  }
 }
