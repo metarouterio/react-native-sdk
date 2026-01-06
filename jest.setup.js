@@ -1,3 +1,6 @@
+// for async + await
+jest.useFakeTimers({ advanceTimers: true });
+
 jest.mock('react-native', () => ({
   AppState: {
     currentState: 'active',
@@ -26,18 +29,16 @@ jest.mock('react-native', () => ({
   },
 }));
 
-
-
 jest.mock('@react-native-async-storage/async-storage', () => ({
-    __esModule: true,
-    default: {
-      getItem: jest.fn(() => Promise.resolve(null)),
-      setItem: jest.fn(() => Promise.resolve()),
-      removeItem: jest.fn(() => Promise.resolve()),
-      clear: jest.fn(() => Promise.resolve()),
-    },
-  }));
+  __esModule: true,
+  default: {
+    getItem: jest.fn(() => Promise.resolve(null)),
+    setItem: jest.fn(() => Promise.resolve()),
+    removeItem: jest.fn(() => Promise.resolve()),
+    clear: jest.fn(() => Promise.resolve()),
+  },
+}));
 
-  // Suppress console.warn and console.error in tests to keep output clean
-  console.warn = jest.fn();
-  console.error = jest.fn();
+// Suppress console.warn and console.error in tests to keep output clean
+console.warn = jest.fn();
+console.error = jest.fn();
