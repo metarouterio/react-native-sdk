@@ -564,6 +564,8 @@ android {
 }
 ```
 
+**Important:** This SDK depends on the `react-native-device-info` library. Version 15 and later (used by this SDK) require Android's `compileSdk` to be at version 34 or later. React Native 0.73+ already uses this by default.
+
 ---
 
 ## Testing & Validation
