@@ -42,7 +42,7 @@
     "@react-native-async-storage/async-storage": ">=2.2.0",
     "react": ">=16.8.0",
     "react-native": ">=0.63.0",
-    "react-native-device-info": "^14.0.4"
+    "react-native-device-info": ">=14.0.4"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.3.0",
@@ -53,16 +53,16 @@
     "@react-native-async-storage/async-storage": ">=2.2.0",
     "@react-native/eslint-config": "^0.84.0-nightly-20260106-36a0d9ef6",
     "@types/jest": "^30.0.0",
-    "@types/react": "^19.1.8",
+    "@types/react": "^19.2.7",
     "eslint": "^9.39.2",
     "eslint-plugin-prettier": "^5.5.4",
     "husky": "^9.1.7",
-    "jest": "^30.0.4",
+    "jest": "^30.2.0",
     "lint-staged": "^16.2.7",
     "metro-react-native-babel-preset": "^0.77.0",
     "prettier": "^3.7.4",
-    "react-native-device-info": "^14.0.4",
-    "typescript": "^5.8.3"
+    "react-native-device-info": "^15.0.1",
+    "typescript": "^5.9.3"
   },
   "react-native": "./lib/index.js",
   "lint-staged": {
