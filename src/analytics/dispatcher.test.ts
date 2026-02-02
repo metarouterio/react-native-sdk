@@ -172,6 +172,55 @@ describe('Dispatcher', () => {
     );
   });
 
+  it('gradually recovers maxBatchSize after 413-induced reduction on subsequent successes', async () => {
+    const opts = baseOpts();
+    opts.maxBatchSize = 100;
+    opts.autoFlushThreshold = 9999;
+    let callCount = 0;
+    opts.fetchWithTimeout = jest.fn(async (_url?: string, _init?: any) => {
+      callCount++;
+      // First call: 413 to trigger halving
+      if (callCount === 1)
+        return { ok: false, status: 413, headers: { get: () => null } } as any;
+      return { ok: true, status: 200 } as any;
+    });
+
+    const d = new Dispatcher(opts);
+
+    // Enqueue enough events and flush to trigger the 413
+    for (let i = 0; i < 5; i++)
+      d.enqueue({ type: 'track', event: `e${i}` } as any);
+    await d.flush();
+
+    // After 413, maxBatchSize should have been halved to 50
+    expect(d.getDebugInfo().maxBatchSize).toBe(50);
+
+    // Flush again — events succeed, so batch size should recover: min(50*2, 100) = 100
+    await d.flush();
+    expect(d.getDebugInfo().maxBatchSize).toBe(100);
+  });
+
+  it('does not recover maxBatchSize beyond initialMaxBatchSize', async () => {
+    const opts = baseOpts();
+    opts.maxBatchSize = 100;
+    opts.autoFlushThreshold = 9999;
+    let callCount = 0;
+    opts.fetchWithTimeout = jest.fn(async (_url?: string, _init?: any) => {
+      callCount++;
+      if (callCount === 1)
+        return { ok: false, status: 413, headers: { get: () => null } } as any;
+      return { ok: true, status: 200 } as any;
+    });
+
+    const d = new Dispatcher(opts);
+    for (let i = 0; i < 3; i++)
+      d.enqueue({ type: 'track', event: `e${i}` } as any);
+    await d.flush();
+
+    // After recovery, should not exceed initial value of 100
+    expect(d.getDebugInfo().maxBatchSize).toBeLessThanOrEqual(100);
+  });
+
   it('stress test: all 2K queued events successfully transmit in batches', async () => {
     const opts = baseOpts();
     opts.maxQueueEvents = 2000;
