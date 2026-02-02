@@ -1,7 +1,7 @@
-import type { EventPayload } from "./types";
-import type CircuitBreaker from "./utils/circuitBreaker";
+import type { EventPayload } from './types';
+import type CircuitBreaker from './utils/circuitBreaker';
 
-export type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface DispatcherOptions {
   maxQueueEvents: number;
@@ -36,11 +36,13 @@ export default class Dispatcher {
   private nextScheduledAt: number | null = null;
   private flushInFlight: Promise<void> | null = null;
   private maxBatchSize: number;
+  private readonly initialMaxBatchSize: number;
   private circuit: CircuitBreaker;
 
   constructor(opts: DispatcherOptions) {
     this.opts = opts;
-    this.maxBatchSize = Math.max(1, opts.maxBatchSize);
+    this.initialMaxBatchSize = Math.max(1, opts.maxBatchSize);
+    this.maxBatchSize = this.initialMaxBatchSize;
     this.circuit = opts.createBreaker();
   }
 
@@ -68,7 +70,7 @@ export default class Dispatcher {
     this.stop();
     this.queue.length = 0;
     this.circuit = this.opts.createBreaker();
-    this.maxBatchSize = Math.max(1, this.opts.maxBatchSize);
+    this.maxBatchSize = this.initialMaxBatchSize;
   }
 
   private clearNextTimer(): void {
@@ -87,11 +89,14 @@ export default class Dispatcher {
     this.opts.onScheduleFlushIn?.(ms);
 
     this.nextScheduledAt = target;
-    this.nextTimer = setTimeout(() => {
-      this.nextScheduledAt = null;
-      this.nextTimer = null;
-      this.flush();
-    }, Math.max(0, ms));
+    this.nextTimer = setTimeout(
+      () => {
+        this.nextScheduledAt = null;
+        this.nextTimer = null;
+        this.flush();
+      },
+      Math.max(0, ms)
+    );
   }
 
   enqueue(event: EventPayload): void {
@@ -103,7 +108,7 @@ export default class Dispatcher {
       );
     }
 
-    this.opts.log("Enqueuing event", {
+    this.opts.log('Enqueuing event', {
       type: (event as any)?.type,
       messageId: (event as any)?.messageId,
     });
@@ -153,20 +158,20 @@ export default class Dispatcher {
         const chunk = this.drainBatch();
 
         try {
-          this.opts.log("Making API call to:", this.opts.endpoint("/v1/batch"));
+          this.opts.log('Making API call to:', this.opts.endpoint('/v1/batch'));
 
           const headers: Record<string, string> = {
-            "Content-Type": "application/json"
+            'Content-Type': 'application/json',
           };
 
           if (this.opts.isTracingEnabled()) {
-            headers["Trace"] = "true";
+            headers.Trace = 'true';
           }
 
           const res = await this.opts.fetchWithTimeout(
-            this.opts.endpoint("/v1/batch"),
+            this.opts.endpoint('/v1/batch'),
             {
-              method: "POST",
+              method: 'POST',
               headers,
               body: JSON.stringify({ batch: chunk }),
             },
@@ -182,7 +187,7 @@ export default class Dispatcher {
               if (this.opts.isOperational()) {
                 this.queue.unshift(...chunk);
                 const retryAfter =
-                  this.parseRetryAfter(res.headers.get("retry-after")) ?? 0;
+                  this.parseRetryAfter(res.headers.get('retry-after')) ?? 0;
                 const wait = Math.max(
                   this.circuit.remainingCooldownMs(),
                   retryAfter,
@@ -194,7 +199,7 @@ export default class Dispatcher {
                 this.scheduleFlushIn(wait);
               } else {
                 this.opts.warn(
-                  "Flush aborted during reset/disable — dropping current chunk"
+                  'Flush aborted during reset/disable — dropping current chunk'
                 );
               }
               return;
@@ -205,7 +210,7 @@ export default class Dispatcher {
               if (this.opts.isOperational()) {
                 this.queue.unshift(...chunk);
                 const h =
-                  this.parseRetryAfter(res.headers.get("retry-after")) ?? 0;
+                  this.parseRetryAfter(res.headers.get('retry-after')) ?? 0;
                 const b = this.circuit.remainingCooldownMs();
                 const wait = Math.max(h, b, 1000);
                 this.opts.warn(
@@ -214,7 +219,7 @@ export default class Dispatcher {
                 this.scheduleFlushIn(wait);
               } else {
                 this.opts.warn(
-                  "Throttle received but client resetting/disabled — dropping chunk"
+                  'Throttle received but client resetting/disabled — dropping chunk'
                 );
               }
               return;
@@ -243,7 +248,7 @@ export default class Dispatcher {
               } else {
                 const ids = (chunk as any[])
                   .map((e) => (e as any).messageId)
-                  .join(",");
+                  .join(',');
                 this.opts.warn(
                   `Dropping oversize event(s) after 413 at batchSize=1; messageIds=${ids}`
                 );
@@ -259,29 +264,35 @@ export default class Dispatcher {
 
           // Success
           this.circuit.onSuccess();
-          this.opts.log("API call successful");
+          if (this.maxBatchSize < this.initialMaxBatchSize) {
+            this.maxBatchSize = Math.min(
+              this.maxBatchSize * 2,
+              this.initialMaxBatchSize
+            );
+          }
+          this.opts.log('API call successful');
         } catch (err) {
           this.circuit.onFailure();
           if (this.opts.isOperational()) {
             this.queue.unshift(...chunk);
             const wait = Math.max(this.circuit.remainingCooldownMs(), 1000);
             this.opts.warn(
-              "Flush attempt failed; scheduling retry in",
+              'Flush attempt failed; scheduling retry in',
               wait,
-              "ms",
+              'ms',
               (err as any)?.message
             );
             this.scheduleFlushIn(wait);
           } else {
             this.opts.warn(
-              "Flush failed during reset/disable — dropping current chunk"
+              'Flush failed during reset/disable — dropping current chunk'
             );
           }
           return;
         }
       }
 
-      this.opts.log("Flush completed successfully");
+      this.opts.log('Flush completed successfully');
     };
 
     this.flushInFlight = doFlush().finally(() => {
