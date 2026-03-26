@@ -12,7 +12,10 @@
   },
   "files": [
     "lib",
-    "react-native.config.js"
+    "ios",
+    "android",
+    "react-native.config.js",
+    "metarouter-react-native-sdk.podspec"
   ],
   "scripts": {
     "clean": "rm -rf lib",

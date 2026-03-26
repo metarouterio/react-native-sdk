@@ -221,6 +221,104 @@ describe('Dispatcher', () => {
     expect(d.getDebugInfo().maxBatchSize).toBeLessThanOrEqual(100);
   });
 
+  it('enqueueFront prepends events in order', () => {
+    const opts = baseOpts();
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+    d.enqueue({ type: 'track', event: 'a' } as any);
+    d.enqueue({ type: 'track', event: 'b' } as any);
+
+    d.enqueueFront([
+      { type: 'track', event: 'x' } as any,
+      { type: 'track', event: 'y' } as any,
+    ]);
+
+    expect(d.getQueueRef().map((e: any) => e.event)).toEqual([
+      'x',
+      'y',
+      'a',
+      'b',
+    ]);
+  });
+
+  it('enqueueFront respects maxQueueEvents by dropping oldest from front-loaded batch', () => {
+    const opts = baseOpts();
+    opts.maxQueueEvents = 3;
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+    d.enqueue({ type: 'track', event: 'a' } as any);
+    d.enqueue({ type: 'track', event: 'b' } as any);
+
+    d.enqueueFront([
+      { type: 'track', event: 'x' } as any,
+      { type: 'track', event: 'y' } as any,
+      { type: 'track', event: 'z' } as any,
+    ]);
+
+    // Total would be 5, cap is 3. After prepend: [x, y, z, a, b] -> drop oldest 2 -> [z, a, b]
+    const queue = d.getQueueRef();
+    expect(queue.length).toBe(3);
+    expect(queue.map((e: any) => e.event)).toEqual(['z', 'a', 'b']);
+  });
+
+  it('getQueueSizeBytes returns approximate serialized size', () => {
+    const opts = baseOpts();
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+    expect(d.getQueueSizeBytes()).toBe(0);
+
+    const event = {
+      type: 'track',
+      event: 'test',
+      properties: { key: 'value' },
+    } as any;
+    d.enqueue(event);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
+  });
+
+  it('getQueueSizeBytes decreases after flush', async () => {
+    const opts = baseOpts();
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+
+    for (let i = 0; i < 5; i++) {
+      d.enqueue({
+        type: 'track',
+        event: `e${i}`,
+        properties: { i },
+      } as any);
+    }
+    const before = d.getQueueSizeBytes();
+    expect(before).toBeGreaterThan(0);
+
+    await d.flush();
+    expect(d.getQueueSizeBytes()).toBe(0);
+  });
+
+  it('getQueueSizeBytes tracks correctly through enqueueFront', () => {
+    const opts = baseOpts();
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+
+    d.enqueue({ type: 'track', event: 'a' } as any);
+    const sizeAfterOne = d.getQueueSizeBytes();
+
+    d.enqueueFront([{ type: 'track', event: 'b' } as any]);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(sizeAfterOne);
+  });
+
+  it('getQueueSizeBytes resets to 0 after reset()', () => {
+    const opts = baseOpts();
+    opts.autoFlushThreshold = 9999;
+    const d = new Dispatcher(opts);
+
+    d.enqueue({ type: 'track', event: 'a' } as any);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
+
+    d.reset();
+    expect(d.getQueueSizeBytes()).toBe(0);
+  });
+
   it('stress test: all 2K queued events successfully transmit in batches', async () => {
     const opts = baseOpts();
     opts.maxQueueEvents = 2000;
