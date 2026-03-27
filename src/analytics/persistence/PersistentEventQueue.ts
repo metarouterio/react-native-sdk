@@ -93,22 +93,26 @@ export class PersistentEventQueue {
   }
 
   private async _doFlushToDisk(): Promise<void> {
-    const queue = this.dispatcher.getQueueRef();
+    try {
+      const queue = this.dispatcher.getQueueRef();
 
-    if (queue.length === 0) {
-      log('Queue empty — deleting snapshot');
-      await nativeDeleteSnapshot();
-      return;
+      if (queue.length === 0) {
+        log('Queue empty — deleting snapshot');
+        await nativeDeleteSnapshot();
+        return;
+      }
+
+      const snapshot: QueueSnapshot = {
+        version: SNAPSHOT_VERSION,
+        events: [...queue], // shallow copy to avoid mutation during async write
+      };
+
+      const data = JSON.stringify(snapshot);
+      log(`Flushing ${queue.length} events to disk (${data.length} chars)`);
+      await writeSnapshot(data);
+    } catch (err) {
+      warn('Failed to flush queue to disk:', err);
     }
-
-    const snapshot: QueueSnapshot = {
-      version: SNAPSHOT_VERSION,
-      events: [...queue], // shallow copy to avoid mutation during async write
-    };
-
-    const data = JSON.stringify(snapshot);
-    log(`Flushing ${queue.length} events to disk (${data.length} chars)`);
-    await writeSnapshot(data);
   }
 
   /**

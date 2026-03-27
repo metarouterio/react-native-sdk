@@ -41,7 +41,9 @@ class MetaRouterQueueStorageModule(
         try {
             val file = snapshotFile()
             file.parentFile?.mkdirs()
-            file.writeText(data, Charsets.UTF_8)
+            val tempFile = File(file.parent, "${file.name}.tmp")
+            tempFile.writeText(data, Charsets.UTF_8)
+            tempFile.renameTo(file)
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("WRITE_ERROR", "Failed to write queue snapshot", e)

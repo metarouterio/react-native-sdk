@@ -12,12 +12,6 @@ export interface QueueSnapshot {
 /** Current snapshot schema version */
 export const SNAPSHOT_VERSION = 1;
 
-/** Maximum events in the queue (memory = disk, shared cap) */
-export const MAX_QUEUE_EVENTS = 2000;
-
-/** Maximum total serialized size in bytes (shared cap) */
-export const MAX_QUEUE_BYTES = 5 * 1024 * 1024; // 5MB
-
 /** Flush-to-disk threshold: event count */
 export const FLUSH_THRESHOLD_EVENTS = 500;
 

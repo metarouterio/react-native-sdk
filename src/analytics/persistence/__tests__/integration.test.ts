@@ -23,6 +23,11 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     _resetRehydrationGuard();
     handleAppStateChange = null;
 
+    // Mock fetch so flush() doesn't hang on a real network call
+    global.fetch = jest.fn(() =>
+      Promise.resolve({ ok: true, status: 200 } as Response)
+    );
+
     (AppState.addEventListener as jest.Mock).mockImplementation(
       (_type: string, handler: (state: string) => void) => {
         handleAppStateChange = handler;
@@ -33,6 +38,7 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
 
   afterEach(() => {
     NativeModules.MetaRouterQueueStorage = undefined as any;
+    (global.fetch as jest.Mock).mockRestore?.();
   });
 
   it('rehydrates events from disk during init', async () => {
@@ -65,7 +71,34 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     expect(info.queueLength).toBeGreaterThanOrEqual(1);
   });
 
-  it('flushes to disk when app goes to background', async () => {
+  it('flushes to disk when app goes to background and network fails', async () => {
+    const { mock } = mockNativeStorage();
+
+    // Simulate network failure so events remain in queue for persistence
+    (global.fetch as jest.Mock).mockImplementation(() =>
+      Promise.reject(new Error('Network unavailable'))
+    );
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const client = new MetaRouterAnalyticsClient({
+      writeKey: 'test-key',
+      ingestionHost: 'https://example.com',
+    });
+    await client.init();
+
+    // Track some events
+    client.track('event1', { key: 'value' });
+    client.track('event2', { key: 'value' });
+
+    // Simulate app going to background — flush fails, events persisted to disk
+    await handleAppStateChange!('background');
+
+    expect(mock.writeSnapshot).toHaveBeenCalled();
+  });
+
+  it('skips disk write when network flush succeeds on background', async () => {
     const { mock } = mockNativeStorage();
 
     const {
@@ -81,13 +114,12 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     client.track('event1', { key: 'value' });
     client.track('event2', { key: 'value' });
 
-    // Simulate app going to background
-    handleAppStateChange!('background');
+    // Simulate app going to background — flush succeeds, queue empty
+    await handleAppStateChange!('background');
 
-    // Allow async flush to complete
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(mock.writeSnapshot).toHaveBeenCalled();
+    // Queue was drained by network flush, so deleteSnapshot is called (empty queue)
+    expect(mock.writeSnapshot).not.toHaveBeenCalled();
+    expect(mock.deleteSnapshot).toHaveBeenCalled();
   });
 
   it('deletes snapshot on reset', async () => {

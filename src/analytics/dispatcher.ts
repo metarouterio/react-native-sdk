@@ -133,7 +133,12 @@ export default class Dispatcher {
   }
 
   enqueueFront(events: EventPayload[]): void {
-    this.queue.unshift(...events);
+    // Avoid spread into unshift — large arrays can exceed JS engine argument limit
+    const merged = events.concat(this.queue);
+    this.queue.length = 0;
+    for (let i = 0; i < merged.length; i++) {
+      this.queue.push(merged[i]);
+    }
     for (const e of events) {
       this.queueSizeBytes += this.estimateEventSize(e);
     }

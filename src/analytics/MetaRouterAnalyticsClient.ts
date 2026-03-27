@@ -283,12 +283,12 @@ export class MetaRouterAnalyticsClient {
    * Handles the app state change event.
    * @param nextState - The new app state.
    */
-  private handleAppStateChange = (nextState: AppStateStatus) => {
+  private handleAppStateChange = async (nextState: AppStateStatus) => {
     if (this.appState === 'active' && nextState.match(/inactive|background/)) {
-      this.persistentQueue.flushToDisk(); // persist to disk on background
-      this.flush(); // try to get events out
       this.stopFlushLoop(); // pause periodic loop
       this.clearNextTimer(); // cancel probe timer
+      await this.flush(); // send what we can within the background window
+      await this.persistentQueue.flushToDisk(); // persist whatever remains
     }
     if (nextState === 'active' && this.lifecycle === 'ready') {
       this.startFlushLoop(); // resume periodic loop
