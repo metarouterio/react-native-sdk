@@ -404,6 +404,162 @@ describe('PersistentEventQueue', () => {
     });
   });
 
+  describe('TTL expiry', () => {
+    it('drops events older than 7 days on rehydrate', async () => {
+      const { store } = mockNativeStorage();
+      const now = Date.now();
+      const eightDaysAgo = new Date(
+        now - 8 * 24 * 60 * 60 * 1000
+      ).toISOString();
+      const oneDayAgo = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'expired', timestamp: eightDaysAgo },
+          { type: 'track', event: 'fresh', timestamp: oneDayAgo },
+        ],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.rehydrate();
+
+      expect(dispatcher.getQueueRef().length).toBe(1);
+      expect((dispatcher.getQueueRef()[0] as any).event).toBe('fresh');
+    });
+
+    it('keeps events without a timestamp field', async () => {
+      const { store } = mockNativeStorage();
+      store.data = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'no_ts' }],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.rehydrate();
+
+      expect(dispatcher.getQueueRef().length).toBe(1);
+    });
+
+    it('discards snapshot and deletes from disk when all events are expired', async () => {
+      const { store, mock } = mockNativeStorage();
+      const eightDaysAgo = new Date(
+        Date.now() - 8 * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'old1', timestamp: eightDaysAgo },
+          { type: 'track', event: 'old2', timestamp: eightDaysAgo },
+        ],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.rehydrate();
+
+      expect(dispatcher.getQueueRef().length).toBe(0);
+      expect(mock.deleteSnapshot).toHaveBeenCalled();
+    });
+  });
+
+  describe('sentAt on rehydrated events', () => {
+    it('sets sentAt to current time on rehydrated events', async () => {
+      const { store } = mockNativeStorage();
+      const oneDayAgo = new Date(
+        Date.now() - 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'e1', timestamp: oneDayAgo }],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      const before = new Date().toISOString();
+      await pq.rehydrate();
+      const after = new Date().toISOString();
+
+      const rehydrated = dispatcher.getQueueRef()[0] as any;
+      expect(rehydrated.sentAt).toBeDefined();
+      expect(rehydrated.sentAt >= before).toBe(true);
+      expect(rehydrated.sentAt <= after).toBe(true);
+      // Original timestamp preserved
+      expect(rehydrated.timestamp).toBe(oneDayAgo);
+    });
+  });
+
+  describe('rehydratedEvents count', () => {
+    it('tracks the number of rehydrated events', async () => {
+      const { store } = mockNativeStorage();
+      store.data = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'e1' },
+          { type: 'track', event: 'e2' },
+          { type: 'track', event: 'e3' },
+        ],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      expect(pq.rehydratedEvents).toBe(0);
+      await pq.rehydrate();
+      expect(pq.rehydratedEvents).toBe(3);
+    });
+
+    it('excludes expired events from count', async () => {
+      const { store } = mockNativeStorage();
+      const eightDaysAgo = new Date(
+        Date.now() - 8 * 24 * 60 * 60 * 1000
+      ).toISOString();
+      const oneDayAgo = new Date(
+        Date.now() - 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'expired', timestamp: eightDaysAgo },
+          { type: 'track', event: 'fresh1', timestamp: oneDayAgo },
+          { type: 'track', event: 'fresh2', timestamp: oneDayAgo },
+        ],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.rehydrate();
+      expect(pq.rehydratedEvents).toBe(2);
+    });
+
+    it('is 0 when no snapshot exists', async () => {
+      mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.rehydrate();
+      expect(pq.rehydratedEvents).toBe(0);
+    });
+  });
+
   describe('full round-trip', () => {
     it('enqueue → flushToDisk → rehydrate preserves events', async () => {
       mockNativeStorage();

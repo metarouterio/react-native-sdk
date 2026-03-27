@@ -480,6 +480,7 @@ export class MetaRouterAnalyticsClient {
       circuitRemainingMs: d.circuitRemainingMs,
       maxQueueEvents: d.maxQueueEvents,
       tracingEnabled: this.tracingEnabled,
+      rehydratedEvents: this.persistentQueue.rehydratedEvents,
     };
   }
 

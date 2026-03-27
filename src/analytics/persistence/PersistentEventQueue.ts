@@ -8,6 +8,7 @@ import {
   SNAPSHOT_VERSION,
   FLUSH_THRESHOLD_EVENTS,
   FLUSH_THRESHOLD_BYTES,
+  DEFAULT_EVENT_TTL_MS,
   type QueueSnapshot,
 } from './types';
 import { log, warn } from '../utils/logger';
@@ -22,9 +23,14 @@ let hasRehydrated = false;
 export class PersistentEventQueue {
   private readonly dispatcher: Dispatcher;
   private flushInFlight: Promise<void> | null = null;
+  private _rehydratedEvents: number = 0;
 
   constructor(dispatcher: Dispatcher) {
     this.dispatcher = dispatcher;
+  }
+
+  get rehydratedEvents(): number {
+    return this._rehydratedEvents;
   }
 
   /**
@@ -68,8 +74,34 @@ export class PersistentEventQueue {
         return;
       }
 
-      log(`Rehydrating ${snapshot.events.length} events from disk`);
-      this.dispatcher.enqueueFront(snapshot.events);
+      // Filter out events older than TTL
+      const now = Date.now();
+      const cutoff = now - DEFAULT_EVENT_TTL_MS;
+      const fresh = snapshot.events.filter((e) => {
+        const ts = (e as any).timestamp;
+        if (!ts) return true; // keep events without timestamp
+        const eventTime = new Date(ts).getTime();
+        return !isNaN(eventTime) && eventTime > cutoff;
+      });
+
+      const expired = snapshot.events.length - fresh.length;
+      if (expired > 0) {
+        warn(`Dropped ${expired} expired events (older than 7 days)`);
+      }
+
+      if (fresh.length === 0) {
+        log('All snapshot events expired — discarding');
+        await nativeDeleteSnapshot();
+        return;
+      }
+
+      // Update sentAt to current time (preserve original timestamp)
+      const nowIso = new Date(now).toISOString();
+      const prepared = fresh.map((e) => ({ ...e, sentAt: nowIso }));
+
+      log(`Rehydrating ${prepared.length} events from disk`);
+      this.dispatcher.enqueueFront(prepared);
+      this._rehydratedEvents = prepared.length;
 
       // Clean up disk after successful rehydration
       await nativeDeleteSnapshot();
