@@ -252,7 +252,7 @@ export class MetaRouterAnalyticsClient {
 
     // Check if we should flush to disk based on thresholds
     if (this.persistentQueue.shouldFlushToDisk()) {
-      this.persistentQueue.flushToDisk();
+      void this.persistentQueue.flushToDisk();
     }
   }
 

@@ -261,11 +261,11 @@ describe('Dispatcher', () => {
     expect(queue.map((e: any) => e.event)).toEqual(['z', 'a', 'b']);
   });
 
-  it('getQueueSizeBytes returns approximate serialized size', () => {
+  it('getQueueSizeChars returns approximate serialized size', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
-    expect(d.getQueueSizeBytes()).toBe(0);
+    expect(d.getQueueSizeChars()).toBe(0);
 
     const event = {
       type: 'track',
@@ -273,10 +273,10 @@ describe('Dispatcher', () => {
       properties: { key: 'value' },
     } as any;
     d.enqueue(event);
-    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
+    expect(d.getQueueSizeChars()).toBeGreaterThan(0);
   });
 
-  it('getQueueSizeBytes decreases after flush', async () => {
+  it('getQueueSizeChars decreases after flush', async () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
@@ -288,35 +288,35 @@ describe('Dispatcher', () => {
         properties: { i },
       } as any);
     }
-    const before = d.getQueueSizeBytes();
+    const before = d.getQueueSizeChars();
     expect(before).toBeGreaterThan(0);
 
     await d.flush();
-    expect(d.getQueueSizeBytes()).toBe(0);
+    expect(d.getQueueSizeChars()).toBe(0);
   });
 
-  it('getQueueSizeBytes tracks correctly through enqueueFront', () => {
+  it('getQueueSizeChars tracks correctly through enqueueFront', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
 
     d.enqueue({ type: 'track', event: 'a' } as any);
-    const sizeAfterOne = d.getQueueSizeBytes();
+    const sizeAfterOne = d.getQueueSizeChars();
 
     d.enqueueFront([{ type: 'track', event: 'b' } as any]);
-    expect(d.getQueueSizeBytes()).toBeGreaterThan(sizeAfterOne);
+    expect(d.getQueueSizeChars()).toBeGreaterThan(sizeAfterOne);
   });
 
-  it('getQueueSizeBytes resets to 0 after reset()', () => {
+  it('getQueueSizeChars resets to 0 after reset()', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
 
     d.enqueue({ type: 'track', event: 'a' } as any);
-    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
+    expect(d.getQueueSizeChars()).toBeGreaterThan(0);
 
     d.reset();
-    expect(d.getQueueSizeBytes()).toBe(0);
+    expect(d.getQueueSizeChars()).toBe(0);
   });
 
   it('stress test: all 2K queued events successfully transmit in batches', async () => {

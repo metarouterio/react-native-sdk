@@ -8,6 +8,10 @@
 
 RCT_EXPORT_MODULE()
 
++ (BOOL)requiresMainQueueSetup {
+  return NO;
+}
+
 /**
  * Returns the path to the queue snapshot file.
  * Location: Application Support/metarouter/disk-queue/queue.v1.json

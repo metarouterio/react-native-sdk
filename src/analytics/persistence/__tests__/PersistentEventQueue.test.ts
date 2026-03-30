@@ -473,7 +473,7 @@ describe('PersistentEventQueue', () => {
   });
 
   describe('sentAt on rehydrated events', () => {
-    it('sets sentAt to current time on rehydrated events', async () => {
+    it('does not set sentAt at rehydration time (drainBatch stamps it at send time)', async () => {
       const { store } = mockNativeStorage();
       const oneDayAgo = new Date(
         Date.now() - 24 * 60 * 60 * 1000
@@ -488,14 +488,10 @@ describe('PersistentEventQueue', () => {
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
-      const before = new Date().toISOString();
       await pq.rehydrate();
-      const after = new Date().toISOString();
 
       const rehydrated = dispatcher.getQueueRef()[0] as any;
-      expect(rehydrated.sentAt).toBeDefined();
-      expect(rehydrated.sentAt >= before).toBe(true);
-      expect(rehydrated.sentAt <= after).toBe(true);
+      expect(rehydrated.sentAt).toBeUndefined();
       // Original timestamp preserved
       expect(rehydrated.timestamp).toBe(oneDayAgo);
     });

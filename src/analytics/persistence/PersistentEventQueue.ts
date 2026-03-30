@@ -7,7 +7,7 @@ import {
 import {
   SNAPSHOT_VERSION,
   FLUSH_THRESHOLD_EVENTS,
-  FLUSH_THRESHOLD_BYTES,
+  FLUSH_THRESHOLD_CHARS,
   DEFAULT_EVENT_TTL_MS,
   type QueueSnapshot,
 } from './types';
@@ -95,13 +95,9 @@ export class PersistentEventQueue {
         return;
       }
 
-      // Update sentAt to current time (preserve original timestamp)
-      const nowIso = new Date(now).toISOString();
-      const prepared = fresh.map((e) => ({ ...e, sentAt: nowIso }));
-
-      log(`Rehydrating ${prepared.length} events from disk`);
-      this.dispatcher.enqueueFront(prepared);
-      this._rehydratedEvents = prepared.length;
+      log(`Rehydrating ${fresh.length} events from disk`);
+      this.dispatcher.enqueueFront(fresh);
+      this._rehydratedEvents = fresh.length;
 
       // Clean up disk after successful rehydration
       await nativeDeleteSnapshot();
@@ -153,7 +149,7 @@ export class PersistentEventQueue {
   shouldFlushToDisk(): boolean {
     const queue = this.dispatcher.getQueueRef();
     if (queue.length >= FLUSH_THRESHOLD_EVENTS) return true;
-    if (this.dispatcher.getQueueSizeBytes() >= FLUSH_THRESHOLD_BYTES)
+    if (this.dispatcher.getQueueSizeChars() >= FLUSH_THRESHOLD_CHARS)
       return true;
     return false;
   }

@@ -18,5 +18,5 @@ export const DEFAULT_EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Flush-to-disk threshold: event count */
 export const FLUSH_THRESHOLD_EVENTS = 500;
 
-/** Flush-to-disk threshold: serialized size in bytes */
-export const FLUSH_THRESHOLD_BYTES = 2 * 1024 * 1024; // 2MB
+/** Flush-to-disk threshold: approximate serialized size in characters */
+export const FLUSH_THRESHOLD_CHARS = 2 * 1024 * 1024; // ~2M chars
