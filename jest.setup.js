@@ -11,7 +11,13 @@ jest.mock('react-native', () => ({
     OS: 'ios',
     select: jest.fn((obj) => obj.ios || obj.default),
   },
-  NativeModules: {},
+  NativeModules: {
+    MetaRouterQueueStorage: {
+      readSnapshot: jest.fn(() => Promise.resolve(null)),
+      writeSnapshot: jest.fn(() => Promise.resolve()),
+      deleteSnapshot: jest.fn(() => Promise.resolve()),
+    },
+  },
   NativeEventEmitter: jest.fn().mockImplementation(() => ({
     addListener: jest.fn(),
     removeListener: jest.fn(),
