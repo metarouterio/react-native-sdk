@@ -1,12 +1,18 @@
-import { EventContext, EventPayload, InitOptions, Lifecycle } from "./types";
-import { AppState, AppStateStatus } from "react-native";
-import { log, setDebugLogging, warn, error } from "./utils/logger";
-import { IdentityManager } from "./IdentityManager";
-import { enrichEvent } from "./utils/enrichEvent";
-import { getContextInfo, clearContextCache } from "./utils/contextInfo";
-import { getIdentityField, setIdentityField, removeIdentityField, ADVERTISING_ID_KEY } from "./utils/identityStorage";
-import CircuitBreaker from "./utils/circuitBreaker";
-import Dispatcher from "./dispatcher";
+import { EventContext, EventPayload, InitOptions, Lifecycle } from './types';
+import { AppState, AppStateStatus } from 'react-native';
+import { log, setDebugLogging, warn, error } from './utils/logger';
+import { IdentityManager } from './IdentityManager';
+import { enrichEvent } from './utils/enrichEvent';
+import { getContextInfo, clearContextCache } from './utils/contextInfo';
+import {
+  getIdentityField,
+  setIdentityField,
+  removeIdentityField,
+  ADVERTISING_ID_KEY,
+} from './utils/identityStorage';
+import CircuitBreaker from './utils/circuitBreaker';
+import Dispatcher from './dispatcher';
+import { PersistentEventQueue } from './persistence/PersistentEventQueue';
 
 /**
  * Analytics client for MetaRouter.
@@ -16,7 +22,7 @@ import Dispatcher from "./dispatcher";
  * - Provides debug and cleanup utilities.
  */
 export class MetaRouterAnalyticsClient {
-  private lifecycle: Lifecycle = "idle";
+  private lifecycle: Lifecycle = 'idle';
   private initPromise: Promise<void> | null = null;
   private queue: EventPayload[] = [];
   private flushIntervalSeconds = 10;
@@ -29,6 +35,7 @@ export class MetaRouterAnalyticsClient {
   private static readonly MAX_QUEUE_SIZE = 20;
   private maxQueueEvents: number = 2000;
   private dispatcher!: Dispatcher;
+  private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
 
   /**
@@ -36,13 +43,13 @@ export class MetaRouterAnalyticsClient {
    * @param options - The initialization options.
    */
   constructor(options: InitOptions) {
-    log("Initializing analytics client", options);
+    log('Initializing analytics client', options);
 
     const { writeKey, ingestionHost, flushIntervalSeconds } = options;
 
-    if (!writeKey || typeof writeKey !== "string" || writeKey.trim() === "") {
+    if (!writeKey || typeof writeKey !== 'string' || writeKey.trim() === '') {
       throw new Error(
-        "MetaRouterAnalyticsClient initialization failed: `writeKey` is required and must be a non-empty string."
+        'MetaRouterAnalyticsClient initialization failed: `writeKey` is required and must be a non-empty string.'
       );
     }
 
@@ -53,12 +60,12 @@ export class MetaRouterAnalyticsClient {
       // but "https://example.com/" or "https://example.com/api/" are not.
       // eslint-disable-next-line no-new
       new URL(ingestionHost);
-      if (ingestionHost.endsWith("/")) {
+      if (ingestionHost.endsWith('/')) {
         throw new Error();
       }
     } catch {
       throw new Error(
-        "MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash."
+        'MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash.'
       );
     }
 
@@ -78,8 +85,8 @@ export class MetaRouterAnalyticsClient {
       fetchWithTimeout: (url, init, timeoutMs) =>
         this.fetchWithTimeout(url, init, timeoutMs),
       canSend: () =>
-        this.lifecycle === "ready" && !!this.identityManager.getAnonymousId(),
-      isOperational: () => this.lifecycle === "ready",
+        this.lifecycle === 'ready' && !!this.identityManager.getAnonymousId(),
+      isOperational: () => this.lifecycle === 'ready',
       isTracingEnabled: () => this.tracingEnabled,
       createBreaker: () =>
         new CircuitBreaker({
@@ -93,7 +100,7 @@ export class MetaRouterAnalyticsClient {
               `[MetaRouter] Circuit ${prev} → ${next}` +
                 (meta.cooldownMs != null
                   ? ` (cooldown=${meta.cooldownMs}ms)`
-                  : ""),
+                  : ''),
               { failures: meta.failures, openCount: meta.openCount }
             );
           },
@@ -105,13 +112,14 @@ export class MetaRouterAnalyticsClient {
         (this as any).scheduleFlushIn(ms, { fromDispatcher: true });
       },
       onFatalConfig: () => {
-        this.lifecycle = "disabled";
+        this.lifecycle = 'disabled';
       },
     });
 
     this.queue = this.dispatcher.getQueueRef();
+    this.persistentQueue = new PersistentEventQueue(this.dispatcher);
     log(
-      "Analytics client constructor completed, initialization in progress..."
+      'Analytics client constructor completed, initialization in progress...'
     );
   }
 
@@ -120,52 +128,57 @@ export class MetaRouterAnalyticsClient {
    * @returns A promise that resolves when the client is initialized.
    */
   public async init() {
-    if (this.lifecycle === "ready") {
-      log("Analytics client already ready");
+    if (this.lifecycle === 'ready') {
+      log('Analytics client already ready');
       return;
     }
-    if (this.lifecycle === "initializing" && this.initPromise) {
-      log("Analytics client initialization already in-flight");
+    if (this.lifecycle === 'initializing' && this.initPromise) {
+      log('Analytics client initialization already in-flight');
       return this.initPromise;
     }
 
-    if (this.lifecycle === "disabled") {
-      warn("Analytics client is disabled — init skipped");
+    if (this.lifecycle === 'disabled') {
+      warn('Analytics client is disabled — init skipped');
       return;
     }
 
-    this.lifecycle = "initializing";
-    log("Starting analytics client initialization...");
+    this.lifecycle = 'initializing';
+    log('Starting analytics client initialization...');
 
     this.initPromise = (async () => {
       try {
         await this.identityManager.init();
-        log("IdentityManager initialized successfully");
+        log('IdentityManager initialized successfully');
+
+        await this.persistentQueue.rehydrate();
 
         this.startFlushLoop();
         log(
-          "Flush loop started with interval:",
+          'Flush loop started with interval:',
           this.flushIntervalSeconds,
-          "seconds"
+          'seconds'
         );
 
         this.setupAppStateListener();
-        log("App state listener setup completed");
+        log('App state listener setup completed');
 
         // Load persisted advertising ID if available
-        const persistedAdvertisingId = await getIdentityField(ADVERTISING_ID_KEY);
+        const persistedAdvertisingId =
+          await getIdentityField(ADVERTISING_ID_KEY);
 
-        this.context = await getContextInfo(persistedAdvertisingId || undefined);
+        this.context = await getContextInfo(
+          persistedAdvertisingId || undefined
+        );
 
         if (persistedAdvertisingId) {
-          log("Restored advertising ID from storage");
+          log('Restored advertising ID from storage');
         }
 
-        this.lifecycle = "ready";
-        log("Analytics client initialization completed successfully");
+        this.lifecycle = 'ready';
+        log('Analytics client initialization completed successfully');
       } catch (error) {
-        this.lifecycle = "idle"; // allow retry
-        warn("Analytics client initialization failed:", error);
+        this.lifecycle = 'idle'; // allow retry
+        warn('Analytics client initialization failed:', error);
         throw error;
       }
     })();
@@ -174,7 +187,7 @@ export class MetaRouterAnalyticsClient {
   }
 
   private endpoint(path: string) {
-    return `${this.ingestionHost}${path.startsWith("/") ? path : `/${path}`}`;
+    return `${this.ingestionHost}${path.startsWith('/') ? path : `/${path}`}`;
   }
 
   /**
@@ -185,7 +198,7 @@ export class MetaRouterAnalyticsClient {
   }
 
   private isReady(): boolean {
-    return this.lifecycle === "ready";
+    return this.lifecycle === 'ready';
   }
 
   /**
@@ -224,7 +237,7 @@ export class MetaRouterAnalyticsClient {
    */
   private enqueue(event: EventPayload) {
     if (!this.isReady()) {
-      warn("Analytics client is not ready to operate");
+      warn('Analytics client is not ready to operate');
       return;
     }
 
@@ -236,6 +249,11 @@ export class MetaRouterAnalyticsClient {
     );
 
     this.dispatcher.enqueue(enrichedEvent);
+
+    // Check if we should flush to disk based on thresholds
+    if (this.persistentQueue.shouldFlushToDisk()) {
+      void this.persistentQueue.flushToDisk();
+    }
   }
 
   private scheduleFlushIn(ms: number, opts?: { fromDispatcher?: boolean }) {
@@ -256,7 +274,7 @@ export class MetaRouterAnalyticsClient {
    */
   private setupAppStateListener() {
     this.appStateSubscription = AppState.addEventListener(
-      "change",
+      'change',
       this.handleAppStateChange
     );
   }
@@ -265,13 +283,14 @@ export class MetaRouterAnalyticsClient {
    * Handles the app state change event.
    * @param nextState - The new app state.
    */
-  private handleAppStateChange = (nextState: AppStateStatus) => {
-    if (this.appState === "active" && nextState.match(/inactive|background/)) {
-      this.flush(); // try to get events out
+  private handleAppStateChange = async (nextState: AppStateStatus) => {
+    if (this.appState === 'active' && nextState.match(/inactive|background/)) {
       this.stopFlushLoop(); // pause periodic loop
       this.clearNextTimer(); // cancel probe timer
+      await this.flush(); // send what we can within the background window
+      await this.persistentQueue.flushToDisk(); // persist whatever remains
     }
-    if (nextState === "active" && this.lifecycle === "ready") {
+    if (nextState === 'active' && this.lifecycle === 'ready') {
       this.startFlushLoop(); // resume periodic loop
       this.flush();
     }
@@ -284,9 +303,9 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   track(event: string, properties?: Record<string, any>) {
-    log("Tracking event:", event, "with properties:", properties);
-    this.enqueue({ type: "track", event, properties, timestamp: this.now() });
-    log("Event enqueued, queue length:", this.queue.length);
+    log('Tracking event:', event, 'with properties:', properties);
+    this.enqueue({ type: 'track', event, properties, timestamp: this.now() });
+    log('Event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -295,10 +314,10 @@ export class MetaRouterAnalyticsClient {
    * @param traits - The traits to identify the user with.
    */
   identify(userId: string, traits?: Record<string, any>) {
-    log("Identifying user:", userId, "with traits:", traits);
+    log('Identifying user:', userId, 'with traits:', traits);
     this.identityManager.identify(userId);
-    this.enqueue({ type: "identify", userId, traits, timestamp: this.now() });
-    log("Identify event enqueued, queue length:", this.queue.length);
+    this.enqueue({ type: 'identify', userId, traits, timestamp: this.now() });
+    log('Identify event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -307,14 +326,14 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   page(name: string, properties?: Record<string, any>) {
-    log("Tracking page:", name, "with properties:", properties);
+    log('Tracking page:', name, 'with properties:', properties);
     this.enqueue({
-      type: "page",
+      type: 'page',
       event: name,
       properties,
       timestamp: this.now(),
     });
-    log("Page event enqueued, queue length:", this.queue.length);
+    log('Page event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -323,10 +342,10 @@ export class MetaRouterAnalyticsClient {
    * @param traits - The traits to group the user with.
    */
   group(groupId: string, traits?: Record<string, any>) {
-    log("Grouping user:", groupId, "with traits:", traits);
+    log('Grouping user:', groupId, 'with traits:', traits);
     this.identityManager.group(groupId);
-    this.enqueue({ type: "group", groupId, traits, timestamp: this.now() });
-    log("Group event enqueued, queue length:", this.queue.length);
+    this.enqueue({ type: 'group', groupId, traits, timestamp: this.now() });
+    log('Group event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -335,14 +354,14 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   screen(name: string, properties?: Record<string, any>) {
-    log("Tracking screen:", name, "with properties:", properties);
+    log('Tracking screen:', name, 'with properties:', properties);
     this.enqueue({
-      type: "screen",
+      type: 'screen',
       event: name,
       properties,
       timestamp: this.now(),
     });
-    log("Screen event enqueued, queue length:", this.queue.length);
+    log('Screen event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -351,10 +370,10 @@ export class MetaRouterAnalyticsClient {
    * @param newUserId - The new user ID to alias to.
    */
   alias(newUserId: string) {
-    log("Aliasing user to:", newUserId);
+    log('Aliasing user to:', newUserId);
     this.identityManager.identify(newUserId);
-    this.enqueue({ type: "alias", userId: newUserId, timestamp: this.now() });
-    log("Alias event enqueued, queue length:", this.queue.length);
+    this.enqueue({ type: 'alias', userId: newUserId, timestamp: this.now() });
+    log('Alias event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -369,20 +388,26 @@ export class MetaRouterAnalyticsClient {
    */
   async setAdvertisingId(advertisingId: string) {
     if (!this.isReady()) {
-      warn("Analytics client is not ready. Call init() before setAdvertisingId()");
+      warn(
+        'Analytics client is not ready. Call init() before setAdvertisingId()'
+      );
       return;
     }
 
-    if (!advertisingId || typeof advertisingId !== 'string' || advertisingId.trim() === '') {
-      warn("Invalid advertising ID provided. Must be a non-empty string.");
+    if (
+      !advertisingId ||
+      typeof advertisingId !== 'string' ||
+      advertisingId.trim() === ''
+    ) {
+      warn('Invalid advertising ID provided. Must be a non-empty string.');
       return;
     }
 
-    log("Setting advertising ID");
+    log('Setting advertising ID');
     await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
     clearContextCache();
     this.context = await getContextInfo(advertisingId);
-    log("Advertising ID updated, persisted, and context refreshed");
+    log('Advertising ID updated, persisted, and context refreshed');
   }
 
   /**
@@ -394,15 +419,17 @@ export class MetaRouterAnalyticsClient {
    */
   async clearAdvertisingId() {
     if (!this.isReady()) {
-      warn("Analytics client is not ready. Call init() before clearAdvertisingId()");
+      warn(
+        'Analytics client is not ready. Call init() before clearAdvertisingId()'
+      );
       return;
     }
 
-    log("Clearing advertising ID");
+    log('Clearing advertising ID');
     await removeIdentityField(ADVERTISING_ID_KEY);
     clearContextCache();
     this.context = await getContextInfo();
-    log("Advertising ID cleared from storage and context");
+    log('Advertising ID cleared from storage and context');
   }
 
   /**
@@ -430,7 +457,7 @@ export class MetaRouterAnalyticsClient {
    */
   enableDebugLogging() {
     setDebugLogging(true);
-    log("Debug logging enabled");
+    log('Debug logging enabled');
   }
 
   /**
@@ -442,7 +469,7 @@ export class MetaRouterAnalyticsClient {
       lifecycle: this.lifecycle,
       queueLength: d.queueLength,
       ingestionHost: this.ingestionHost,
-      writeKey: this.writeKey ? "***" + this.writeKey.slice(-4) : undefined,
+      writeKey: this.writeKey ? '***' + this.writeKey.slice(-4) : undefined,
       flushIntervalSeconds: this.flushIntervalSeconds,
       anonymousId: this.identityManager.getAnonymousId(),
       userId: this.identityManager.getUserId(),
@@ -453,6 +480,7 @@ export class MetaRouterAnalyticsClient {
       circuitRemainingMs: d.circuitRemainingMs,
       maxQueueEvents: d.maxQueueEvents,
       tracingEnabled: this.tracingEnabled,
+      rehydratedEvents: this.persistentQueue.rehydratedEvents,
     };
   }
 
@@ -468,10 +496,10 @@ export class MetaRouterAnalyticsClient {
    * Resets the analytics client.
    */
   public async reset(): Promise<void> {
-    log("Resetting analytics client");
+    log('Resetting analytics client');
 
     // Flip lifecycle first so other paths see we're resetting
-    this.lifecycle = "resetting";
+    this.lifecycle = 'resetting';
 
     // Stop background work
     this.dispatcher.stop();
@@ -479,6 +507,7 @@ export class MetaRouterAnalyticsClient {
     this.appStateSubscription = null;
 
     this.dispatcher.reset();
+    await this.persistentQueue.deleteSnapshot();
 
     // Clear identity (must remove persisted IDs)
     await this.identityManager.reset();
@@ -490,9 +519,9 @@ export class MetaRouterAnalyticsClient {
     this.initPromise = null;
 
     // Back to idle: explicit init required
-    this.lifecycle = "idle";
+    this.lifecycle = 'idle';
     this.clearNextTimer();
 
-    log("Analytics client reset complete");
+    log('Analytics client reset complete');
   }
 }

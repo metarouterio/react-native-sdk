@@ -14,6 +14,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
   - [Direct Usage](#direct-usage)
 - [API Reference](#api-reference)
 - [Features](#features)
+- [Disk-Backed Queue Persistence](#disk-backed-queue-persistence)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
@@ -26,6 +27,8 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 ```sh
 npm install @metarouter/react-native-sdk @react-native-async-storage/async-storage react-native-device-info
 ```
+
+After installing or upgrading, run `cd ios && pod install` and rebuild the native app. This release includes native iOS and Android modules for queue persistence, so a JavaScript-only reload is not sufficient.
 
 ## Usage
 
@@ -232,18 +235,29 @@ The analytics client provides the following methods:
 - 🎣 **React Hooks**: Easy integration with React components
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
+- 💾 **Best-Effort Queue Persistence**: Can persist queued events to native disk storage and rehydrate them on next launch
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
 - 🐛 **Debug Support**: Built-in debugging tools for troubleshooting
+
+## Disk-Backed Queue Persistence
+
+This release adds native iOS and Android storage for best-effort queue durability.
+
+- If queued events remain buffered when the app backgrounds, the SDK may persist the remaining queue to disk.
+- If the in-memory queue grows past internal persistence thresholds, the SDK may snapshot the queue to disk as a fallback.
+- Persisted events are rehydrated during the next `init()`.
+- This is a durability baseline, not a full offline mode. The SDK still primarily uses in-memory batching and normal network delivery, and it does not guarantee zero-loss across every crash or termination window.
 
 ## ✅ Compatibility
 
 | Component                  | Supported Versions |
 | -------------------------- | ------------------ |
-| React Native               | >= 0.63            |
+| React Native               | >= 0.73            |
 | React                      | >= 16.8            |
 | iOS Deployment Target      | >= iOS 13          |
-| Android Min SDK            | >= API 21          |
-| Node.js                    | >= 16              |
+| Android Min SDK            | >= API 23          |
+| Android Build JDK          | >= 17              |
+| Node.js                    | >= 18              |
 
 ## Debugging
 
@@ -299,7 +313,7 @@ Half-open probe: After cooldown, one probe is allowed.
 Success → breaker CLOSED (keep flushing).
 Failure → breaker OPEN again with longer cooldown.
 
-sentAt semantics: sentAt is stamped when the event is enqueued. If the client is backing off, the actual transmit may be later; sentAt reflects when the event entered the queue.
+sentAt semantics: sentAt is stamped when a batch is prepared for transmission. If the client is backing off, the actual transmit may be later; if you need the original occurrence time, include your own event `timestamp`.
 
 | Status / Failure                    | Action                                                               | Breaker | Queue effect                   |
 | ----------------------------------- | -------------------------------------------------------------------- | ------- | ------------------------------ |
