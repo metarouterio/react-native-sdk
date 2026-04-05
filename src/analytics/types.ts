@@ -1,10 +1,10 @@
 export type EventType =
-  | "track"
-  | "identify"
-  | "group"
-  | "screen"
-  | "alias"
-  | "page";
+  | 'track'
+  | 'identify'
+  | 'group'
+  | 'screen'
+  | 'alias'
+  | 'page';
 
 export interface EventPayload {
   type: EventType;
@@ -33,6 +33,8 @@ export interface InitOptions {
   debug?: boolean;
   /** Max events held in memory; oldest are dropped once cap is hit (default: 2000) */
   maxQueueEvents?: number;
+  /** Max bytes held in memory queue; oldest are dropped once cap is hit (default: 5MB) */
+  maxQueueBytes?: number;
 }
 
 export interface AnalyticsInterface {
@@ -87,8 +89,8 @@ export interface EventContext {
 }
 
 export type Lifecycle =
-  | "idle"
-  | "initializing"
-  | "ready"
-  | "resetting"
-  | "disabled";
+  | 'idle'
+  | 'initializing'
+  | 'ready'
+  | 'resetting'
+  | 'disabled';

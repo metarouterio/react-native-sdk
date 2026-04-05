@@ -34,6 +34,7 @@ export class MetaRouterAnalyticsClient {
   private identityManager: IdentityManager;
   private static readonly MAX_QUEUE_SIZE = 20;
   private maxQueueEvents: number = 2000;
+  private maxQueueBytes: number = 5 * 1024 * 1024; // 5MB default
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
@@ -76,8 +77,10 @@ export class MetaRouterAnalyticsClient {
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
     this.maxQueueEvents = options.maxQueueEvents ?? this.maxQueueEvents;
+    this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
       maxQueueEvents: this.maxQueueEvents,
+      maxQueueBytes: this.maxQueueBytes,
       autoFlushThreshold: MetaRouterAnalyticsClient.MAX_QUEUE_SIZE,
       maxBatchSize: 100,
       flushIntervalSeconds: this.flushIntervalSeconds,
@@ -176,6 +179,10 @@ export class MetaRouterAnalyticsClient {
 
         this.lifecycle = 'ready';
         log('Analytics client initialization completed successfully');
+
+        // Flush immediately so rehydrated events ship on cold start
+        // (AppState 'change' won't fire because the app is already active)
+        void this.flush();
       } catch (error) {
         this.lifecycle = 'idle'; // allow retry
         warn('Analytics client initialization failed:', error);

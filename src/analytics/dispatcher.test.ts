@@ -3,6 +3,7 @@ import CircuitBreaker from './utils/circuitBreaker';
 
 const baseOpts = () => ({
   maxQueueEvents: 2000,
+  maxQueueBytes: 5 * 1024 * 1024, // 5MB
   autoFlushThreshold: 20,
   maxBatchSize: 100,
   flushIntervalSeconds: 3600, // keep timer quiet unless started
@@ -168,7 +169,7 @@ describe('Dispatcher', () => {
     // Verify warn was called 8000 times (once per dropped event)
     expect((opts.warn as jest.Mock).mock.calls.length).toBe(8000);
     expect((opts.warn as jest.Mock).mock.calls[0][0]).toContain(
-      'Queue cap 2000 reached'
+      'Queue cap reached'
     );
   });
 

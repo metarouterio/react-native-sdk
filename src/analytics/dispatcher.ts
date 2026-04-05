@@ -5,6 +5,7 @@ export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface DispatcherOptions {
   maxQueueEvents: number;
+  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
   autoFlushThreshold: number; // e.g., 20
   maxBatchSize: number; // initial max; may shrink on 413
   flushIntervalSeconds: number;
@@ -108,13 +109,15 @@ export default class Dispatcher {
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: drop oldest until there's room
-    while (this.queue.length >= this.opts.maxQueueEvents) {
+    // Hard cap: drop oldest until there's room (count or byte limit)
+    while (
+      this.queue.length >= this.opts.maxQueueEvents ||
+      (this.queue.length > 0 &&
+        this.queueSizeChars + eventSize > this.opts.maxQueueBytes)
+    ) {
       const dropped = this.queue.shift();
       if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
-      this.opts.warn(
-        `[MetaRouter] Queue cap ${this.opts.maxQueueEvents} reached — dropped oldest event`
-      );
+      this.opts.warn(`[MetaRouter] Queue cap reached — dropped oldest event`);
     }
 
     this.opts.log('Enqueuing event', {
@@ -143,13 +146,21 @@ export default class Dispatcher {
       this.queueSizeChars += this.estimateEventSize(e);
     }
 
-    // Enforce cap: drop oldest (from front) until within limit
-    while (this.queue.length > this.opts.maxQueueEvents) {
+    // Enforce cap: drop oldest (from front) until within limit (count or byte)
+    while (
+      this.queue.length > this.opts.maxQueueEvents ||
+      this.queueSizeChars > this.opts.maxQueueBytes
+    ) {
       const dropped = this.queue.shift();
       if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
-      this.opts.warn(
-        `[MetaRouter] Queue cap ${this.opts.maxQueueEvents} reached — dropped oldest event`
+      this.opts.warn(`[MetaRouter] Queue cap reached — dropped oldest event`);
+    }
+
+    if (this.queue.length >= this.opts.autoFlushThreshold) {
+      this.opts.log(
+        `Event queue reached ${this.opts.autoFlushThreshold} after enqueueFront. Flushing queued events.`
       );
+      void this.flush();
     }
   }
 
