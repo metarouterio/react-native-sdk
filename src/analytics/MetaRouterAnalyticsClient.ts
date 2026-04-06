@@ -33,7 +33,6 @@ export class MetaRouterAnalyticsClient {
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
   private static readonly MAX_QUEUE_SIZE = 20;
-  private maxQueueEvents: number = 2000;
   private maxQueueBytes: number = 5 * 1024 * 1024; // 5MB default
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
@@ -76,10 +75,8 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.maxQueueEvents = options.maxQueueEvents ?? this.maxQueueEvents;
     this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
-      maxQueueEvents: this.maxQueueEvents,
       maxQueueBytes: this.maxQueueBytes,
       autoFlushThreshold: MetaRouterAnalyticsClient.MAX_QUEUE_SIZE,
       maxBatchSize: 100,
@@ -485,7 +482,7 @@ export class MetaRouterAnalyticsClient {
       flushInFlight: d.flushInFlight,
       circuitState: d.circuitState,
       circuitRemainingMs: d.circuitRemainingMs,
-      maxQueueEvents: d.maxQueueEvents,
+      maxQueueBytes: d.maxQueueBytes,
       tracingEnabled: this.tracingEnabled,
       rehydratedEvents: this.persistentQueue.rehydratedEvents,
     };

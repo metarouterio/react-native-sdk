@@ -1,7 +1,7 @@
-import { proxyClient, setRealClient } from "./proxyClient";
-import type { AnalyticsInterface } from "../types";
+import { proxyClient, setRealClient } from './proxyClient';
+import type { AnalyticsInterface } from '../types';
 
-describe("proxyClient", () => {
+describe('proxyClient', () => {
   let mockClient: jest.Mocked<AnalyticsInterface>;
 
   beforeEach(() => {
@@ -21,71 +21,71 @@ describe("proxyClient", () => {
       enableDebugLogging: jest.fn(),
       getDebugInfo: jest.fn().mockResolvedValue({ ok: true }),
     };
-    const { setRealClient } = require("./proxyClient");
+    const { setRealClient } = require('./proxyClient');
     setRealClient(null, { dropPending: true }); // clear state between tests
   });
 
-  it("queues method calls before client is set", () => {
-    proxyClient.track("Event A", { foo: "bar" });
-    proxyClient.identify("user-123", { email: "test@example.com" });
+  it('queues method calls before client is set', () => {
+    proxyClient.track('Event A', { foo: 'bar' });
+    proxyClient.identify('user-123', { email: 'test@example.com' });
 
     expect(mockClient.track).not.toHaveBeenCalled();
     expect(mockClient.identify).not.toHaveBeenCalled();
 
     setRealClient(mockClient);
 
-    expect(mockClient.track).toHaveBeenCalledWith("Event A", { foo: "bar" });
-    expect(mockClient.identify).toHaveBeenCalledWith("user-123", {
-      email: "test@example.com",
+    expect(mockClient.track).toHaveBeenCalledWith('Event A', { foo: 'bar' });
+    expect(mockClient.identify).toHaveBeenCalledWith('user-123', {
+      email: 'test@example.com',
     });
   });
 
-  it("forwards method calls immediately after client is set", () => {
+  it('forwards method calls immediately after client is set', () => {
     setRealClient(mockClient);
 
-    proxyClient.track("Event B", { foo: "baz" });
+    proxyClient.track('Event B', { foo: 'baz' });
     proxyClient.flush();
 
-    expect(mockClient.track).toHaveBeenCalledWith("Event B", { foo: "baz" });
+    expect(mockClient.track).toHaveBeenCalledWith('Event B', { foo: 'baz' });
     expect(mockClient.flush).toHaveBeenCalled();
   });
 
-  it("does nothing if realClient is reset to null", () => {
+  it('does nothing if realClient is reset to null', () => {
     setRealClient(mockClient);
     setRealClient(null);
 
-    proxyClient.track("Event C");
+    proxyClient.track('Event C');
     expect(mockClient.track).not.toHaveBeenCalled();
   });
 
-  it("logs a warning if the pending call queue exceeds 100", () => {
-    jest.spyOn(console, "warn").mockImplementation(() => {});
+  it('logs a warning if the pending call queue exceeds 100', () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
     for (let i = 0; i < 21; i++) {
       proxyClient.track(`Event ${i}`);
     }
     expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining("[MetaRouter] Oldest call dropped (queue cap 20)")
+      expect.stringContaining('[MetaRouter] Oldest call dropped (queue cap 20)')
     );
   });
 
-  it("replays queued calls FIFO", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('replays queued calls FIFO', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
 
-    proxyClient.track("A");
-    proxyClient.track("B");
-    proxyClient.track("C");
+    proxyClient.track('A');
+    proxyClient.track('B');
+    proxyClient.track('C');
 
     setRealClient(mockClient);
 
     expect(mockClient.track.mock.calls.map(([e]) => e)).toEqual([
-      "A",
-      "B",
-      "C",
+      'A',
+      'B',
+      'C',
     ]);
   });
 
-  it("coalesces concurrent flush calls into one in-flight promise", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('coalesces concurrent flush calls into one in-flight promise', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
     setRealClient(mockClient);
 
     // Hold the resolver to keep flush pending
@@ -104,8 +104,8 @@ describe("proxyClient", () => {
     await expect(p1).resolves.toBeUndefined();
   });
 
-  it("pre-bind flush resolves after bind + real flush", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('pre-bind flush resolves after bind + real flush', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
 
     const p = proxyClient.flush(); // queued promise
 
@@ -125,26 +125,29 @@ describe("proxyClient", () => {
     await expect(p).resolves.toBeUndefined();
   });
 
-  it("pre-bind reset resolves immediately and does not queue", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('pre-bind reset resolves immediately and does not queue', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
     await expect(proxyClient.reset()).resolves.toBeUndefined();
     setRealClient(mockClient);
     expect(mockClient.reset).not.toHaveBeenCalled();
   });
 
-  it("getDebugInfo queues pre-bind and resolves after real client is bound", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('getDebugInfo queues pre-bind and resolves after real client is bound', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
 
     // Call getDebugInfo before client is bound - should queue and wait
     const preBindPromise = proxyClient.getDebugInfo();
 
     // Bind the real client
-    mockClient.getDebugInfo.mockResolvedValue({ maxQueueEvents: 2000, lifecycle: 'ready' });
+    mockClient.getDebugInfo.mockResolvedValue({
+      maxQueueBytes: 5242880,
+      lifecycle: 'ready',
+    });
     setRealClient(mockClient);
 
     // Now the queued call should resolve with real client data
     const result = await preBindPromise;
-    expect(result).toEqual({ maxQueueEvents: 2000, lifecycle: 'ready' });
+    expect(result).toEqual({ maxQueueBytes: 5242880, lifecycle: 'ready' });
     expect(mockClient.getDebugInfo).toHaveBeenCalled();
 
     // Post-bind calls work immediately
@@ -153,9 +156,9 @@ describe("proxyClient", () => {
     expect(post).toEqual({ ok: true });
   });
 
-  it("on overflow, drops oldest queued async and rejects its promise", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
-    jest.spyOn(console, "warn").mockImplementation(() => {});
+  it('on overflow, drops oldest queued async and rejects its promise', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     const promises: Promise<unknown>[] = [];
     for (let i = 0; i < 20; i++) {
@@ -168,7 +171,7 @@ describe("proxyClient", () => {
     const p21 = proxyClient.flush();
     p21.catch(() => {}); // also guard just in case
 
-    await expect(promises[0]).rejects.toThrow("Dropped oldest call");
+    await expect(promises[0]).rejects.toThrow('Dropped oldest call');
 
     // Clean up the rest so they don't hang (no bind happened)
     setRealClient(null, { dropPending: true });
@@ -176,40 +179,40 @@ describe("proxyClient", () => {
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it("dropPending rejects queued async calls", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('dropPending rejects queued async calls', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
     const p = proxyClient.flush(); // queued
     setRealClient(null, { dropPending: true });
-    await expect(p).rejects.toThrow("Proxy dropped before bind");
+    await expect(p).rejects.toThrow('Proxy dropped before bind');
   });
 
-  it("swallows replay errors and continues", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
-    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    proxyClient.track("ok");
+  it('swallows replay errors and continues', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    proxyClient.track('ok');
     // Force an error by binding a client that throws in track
     mockClient.track.mockImplementationOnce(() => {
-      throw new Error("boom");
+      throw new Error('boom');
     });
     setRealClient(mockClient);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("replay error:"),
+      expect.stringContaining('replay error:'),
       expect.any(Error)
     );
     // subsequent calls still work
-    proxyClient.track("after");
-    expect(mockClient.track).toHaveBeenCalledWith("after", undefined);
+    proxyClient.track('after');
+    expect(mockClient.track).toHaveBeenCalledWith('after', undefined);
   });
 
-  it("allows new flush after unbind resets singleflight", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('allows new flush after unbind resets singleflight', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
     setRealClient(mockClient);
 
     let resolveFirst!: () => void;
     mockClient.flush.mockReturnValueOnce(
       new Promise<void>((r) => (resolveFirst = r))
     );
-    const p1 = proxyClient.flush();
+    proxyClient.flush(); // fire-and-forget; reset will drop it
     setRealClient(null, { dropPending: true }); // reset coalescer
     resolveFirst(); // settle the old promise (shouldn’t affect new state)
 
@@ -220,27 +223,27 @@ describe("proxyClient", () => {
     expect(mockClient.flush).toHaveBeenCalledTimes(2);
   });
 
-  it("forwards all methods post-bind", async () => {
-    const { proxyClient, setRealClient } = require("./proxyClient");
+  it('forwards all methods post-bind', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
     setRealClient(mockClient);
 
-    proxyClient.track("e", { p: 1 });
-    proxyClient.identify("u", { plan: "pro" });
-    proxyClient.group("g", { role: "admin" });
-    proxyClient.screen("S", { i: 2 });
-    proxyClient.page("P", { j: 3 });
-    proxyClient.alias("u2");
+    proxyClient.track('e', { p: 1 });
+    proxyClient.identify('u', { plan: 'pro' });
+    proxyClient.group('g', { role: 'admin' });
+    proxyClient.screen('S', { i: 2 });
+    proxyClient.page('P', { j: 3 });
+    proxyClient.alias('u2');
     proxyClient.enableDebugLogging();
     await proxyClient.flush();
     await proxyClient.reset();
     await proxyClient.getDebugInfo();
 
-    expect(mockClient.track).toHaveBeenCalledWith("e", { p: 1 });
-    expect(mockClient.identify).toHaveBeenCalledWith("u", { plan: "pro" });
-    expect(mockClient.group).toHaveBeenCalledWith("g", { role: "admin" });
-    expect(mockClient.screen).toHaveBeenCalledWith("S", { i: 2 });
-    expect(mockClient.page).toHaveBeenCalledWith("P", { j: 3 });
-    expect(mockClient.alias).toHaveBeenCalledWith("u2");
+    expect(mockClient.track).toHaveBeenCalledWith('e', { p: 1 });
+    expect(mockClient.identify).toHaveBeenCalledWith('u', { plan: 'pro' });
+    expect(mockClient.group).toHaveBeenCalledWith('g', { role: 'admin' });
+    expect(mockClient.screen).toHaveBeenCalledWith('S', { i: 2 });
+    expect(mockClient.page).toHaveBeenCalledWith('P', { j: 3 });
+    expect(mockClient.alias).toHaveBeenCalledWith('u2');
     expect(mockClient.enableDebugLogging).toHaveBeenCalled();
     expect(mockClient.flush).toHaveBeenCalled();
     expect(mockClient.reset).toHaveBeenCalled();

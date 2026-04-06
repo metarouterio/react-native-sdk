@@ -4,7 +4,6 @@ import type CircuitBreaker from './utils/circuitBreaker';
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface DispatcherOptions {
-  maxQueueEvents: number;
   maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
   autoFlushThreshold: number; // e.g., 20
   maxBatchSize: number; // initial max; may shrink on 413
@@ -39,7 +38,7 @@ export default class Dispatcher {
   private maxBatchSize: number;
   private readonly initialMaxBatchSize: number;
   private circuit: CircuitBreaker;
-  private queueSizeChars: number = 0;
+  private queueSizeBytes: number = 0;
 
   constructor(opts: DispatcherOptions) {
     this.opts = opts;
@@ -71,7 +70,7 @@ export default class Dispatcher {
   reset(): void {
     this.stop();
     this.queue.length = 0;
-    this.queueSizeChars = 0;
+    this.queueSizeBytes = 0;
     this.circuit = this.opts.createBreaker();
     this.maxBatchSize = this.initialMaxBatchSize;
   }
@@ -102,21 +101,22 @@ export default class Dispatcher {
     );
   }
 
+  private static encoder = new TextEncoder();
+
   private estimateEventSize(event: EventPayload): number {
-    return JSON.stringify(event).length;
+    return Dispatcher.encoder.encode(JSON.stringify(event)).byteLength;
   }
 
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: drop oldest until there's room (count or byte limit)
+    // Hard cap: drop oldest until there's room (byte limit)
     while (
-      this.queue.length >= this.opts.maxQueueEvents ||
-      (this.queue.length > 0 &&
-        this.queueSizeChars + eventSize > this.opts.maxQueueBytes)
+      this.queue.length > 0 &&
+      this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
     ) {
       const dropped = this.queue.shift();
-      if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
+      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
       this.opts.warn(`[MetaRouter] Queue cap reached — dropped oldest event`);
     }
 
@@ -125,7 +125,7 @@ export default class Dispatcher {
       messageId: (event as any)?.messageId,
     });
     this.queue.push(event);
-    this.queueSizeChars += eventSize;
+    this.queueSizeBytes += eventSize;
 
     if (this.queue.length >= this.opts.autoFlushThreshold) {
       this.opts.log(
@@ -143,16 +143,16 @@ export default class Dispatcher {
       this.queue.push(merged[i]);
     }
     for (const e of events) {
-      this.queueSizeChars += this.estimateEventSize(e);
+      this.queueSizeBytes += this.estimateEventSize(e);
     }
 
-    // Enforce cap: drop oldest (from front) until within limit (count or byte)
+    // Enforce cap: drop oldest (from front) until within byte limit
     while (
-      this.queue.length > this.opts.maxQueueEvents ||
-      this.queueSizeChars > this.opts.maxQueueBytes
+      this.queue.length > 0 &&
+      this.queueSizeBytes > this.opts.maxQueueBytes
     ) {
       const dropped = this.queue.shift();
-      if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
+      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
       this.opts.warn(`[MetaRouter] Queue cap reached — dropped oldest event`);
     }
 
@@ -164,8 +164,8 @@ export default class Dispatcher {
     }
   }
 
-  getQueueSizeChars(): number {
-    return this.queueSizeChars;
+  getQueueSizeBytes(): number {
+    return this.queueSizeBytes;
   }
 
   private drainBatch(): EventPayload[] {
@@ -173,7 +173,7 @@ export default class Dispatcher {
     const nowIso = new Date().toISOString();
     const drained = this.queue.splice(0, n);
     const batch = drained.map((e) => {
-      this.queueSizeChars -= this.estimateEventSize(e);
+      this.queueSizeBytes -= this.estimateEventSize(e);
       return { ...(e as any), sentAt: nowIso };
     });
     return batch;
@@ -187,7 +187,7 @@ export default class Dispatcher {
       this.queue.push(merged[i]);
     }
     for (const e of chunk) {
-      this.queueSizeChars += this.estimateEventSize(e);
+      this.queueSizeBytes += this.estimateEventSize(e);
     }
   }
 
@@ -287,7 +287,7 @@ export default class Dispatcher {
             if (s === 401 || s === 403 || s === 404) {
               this.opts.error(`Fatal config error ${s}. Disabling client.`);
               this.queue.length = 0;
-              this.queueSizeChars = 0;
+              this.queueSizeBytes = 0;
               this.stop();
               this.opts.onFatalConfig?.();
               return;
@@ -369,7 +369,7 @@ export default class Dispatcher {
       flushInFlight: !!this.flushInFlight,
       circuitState: this.circuit.getState(),
       circuitRemainingMs: this.circuit.remainingCooldownMs(),
-      maxQueueEvents: this.opts.maxQueueEvents,
+      maxQueueBytes: this.opts.maxQueueBytes,
       maxBatchSize: this.maxBatchSize,
     };
   }

@@ -6,8 +6,7 @@ import {
 } from './NativeQueueStorage';
 import {
   SNAPSHOT_VERSION,
-  FLUSH_THRESHOLD_EVENTS,
-  FLUSH_THRESHOLD_CHARS,
+  FLUSH_THRESHOLD_BYTES,
   DEFAULT_EVENT_TTL_MS,
   type QueueSnapshot,
 } from './types';
@@ -147,11 +146,7 @@ export class PersistentEventQueue {
    * Check if the queue has crossed a flush-to-disk threshold.
    */
   shouldFlushToDisk(): boolean {
-    const queue = this.dispatcher.getQueueRef();
-    if (queue.length >= FLUSH_THRESHOLD_EVENTS) return true;
-    if (this.dispatcher.getQueueSizeChars() >= FLUSH_THRESHOLD_CHARS)
-      return true;
-    return false;
+    return this.dispatcher.getQueueSizeBytes() >= FLUSH_THRESHOLD_BYTES;
   }
 
   /**

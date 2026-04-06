@@ -2,7 +2,6 @@ import Dispatcher from './dispatcher';
 import CircuitBreaker from './utils/circuitBreaker';
 
 const baseOpts = () => ({
-  maxQueueEvents: 2000,
   maxQueueBytes: 5 * 1024 * 1024, // 5MB
   autoFlushThreshold: 20,
   maxBatchSize: 100,
@@ -46,9 +45,11 @@ describe('Dispatcher', () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
-  it('respects maxQueueEvents by dropping oldest', () => {
+  it('respects maxQueueBytes by dropping oldest', () => {
     const opts = baseOpts();
-    opts.maxQueueEvents = 3;
+    // Each event is 28 chars: {"type":"track","event":"a"}
+    // Set cap to fit exactly 3 events (84 chars)
+    opts.maxQueueBytes = 84;
     const d = new Dispatcher(opts);
     d.enqueue({ type: 'track', event: 'a' } as any);
     d.enqueue({ type: 'track', event: 'b' } as any);
@@ -134,36 +135,38 @@ describe('Dispatcher', () => {
     expect(onFatal).toHaveBeenCalled();
   });
 
-  it('handles 10K events stress test: keeps newest 2K, drops oldest 8K', async () => {
+  it('handles 10K events stress test: keeps newest ~2K, drops oldest', async () => {
     const opts = baseOpts();
-    opts.maxQueueEvents = 2000;
     opts.autoFlushThreshold = 9999; // disable auto-flush for predictable test
+
+    // Use uniform-size events (padded IDs) so byte cap maps to exact count
+    const makeEvent = (i: number) => ({
+      type: 'track' as const,
+      event: 'evt',
+      properties: { id: String(i).padStart(5, '0') },
+    });
+    const eventSize = JSON.stringify(makeEvent(0)).length;
+    opts.maxQueueBytes = eventSize * 2000;
+
     const d = new Dispatcher(opts);
 
-    // Enqueue 10K events with IDs 0-9999
     for (let i = 0; i < 10000; i++) {
-      d.enqueue({
-        type: 'track',
-        event: `event_${i}`,
-        properties: { id: i },
-      } as any);
+      d.enqueue(makeEvent(i) as any);
     }
 
     // Queue should be capped at 2000
     expect(d.getQueueRef().length).toBe(2000);
 
-    // Verify oldest 8000 events were dropped (0-7999)
-    // and newest 2000 events remain (8000-9999)
+    // Verify oldest events were dropped and newest remain
     const queue = d.getQueueRef();
-    const firstEventId = (queue[0] as any).properties.id;
-    const lastEventId = (queue[queue.length - 1] as any).properties.id;
+    expect((queue[0] as any).properties.id).toBe('08000');
+    expect((queue[queue.length - 1] as any).properties.id).toBe('09999');
 
-    expect(firstEventId).toBe(8000);
-    expect(lastEventId).toBe(9999);
-
-    // Verify all IDs in queue are contiguous (8000-9999)
+    // Verify all IDs in queue are contiguous
     for (let i = 0; i < 2000; i++) {
-      expect((queue[i] as any).properties.id).toBe(8000 + i);
+      expect((queue[i] as any).properties.id).toBe(
+        String(8000 + i).padStart(5, '0')
+      );
     }
 
     // Verify warn was called 8000 times (once per dropped event)
@@ -242,9 +245,10 @@ describe('Dispatcher', () => {
     ]);
   });
 
-  it('enqueueFront respects maxQueueEvents by dropping oldest from front-loaded batch', () => {
+  it('enqueueFront respects maxQueueBytes by dropping oldest from front-loaded batch', () => {
     const opts = baseOpts();
-    opts.maxQueueEvents = 3;
+    // Each event is 28 chars — set cap to fit exactly 3 (84 chars)
+    opts.maxQueueBytes = 84;
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
     d.enqueue({ type: 'track', event: 'a' } as any);
@@ -256,17 +260,17 @@ describe('Dispatcher', () => {
       { type: 'track', event: 'z' } as any,
     ]);
 
-    // Total would be 5, cap is 3. After prepend: [x, y, z, a, b] -> drop oldest 2 -> [z, a, b]
+    // Total would be 5×28=140 chars, cap is 84. After prepend: [x, y, z, a, b] -> drop oldest 2 -> [z, a, b]
     const queue = d.getQueueRef();
     expect(queue.length).toBe(3);
     expect(queue.map((e: any) => e.event)).toEqual(['z', 'a', 'b']);
   });
 
-  it('getQueueSizeChars returns approximate serialized size', () => {
+  it('getQueueSizeBytes returns approximate serialized size', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
-    expect(d.getQueueSizeChars()).toBe(0);
+    expect(d.getQueueSizeBytes()).toBe(0);
 
     const event = {
       type: 'track',
@@ -274,10 +278,10 @@ describe('Dispatcher', () => {
       properties: { key: 'value' },
     } as any;
     d.enqueue(event);
-    expect(d.getQueueSizeChars()).toBeGreaterThan(0);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
   });
 
-  it('getQueueSizeChars decreases after flush', async () => {
+  it('getQueueSizeBytes decreases after flush', async () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
@@ -289,42 +293,50 @@ describe('Dispatcher', () => {
         properties: { i },
       } as any);
     }
-    const before = d.getQueueSizeChars();
+    const before = d.getQueueSizeBytes();
     expect(before).toBeGreaterThan(0);
 
     await d.flush();
-    expect(d.getQueueSizeChars()).toBe(0);
+    expect(d.getQueueSizeBytes()).toBe(0);
   });
 
-  it('getQueueSizeChars tracks correctly through enqueueFront', () => {
+  it('getQueueSizeBytes tracks correctly through enqueueFront', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
 
     d.enqueue({ type: 'track', event: 'a' } as any);
-    const sizeAfterOne = d.getQueueSizeChars();
+    const sizeAfterOne = d.getQueueSizeBytes();
 
     d.enqueueFront([{ type: 'track', event: 'b' } as any]);
-    expect(d.getQueueSizeChars()).toBeGreaterThan(sizeAfterOne);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(sizeAfterOne);
   });
 
-  it('getQueueSizeChars resets to 0 after reset()', () => {
+  it('getQueueSizeBytes resets to 0 after reset()', () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999;
     const d = new Dispatcher(opts);
 
     d.enqueue({ type: 'track', event: 'a' } as any);
-    expect(d.getQueueSizeChars()).toBeGreaterThan(0);
+    expect(d.getQueueSizeBytes()).toBeGreaterThan(0);
 
     d.reset();
-    expect(d.getQueueSizeChars()).toBe(0);
+    expect(d.getQueueSizeBytes()).toBe(0);
   });
 
-  it('stress test: all 2K queued events successfully transmit in batches', async () => {
+  it('stress test: all ~2K queued events successfully transmit in batches', async () => {
     const opts = baseOpts();
-    opts.maxQueueEvents = 2000;
     opts.autoFlushThreshold = 9999; // disable auto-flush
     opts.maxBatchSize = 100;
+
+    // Use uniform-size events so byte cap maps to exact count
+    const makeEvent = (i: number) => ({
+      type: 'track' as const,
+      event: 'evt',
+      properties: { id: String(i).padStart(5, '0') },
+    });
+    const eventSize = JSON.stringify(makeEvent(0)).length;
+    opts.maxQueueBytes = eventSize * 2000;
 
     const transmittedEvents: any[] = [];
     opts.fetchWithTimeout = jest.fn(async (_url?: string, init?: any) => {
@@ -337,11 +349,7 @@ describe('Dispatcher', () => {
 
     // Enqueue 10K events
     for (let i = 0; i < 10000; i++) {
-      d.enqueue({
-        type: 'track',
-        event: `event_${i}`,
-        properties: { id: i },
-      } as any);
+      d.enqueue(makeEvent(i) as any);
     }
 
     // Flush all events
@@ -354,12 +362,14 @@ describe('Dispatcher', () => {
     expect(transmittedEvents.length).toBe(2000);
 
     // Verify they are events 8000-9999 in order
-    expect(transmittedEvents[0].properties.id).toBe(8000);
-    expect(transmittedEvents[1999].properties.id).toBe(9999);
+    expect(transmittedEvents[0].properties.id).toBe('08000');
+    expect(transmittedEvents[1999].properties.id).toBe('09999');
 
     // Verify all transmitted events are contiguous
     for (let i = 0; i < 2000; i++) {
-      expect(transmittedEvents[i].properties.id).toBe(8000 + i);
+      expect(transmittedEvents[i].properties.id).toBe(
+        String(8000 + i).padStart(5, '0')
+      );
     }
 
     // Verify 20 batch calls were made (2000 events / 100 per batch)

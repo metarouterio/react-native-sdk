@@ -31,9 +31,7 @@ export interface InitOptions {
   ingestionHost: string;
   flushIntervalSeconds?: number;
   debug?: boolean;
-  /** Max events held in memory; oldest are dropped once cap is hit (default: 2000) */
-  maxQueueEvents?: number;
-  /** Max bytes held in memory queue; oldest are dropped once cap is hit (default: 5MB) */
+  /** Max bytes (UTF-8) held in memory queue; oldest are dropped once cap is hit (default: 5MB) */
   maxQueueBytes?: number;
 }
 
