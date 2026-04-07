@@ -193,7 +193,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `ingestionHost` (string, required): Your MetaRouter ingestor host
 - `debug` (boolean, optional): Enable debug mode
 - `flushIntervalSeconds` (number, optional): Interval in seconds to flush events
-- `maxQueueEvents` (number, optional): number of max events stored in memory
+- `maxQueueBytes` (number, optional): max bytes (UTF-8) held in memory queue (default: 5MB)
 
 **Proxy behavior (quick notes):**
 
@@ -301,7 +301,7 @@ await analytics.flush();
 
 ### Delivery & Backoff (How events flow under failures)
 
-Queue capacity: The SDK keeps up to 2,000 events in memory. When the cap is reached, the oldest events are dropped first (drop-oldest). You can change this via maxQueueEvents in createAnalyticsClient(options)
+Queue capacity: The SDK caps the in-memory queue at 5MB by default. When the cap is reached, the oldest events are dropped first (drop-oldest). You can change this via maxQueueBytes in createAnalyticsClient(options)
 
 This SDK uses a circuit breaker around network I/O. It keeps ordering stable, avoids tight retry loops, and backs off cleanly when your cluster is unhealthy or throttling.
 

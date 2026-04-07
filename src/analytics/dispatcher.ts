@@ -4,10 +4,12 @@ import type CircuitBreaker from './utils/circuitBreaker';
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface DispatcherOptions {
-  maxQueueEvents: number;
+  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
   autoFlushThreshold: number; // e.g., 20
   maxBatchSize: number; // initial max; may shrink on 413
   flushIntervalSeconds: number;
+  baseRetryDelayMs: number; // retry floor base delay (default 1000)
+  maxRetryDelayMs: number; // retry floor cap (default 8000)
 
   endpoint: (path: string) => string;
   fetchWithTimeout: (
@@ -38,7 +40,8 @@ export default class Dispatcher {
   private maxBatchSize: number;
   private readonly initialMaxBatchSize: number;
   private circuit: CircuitBreaker;
-  private queueSizeChars: number = 0;
+  private queueSizeBytes: number = 0;
+  private consecutiveRetries: number = 0;
 
   constructor(opts: DispatcherOptions) {
     this.opts = opts;
@@ -70,9 +73,23 @@ export default class Dispatcher {
   reset(): void {
     this.stop();
     this.queue.length = 0;
-    this.queueSizeChars = 0;
+    this.queueSizeBytes = 0;
+    this.consecutiveRetries = 0;
     this.circuit = this.opts.createBreaker();
     this.maxBatchSize = this.initialMaxBatchSize;
+  }
+
+  /**
+   * Retry floor: exponential backoff independent of circuit breaker.
+   * Applies from the very first failure so retries aren't immediate while circuit is closed.
+   */
+  private retryFloorMs(): number {
+    if (this.consecutiveRetries <= 0) return 0;
+    const exponent = Math.min(this.consecutiveRetries - 1, 10);
+    return Math.min(
+      this.opts.maxRetryDelayMs,
+      this.opts.baseRetryDelayMs * Math.pow(2, exponent)
+    );
   }
 
   private clearNextTimer(): void {
@@ -101,33 +118,33 @@ export default class Dispatcher {
     );
   }
 
+  private static encoder = new TextEncoder();
+
   private estimateEventSize(event: EventPayload): number {
-    return JSON.stringify(event).length;
+    return Dispatcher.encoder.encode(JSON.stringify(event)).byteLength;
   }
 
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: drop oldest until there's room
-    while (this.queue.length >= this.opts.maxQueueEvents) {
+    // Hard cap: drop oldest until there's room (byte limit)
+    while (
+      this.queue.length > 0 &&
+      this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
+    ) {
       const dropped = this.queue.shift();
-      if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
-      this.opts.warn(
-        `[MetaRouter] Queue cap ${this.opts.maxQueueEvents} reached — dropped oldest event`
-      );
+      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
+      this.opts.warn('Queue cap reached — dropped oldest event');
     }
 
-    this.opts.log('Enqueuing event', {
-      type: (event as any)?.type,
-      messageId: (event as any)?.messageId,
-    });
+    this.opts.log(
+      `Enqueuing event {"messageId": "${(event as any)?.messageId}", "type": "${(event as any)?.type}"}`
+    );
     this.queue.push(event);
-    this.queueSizeChars += eventSize;
+    this.queueSizeBytes += eventSize;
+    this.opts.log(`Event enqueued, queue length: ${this.queue.length}`);
 
     if (this.queue.length >= this.opts.autoFlushThreshold) {
-      this.opts.log(
-        `Event queue reached ${this.opts.autoFlushThreshold}. Flushing queued events.`
-      );
       void this.flush();
     }
   }
@@ -140,21 +157,26 @@ export default class Dispatcher {
       this.queue.push(merged[i]);
     }
     for (const e of events) {
-      this.queueSizeChars += this.estimateEventSize(e);
+      this.queueSizeBytes += this.estimateEventSize(e);
     }
 
-    // Enforce cap: drop oldest (from front) until within limit
-    while (this.queue.length > this.opts.maxQueueEvents) {
+    // Enforce cap: drop oldest (from front) until within byte limit
+    while (
+      this.queue.length > 0 &&
+      this.queueSizeBytes > this.opts.maxQueueBytes
+    ) {
       const dropped = this.queue.shift();
-      if (dropped) this.queueSizeChars -= this.estimateEventSize(dropped);
-      this.opts.warn(
-        `[MetaRouter] Queue cap ${this.opts.maxQueueEvents} reached — dropped oldest event`
-      );
+      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
+      this.opts.warn('Queue cap reached — dropped oldest event');
+    }
+
+    if (this.queue.length >= this.opts.autoFlushThreshold) {
+      void this.flush();
     }
   }
 
-  getQueueSizeChars(): number {
-    return this.queueSizeChars;
+  getQueueSizeBytes(): number {
+    return this.queueSizeBytes;
   }
 
   private drainBatch(): EventPayload[] {
@@ -162,7 +184,7 @@ export default class Dispatcher {
     const nowIso = new Date().toISOString();
     const drained = this.queue.splice(0, n);
     const batch = drained.map((e) => {
-      this.queueSizeChars -= this.estimateEventSize(e);
+      this.queueSizeBytes -= this.estimateEventSize(e);
       return { ...(e as any), sentAt: nowIso };
     });
     return batch;
@@ -176,7 +198,7 @@ export default class Dispatcher {
       this.queue.push(merged[i]);
     }
     for (const e of chunk) {
-      this.queueSizeChars += this.estimateEventSize(e);
+      this.queueSizeBytes += this.estimateEventSize(e);
     }
   }
 
@@ -198,7 +220,9 @@ export default class Dispatcher {
         if (!this.circuit.allowRequest()) {
           const state = this.circuit.getState();
           const wait = this.circuit.remainingCooldownMs();
-          this.opts.log(`[MetaRouter] Circuit ${state} — skip; wait ${wait}ms`);
+          this.opts.warn(
+            `Circuit breaker ${state}, retrying in ${wait}ms (${this.queue.length} event(s) pending)`
+          );
           this.scheduleFlushIn(wait);
           return;
         }
@@ -206,7 +230,9 @@ export default class Dispatcher {
         const chunk = this.drainBatch();
 
         try {
-          this.opts.log('Making API call to:', this.opts.endpoint('/v1/batch'));
+          this.opts.log(
+            `Making API call to: ${this.opts.endpoint('/v1/batch')}`
+          );
 
           const headers: Record<string, string> = {
             'Content-Type': 'application/json',
@@ -232,17 +258,19 @@ export default class Dispatcher {
             // Retryable
             if (s >= 500 || s === 408) {
               this.circuit.onFailure();
+              this.consecutiveRetries += 1;
               if (this.opts.isOperational()) {
                 this.requeueChunk(chunk);
                 const retryAfter =
                   this.parseRetryAfter(res.headers.get('retry-after')) ?? 0;
                 const wait = Math.max(
+                  this.retryFloorMs(),
                   this.circuit.remainingCooldownMs(),
                   retryAfter,
                   1000
                 );
                 this.opts.warn(
-                  `Retryable status ${s}; scheduling retry in ${wait}ms`
+                  `Server error ${s}, will retry ${chunk.length} event(s) in ${wait}ms (circuit: ${this.circuit.getState()}, retry #${this.consecutiveRetries})`
                 );
                 this.scheduleFlushIn(wait);
               } else {
@@ -255,14 +283,15 @@ export default class Dispatcher {
 
             if (s === 429) {
               this.circuit.onFailure();
+              this.consecutiveRetries += 1;
               if (this.opts.isOperational()) {
                 this.requeueChunk(chunk);
                 const h =
                   this.parseRetryAfter(res.headers.get('retry-after')) ?? 0;
                 const b = this.circuit.remainingCooldownMs();
-                const wait = Math.max(h, b, 1000);
+                const wait = Math.max(this.retryFloorMs(), h, b, 1000);
                 this.opts.warn(
-                  `429 throttled; scheduling in ${wait}ms (retry-after=${h}, breaker=${b})`
+                  `Rate limited (429), will retry ${chunk.length} event(s) in ${wait}ms (circuit: ${this.circuit.getState()}, retry #${this.consecutiveRetries})`
                 );
                 this.scheduleFlushIn(wait);
               } else {
@@ -276,7 +305,7 @@ export default class Dispatcher {
             if (s === 401 || s === 403 || s === 404) {
               this.opts.error(`Fatal config error ${s}. Disabling client.`);
               this.queue.length = 0;
-              this.queueSizeChars = 0;
+              this.queueSizeBytes = 0;
               this.stop();
               this.opts.onFatalConfig?.();
               return;
@@ -313,6 +342,7 @@ export default class Dispatcher {
 
           // Success
           this.circuit.onSuccess();
+          this.consecutiveRetries = 0;
           if (this.maxBatchSize < this.initialMaxBatchSize) {
             this.maxBatchSize = Math.min(
               this.maxBatchSize * 2,
@@ -322,14 +352,16 @@ export default class Dispatcher {
           this.opts.log('API call successful');
         } catch (err) {
           this.circuit.onFailure();
+          this.consecutiveRetries += 1;
           if (this.opts.isOperational()) {
             this.requeueChunk(chunk);
-            const wait = Math.max(this.circuit.remainingCooldownMs(), 1000);
+            const wait = Math.max(
+              this.retryFloorMs(),
+              this.circuit.remainingCooldownMs(),
+              1000
+            );
             this.opts.warn(
-              'Flush attempt failed; scheduling retry in',
-              wait,
-              'ms',
-              (err as any)?.message
+              `API call failed: ${(err as any)?.message}, ${chunk.length} event(s) pending retry in ${wait}ms (circuit: ${this.circuit.getState()}, retry #${this.consecutiveRetries})`
             );
             this.scheduleFlushIn(wait);
           } else {
@@ -340,8 +372,6 @@ export default class Dispatcher {
           return;
         }
       }
-
-      this.opts.log('Flush completed successfully');
     };
 
     this.flushInFlight = doFlush().finally(() => {
@@ -358,8 +388,9 @@ export default class Dispatcher {
       flushInFlight: !!this.flushInFlight,
       circuitState: this.circuit.getState(),
       circuitRemainingMs: this.circuit.remainingCooldownMs(),
-      maxQueueEvents: this.opts.maxQueueEvents,
+      maxQueueBytes: this.opts.maxQueueBytes,
       maxBatchSize: this.maxBatchSize,
+      consecutiveRetries: this.consecutiveRetries,
     };
   }
 }

@@ -19,7 +19,7 @@ function mockNativeStorage() {
 
 function createDispatcher(overrides?: Partial<any>) {
   return new Dispatcher({
-    maxQueueEvents: 2000,
+    maxQueueBytes: 5 * 1024 * 1024, // 5MB
     autoFlushThreshold: 9999,
     maxBatchSize: 100,
     flushIntervalSeconds: 3600,
@@ -95,14 +95,16 @@ describe('PersistentEventQueue', () => {
 
     it('enforces capacity cap on rehydrated events (drops oldest)', async () => {
       const { store } = mockNativeStorage();
+      // Use uniform-size events so byte cap maps to exact count
       const events = Array.from({ length: 2500 }, (_, i) => ({
         type: 'track',
-        event: `event_${i}`,
-        properties: { id: i },
+        event: 'evt',
+        properties: { id: String(i).padStart(5, '0') },
       }));
+      const eventSize = JSON.stringify(events[0]).length;
       store.data = JSON.stringify({ version: 1, events });
 
-      const dispatcher = createDispatcher({ maxQueueEvents: 2000 });
+      const dispatcher = createDispatcher({ maxQueueBytes: eventSize * 2000 });
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
@@ -110,7 +112,7 @@ describe('PersistentEventQueue', () => {
 
       expect(dispatcher.getQueueRef().length).toBe(2000);
       // Should keep newest: events 500-2499
-      expect((dispatcher.getQueueRef()[0] as any).properties.id).toBe(500);
+      expect((dispatcher.getQueueRef()[0] as any).properties.id).toBe('00500');
     });
 
     it('skips rehydration if snapshot has unknown version', async () => {
@@ -306,22 +308,7 @@ describe('PersistentEventQueue', () => {
   });
 
   describe('shouldFlushToDisk', () => {
-    it('returns true when event count exceeds flush threshold', () => {
-      mockNativeStorage();
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      // Enqueue 500 events to hit threshold
-      for (let i = 0; i < 500; i++) {
-        dispatcher.enqueue({ type: 'track', event: `e${i}` } as any);
-      }
-
-      expect(pq.shouldFlushToDisk()).toBe(true);
-    });
-
-    it('returns false when below both thresholds', () => {
+    it('returns false when below byte threshold', () => {
       mockNativeStorage();
 
       const dispatcher = createDispatcher();

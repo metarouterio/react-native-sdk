@@ -66,9 +66,14 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     });
     await client.init();
 
-    const info = await client.getDebugInfo();
-    // Should have the rehydrated event
-    expect(info.queueLength).toBeGreaterThanOrEqual(1);
+    // Rehydrated events should have been flushed immediately on init
+    expect(global.fetch).toHaveBeenCalled();
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.batch).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: 'persisted', messageId: 'abc' }),
+      ])
+    );
   });
 
   it('flushes to disk when app goes to background and network fails', async () => {

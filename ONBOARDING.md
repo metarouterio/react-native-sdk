@@ -1067,7 +1067,7 @@ createAnalyticsClient({
   ingestionHost: string;         // Required: Your ingestion endpoint
   debug?: boolean;               // Optional: Enable console logging (default: false)
   flushIntervalSeconds?: number; // Optional: Auto-flush interval (default: 30)
-  maxQueueEvents?: number;       // Optional: Max in-memory events (default: 2000)
+  maxQueueBytes?: number;        // Optional: Max bytes in memory queue (default: 5MB)
 });
 ```
 
