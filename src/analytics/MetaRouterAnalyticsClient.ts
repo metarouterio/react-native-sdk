@@ -33,7 +33,7 @@ export class MetaRouterAnalyticsClient {
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
   private static readonly MAX_QUEUE_SIZE = 20;
-  private maxQueueEvents: number = 2000;
+  private maxQueueBytes: number = 5 * 1024 * 1024; // 5MB default
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
@@ -43,8 +43,6 @@ export class MetaRouterAnalyticsClient {
    * @param options - The initialization options.
    */
   constructor(options: InitOptions) {
-    log('Initializing analytics client', options);
-
     const { writeKey, ingestionHost, flushIntervalSeconds } = options;
 
     if (!writeKey || typeof writeKey !== 'string' || writeKey.trim() === '') {
@@ -75,12 +73,14 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.maxQueueEvents = options.maxQueueEvents ?? this.maxQueueEvents;
+    this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
-      maxQueueEvents: this.maxQueueEvents,
+      maxQueueBytes: this.maxQueueBytes,
       autoFlushThreshold: MetaRouterAnalyticsClient.MAX_QUEUE_SIZE,
       maxBatchSize: 100,
       flushIntervalSeconds: this.flushIntervalSeconds,
+      baseRetryDelayMs: 1000,
+      maxRetryDelayMs: 8000,
       endpoint: (path) => this.endpoint(path),
       fetchWithTimeout: (url, init, timeoutMs) =>
         this.fetchWithTimeout(url, init, timeoutMs),
@@ -118,9 +118,6 @@ export class MetaRouterAnalyticsClient {
 
     this.queue = this.dispatcher.getQueueRef();
     this.persistentQueue = new PersistentEventQueue(this.dispatcher);
-    log(
-      'Analytics client constructor completed, initialization in progress...'
-    );
   }
 
   /**
@@ -143,24 +140,15 @@ export class MetaRouterAnalyticsClient {
     }
 
     this.lifecycle = 'initializing';
-    log('Starting analytics client initialization...');
 
     this.initPromise = (async () => {
       try {
         await this.identityManager.init();
-        log('IdentityManager initialized successfully');
 
         await this.persistentQueue.rehydrate();
 
         this.startFlushLoop();
-        log(
-          'Flush loop started with interval:',
-          this.flushIntervalSeconds,
-          'seconds'
-        );
-
         this.setupAppStateListener();
-        log('App state listener setup completed');
 
         // Load persisted advertising ID if available
         const persistedAdvertisingId =
@@ -170,12 +158,12 @@ export class MetaRouterAnalyticsClient {
           persistedAdvertisingId || undefined
         );
 
-        if (persistedAdvertisingId) {
-          log('Restored advertising ID from storage');
-        }
-
         this.lifecycle = 'ready';
-        log('Analytics client initialization completed successfully');
+        log('MetaRouter SDK initialized');
+
+        // Flush immediately so rehydrated events ship on cold start
+        // (AppState 'change' won't fire because the app is already active)
+        void this.flush();
       } catch (error) {
         this.lifecycle = 'idle'; // allow retry
         warn('Analytics client initialization failed:', error);
@@ -285,13 +273,15 @@ export class MetaRouterAnalyticsClient {
    */
   private handleAppStateChange = async (nextState: AppStateStatus) => {
     if (this.appState === 'active' && nextState.match(/inactive|background/)) {
-      this.stopFlushLoop(); // pause periodic loop
-      this.clearNextTimer(); // cancel probe timer
-      await this.flush(); // send what we can within the background window
-      await this.persistentQueue.flushToDisk(); // persist whatever remains
+      log('App moved to background');
+      this.stopFlushLoop();
+      this.clearNextTimer();
+      await this.flush();
+      await this.persistentQueue.flushToDisk();
     }
     if (nextState === 'active' && this.lifecycle === 'ready') {
-      this.startFlushLoop(); // resume periodic loop
+      log('App moved to foreground');
+      this.startFlushLoop();
       this.flush();
     }
     this.appState = nextState;
@@ -303,9 +293,7 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   track(event: string, properties?: Record<string, any>) {
-    log('Tracking event:', event, 'with properties:', properties);
     this.enqueue({ type: 'track', event, properties, timestamp: this.now() });
-    log('Event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -314,10 +302,8 @@ export class MetaRouterAnalyticsClient {
    * @param traits - The traits to identify the user with.
    */
   identify(userId: string, traits?: Record<string, any>) {
-    log('Identifying user:', userId, 'with traits:', traits);
     this.identityManager.identify(userId);
     this.enqueue({ type: 'identify', userId, traits, timestamp: this.now() });
-    log('Identify event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -326,14 +312,12 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   page(name: string, properties?: Record<string, any>) {
-    log('Tracking page:', name, 'with properties:', properties);
     this.enqueue({
       type: 'page',
       event: name,
       properties,
       timestamp: this.now(),
     });
-    log('Page event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -342,10 +326,8 @@ export class MetaRouterAnalyticsClient {
    * @param traits - The traits to group the user with.
    */
   group(groupId: string, traits?: Record<string, any>) {
-    log('Grouping user:', groupId, 'with traits:', traits);
     this.identityManager.group(groupId);
     this.enqueue({ type: 'group', groupId, traits, timestamp: this.now() });
-    log('Group event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -354,14 +336,12 @@ export class MetaRouterAnalyticsClient {
    * @param properties - The properties to track.
    */
   screen(name: string, properties?: Record<string, any>) {
-    log('Tracking screen:', name, 'with properties:', properties);
     this.enqueue({
       type: 'screen',
       event: name,
       properties,
       timestamp: this.now(),
     });
-    log('Screen event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -370,10 +350,8 @@ export class MetaRouterAnalyticsClient {
    * @param newUserId - The new user ID to alias to.
    */
   alias(newUserId: string) {
-    log('Aliasing user to:', newUserId);
     this.identityManager.identify(newUserId);
     this.enqueue({ type: 'alias', userId: newUserId, timestamp: this.now() });
-    log('Alias event enqueued, queue length:', this.queue.length);
   }
 
   /**
@@ -478,7 +456,7 @@ export class MetaRouterAnalyticsClient {
       flushInFlight: d.flushInFlight,
       circuitState: d.circuitState,
       circuitRemainingMs: d.circuitRemainingMs,
-      maxQueueEvents: d.maxQueueEvents,
+      maxQueueBytes: d.maxQueueBytes,
       tracingEnabled: this.tracingEnabled,
       rehydratedEvents: this.persistentQueue.rehydratedEvents,
     };
