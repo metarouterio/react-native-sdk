@@ -7,6 +7,7 @@ import {
 import {
   SNAPSHOT_VERSION,
   FLUSH_THRESHOLD_BYTES,
+  FLUSH_THRESHOLD_COUNT,
   DEFAULT_EVENT_TTL_MS,
   type QueueSnapshot,
 } from './types';
@@ -94,13 +95,12 @@ export class PersistentEventQueue {
         return;
       }
 
-      log(`Rehydrating ${fresh.length} events from disk`);
       this.dispatcher.enqueueFront(fresh);
       this._rehydratedEvents = fresh.length;
+      log(`Rehydrated ${fresh.length} events from disk`);
 
       // Clean up disk after successful rehydration
       await nativeDeleteSnapshot();
-      log('Queue snapshot deleted after rehydration');
     } catch (err) {
       warn('Failed to rehydrate queue from disk:', err);
     }
@@ -135,8 +135,8 @@ export class PersistentEventQueue {
       };
 
       const data = JSON.stringify(snapshot);
-      log(`Flushing ${queue.length} events to disk (${data.length} chars)`);
       await writeSnapshot(data);
+      log(`Queue snapshot written to disk (${queue.length} events)`);
     } catch (err) {
       warn('Failed to flush queue to disk:', err);
     }
@@ -146,7 +146,10 @@ export class PersistentEventQueue {
    * Check if the queue has crossed a flush-to-disk threshold.
    */
   shouldFlushToDisk(): boolean {
-    return this.dispatcher.getQueueSizeBytes() >= FLUSH_THRESHOLD_BYTES;
+    return (
+      this.dispatcher.getQueueRef().length >= FLUSH_THRESHOLD_COUNT ||
+      this.dispatcher.getQueueSizeBytes() >= FLUSH_THRESHOLD_BYTES
+    );
   }
 
   /**

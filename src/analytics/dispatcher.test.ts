@@ -6,6 +6,8 @@ const baseOpts = () => ({
   autoFlushThreshold: 20,
   maxBatchSize: 100,
   flushIntervalSeconds: 3600, // keep timer quiet unless started
+  baseRetryDelayMs: 1000,
+  maxRetryDelayMs: 8000,
   endpoint: (p: string) => `https://example.com${p}`,
   fetchWithTimeout: jest.fn(
     async (_url?: string, _init?: any) => ({ ok: true, status: 200 }) as any
