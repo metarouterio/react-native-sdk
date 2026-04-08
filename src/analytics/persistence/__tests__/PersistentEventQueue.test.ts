@@ -23,6 +23,7 @@ function createDispatcher(overrides?: Partial<any>) {
     autoFlushThreshold: 9999,
     maxBatchSize: 100,
     flushIntervalSeconds: 3600,
+    isNetworkAvailable: () => true,
     endpoint: (p: string) => `https://example.com${p}`,
     fetchWithTimeout: jest.fn(async () => ({ ok: true, status: 200 }) as any),
     canSend: () => true,

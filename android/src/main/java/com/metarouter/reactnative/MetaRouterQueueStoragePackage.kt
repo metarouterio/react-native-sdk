@@ -9,7 +9,10 @@ class MetaRouterQueueStoragePackage : ReactPackage {
     override fun createNativeModules(
         reactContext: ReactApplicationContext
     ): List<NativeModule> {
-        return listOf(MetaRouterQueueStorageModule(reactContext))
+        return listOf(
+            MetaRouterQueueStorageModule(reactContext),
+            MetaRouterNetworkMonitorModule(reactContext)
+        )
     }
 
     override fun createViewManagers(

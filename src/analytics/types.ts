@@ -33,6 +33,8 @@ export interface InitOptions {
   debug?: boolean;
   /** Max bytes (UTF-8) held in memory queue; oldest are dropped once cap is hit (default: 5MB) */
   maxQueueBytes?: number;
+  /** Max events stored on disk during extended offline periods (default: 10000) */
+  maxOfflineDiskEvents?: number;
 }
 
 export interface AnalyticsInterface {
