@@ -1,15 +1,15 @@
-import { Dimensions, PixelRatio, Platform } from "react-native";
+import { Dimensions, PixelRatio, Platform } from 'react-native';
 
-import { getTimeZone } from "./timezone";
-import pkg from "../../../package.json";
-import { EventContext } from "../types";
+import { getTimeZone } from './timezone';
+import pkg from '../../../package.json';
+import { EventContext } from '../types';
 
 let cachedContext: EventContext | null = null;
-let cachedAdvertisingId: string | undefined = undefined;
+let cachedAdvertisingId: string | undefined;
 let DeviceInfo: any = null;
 
 try {
-  DeviceInfo = require("react-native-device-info");
+  DeviceInfo = require('react-native-device-info');
 } catch {
   DeviceInfo = null;
 }
@@ -33,52 +33,54 @@ export function clearContextCache(): void {
  * @param advertisingId - Optional advertising identifier (IDFA on iOS, GAID on Android) for ad tracking and attribution.
  * @returns {Promise<EventContext>} A promise that resolves to the context information object.
  */
-export async function getContextInfo(advertisingId?: string): Promise<EventContext> {
+export async function getContextInfo(
+  advertisingId?: string
+): Promise<EventContext> {
   // Return cached context only if it exists AND the advertising ID hasn't changed
-  if (cachedContext && cachedAdvertisingId === advertisingId) return cachedContext;
+  if (cachedContext && cachedAdvertisingId === advertisingId)
+    return cachedContext;
 
-  let locale = "en-US";
+  let locale = 'en-US';
   if (
-    typeof Intl !== "undefined" &&
-    typeof Intl.DateTimeFormat === "function"
+    typeof Intl !== 'undefined' &&
+    typeof Intl.DateTimeFormat === 'function'
   ) {
     const resolved = Intl.DateTimeFormat().resolvedOptions();
     locale = resolved.locale ?? locale;
   }
 
-  const { width, height } = Dimensions.get("screen");
+  const { width, height } = Dimensions.get('screen');
   const density = Number(PixelRatio.get().toFixed(2));
 
   cachedContext = {
     library: {
-      name: "metarouter-react-native-sdk",
-      version: pkg.version ?? "0.0.0",
+      name: 'metarouter-react-native-sdk',
+      version: pkg.version ?? '0.0.0',
     },
     locale,
     timezone: getTimeZone(),
     device: {
-      manufacturer: (await DeviceInfo?.getManufacturer?.()) ?? "unknown",
-      model: DeviceInfo?.getModel?.() ?? "unknown",
-      name: (await DeviceInfo?.getDeviceName?.()) ?? "unknown",
-      type: DeviceInfo?.getSystemName?.() === "Android" ? "android" : "ios",
+      manufacturer: (await DeviceInfo?.getManufacturer?.()) ?? 'unknown',
+      model: DeviceInfo?.getDeviceId?.() ?? 'unknown',
+      type: DeviceInfo?.getSystemName?.() === 'Android' ? 'android' : 'ios',
       ...(advertisingId ? { advertisingId } : {}),
     },
     os: {
-      name: DeviceInfo?.getSystemName?.() ?? "unknown",
-      version: DeviceInfo?.getSystemVersion?.() ?? "unknown",
+      name: DeviceInfo?.getSystemName?.() ?? 'unknown',
+      version: DeviceInfo?.getSystemVersion?.() ?? 'unknown',
     },
     app: {
-      name: DeviceInfo?.getApplicationName?.() ?? "unknown",
-      version: DeviceInfo?.getVersion?.() ?? pkg.version ?? "unknown",
-      build: DeviceInfo?.getBuildNumber?.() ?? "unknown",
-      namespace: DeviceInfo?.getBundleId?.() ?? "unknown",
+      name: DeviceInfo?.getApplicationName?.() ?? 'unknown',
+      version: DeviceInfo?.getVersion?.() ?? pkg.version ?? 'unknown',
+      build: DeviceInfo?.getBuildNumber?.() ?? 'unknown',
+      namespace: DeviceInfo?.getBundleId?.() ?? 'unknown',
     },
     screen: {
       width: Math.round(width),
       height: Math.round(height),
       density,
     },
-    ...(Platform.OS === "android"
+    ...(Platform.OS === 'android'
       ? {
           network: {
             wifi: (await DeviceInfo?.isWifiEnabled?.()) ?? false,

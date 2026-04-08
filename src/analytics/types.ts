@@ -61,7 +61,6 @@ export interface EventContext {
   device: {
     manufacturer: string;
     model: string;
-    name: string;
     type: string;
     advertisingId?: string;
   };
