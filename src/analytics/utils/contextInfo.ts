@@ -61,8 +61,14 @@ export async function getContextInfo(
     timezone: getTimeZone(),
     device: {
       manufacturer: (await DeviceInfo?.getManufacturer?.()) ?? 'unknown',
-      model: DeviceInfo?.getDeviceId?.() ?? 'unknown',
+      model:
+        Platform.OS === 'android'
+          ? (DeviceInfo?.getModel?.() ?? 'unknown')
+          : (DeviceInfo?.getDeviceId?.() ?? 'unknown'),
       type: DeviceInfo?.getSystemName?.() === 'Android' ? 'android' : 'ios',
+      ...(Platform.OS === 'android'
+        ? { name: (await DeviceInfo?.getDevice?.()) ?? 'unknown' }
+        : {}),
       ...(advertisingId ? { advertisingId } : {}),
     },
     os: {

@@ -123,6 +123,64 @@ describe('getContextInfo', () => {
     expect(context.device.advertisingId).toBeUndefined();
   });
 
+  it('returns Android-specific device context with name and Build.MODEL', async () => {
+    // Override Platform.OS to android
+    const { Platform } = require('react-native');
+    Platform.OS = 'android';
+
+    jest.doMock('react-native-device-info', () => ({
+      getManufacturer: () => Promise.resolve('Zebra Technologies'),
+      getModel: () => 'TC52',
+      getDevice: () => Promise.resolve('TC52'),
+      getDeviceId: () => 'tc52',
+      getSystemName: () => 'Android',
+      getSystemVersion: () => '14',
+      getVersion: () => '1.5.0',
+      getBuildNumber: () => '127',
+      getApplicationName: () => 'SidelineAssist',
+      getBundleId: () => 'com.sidelineassist',
+      isWifiEnabled: () => Promise.resolve(true),
+    }));
+
+    const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
+    const context = await getContextInfoMocked();
+
+    expect(context.device).toEqual({
+      manufacturer: 'Zebra Technologies',
+      model: 'TC52',
+      name: 'TC52',
+      type: 'android',
+    });
+    expect(context.device.name).toBe('TC52');
+
+    // Reset Platform
+    Platform.OS = 'ios';
+  });
+
+  it('omits device name on iOS', async () => {
+    jest.doMock('react-native-device-info', () => ({
+      getManufacturer: () => Promise.resolve('Apple'),
+      getDeviceId: () => 'iPhone17,2',
+      getModel: () => 'iPhone 16 Pro Max',
+      getDevice: () => Promise.resolve('iPhone17,2'),
+      getSystemName: () => 'iOS',
+      getSystemVersion: () => '17.0',
+      getVersion: () => '2.3.4',
+      getBuildNumber: () => '567',
+      isWifiEnabled: () => Promise.resolve(true),
+    }));
+
+    const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
+    const context = await getContextInfoMocked();
+
+    expect(context.device).toEqual({
+      manufacturer: 'Apple',
+      model: 'iPhone17,2',
+      type: 'ios',
+    });
+    expect(context.device.name).toBeUndefined();
+  });
+
   it('excludes advertisingId from device context when provided as undefined', async () => {
     // Mock DeviceInfo module
     jest.doMock('react-native-device-info', () => ({
