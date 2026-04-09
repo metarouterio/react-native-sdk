@@ -13,6 +13,7 @@ export class NetworkMonitor implements NetworkReachability {
   private _currentStatus: NetworkStatus = 'connected';
   private handler: ((status: NetworkStatus) => void) | null = null;
   private unsubscribe: (() => void) | null = null;
+  private receivedNativeEvent = false;
 
   get currentStatus(): NetworkStatus {
     return this._currentStatus;
@@ -25,9 +26,10 @@ export class NetworkMonitor implements NetworkReachability {
       if (!MetaRouterNetworkMonitor)
         throw new Error('Native module not available');
 
-      // Get initial state from native
+      // Get initial state from native — skip if a live event already arrived
       MetaRouterNetworkMonitor.getCurrentStatus()
         .then((connected: boolean) => {
+          if (this.receivedNativeEvent) return;
           const newStatus: NetworkStatus = connected
             ? 'connected'
             : 'disconnected';
@@ -45,6 +47,7 @@ export class NetworkMonitor implements NetworkReachability {
       const subscription = emitter.addListener(
         'onConnectivityChange',
         (event: { isConnected: boolean }) => {
+          this.receivedNativeEvent = true;
           const newStatus: NetworkStatus = event.isConnected
             ? 'connected'
             : 'disconnected';

@@ -106,7 +106,7 @@ class MetaRouterNetworkMonitorModule(
         // Required for RN event emitter
     }
 
-    fun onCatalystInstanceDestroy() {
+    override fun invalidate() {
         networkCallback?.let { cb ->
             try {
                 connectivityManager?.unregisterNetworkCallback(cb)

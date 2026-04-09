@@ -126,7 +126,7 @@ export default class CircuitBreaker {
   /** Force-reset to CLOSED. Used on offline -> online transition
    *  to clear stale backoff from the offline period. */
   reset(): void {
-    this.state = 'CLOSED';
+    this.setState('CLOSED');
     this.consecutiveFailures = 0;
     this.openCount = 0;
     this.openUntil = 0;

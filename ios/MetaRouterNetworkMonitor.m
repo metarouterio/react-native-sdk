@@ -62,7 +62,9 @@ RCT_EXPORT_MODULE()
 RCT_EXPORT_METHOD(getCurrentStatus:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
-  resolve(@(_isConnected));
+  dispatch_async(_monitorQueue, ^{
+    resolve(@(self->_isConnected));
+  });
 }
 
 - (void)dealloc {
