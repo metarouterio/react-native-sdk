@@ -19,6 +19,8 @@ import {
   type NetworkStatus,
 } from './utils/networkMonitor';
 
+const ONLINE_DEBOUNCE_MS = 2_000;
+
 /**
  * Analytics client for MetaRouter.
  * - Handles event queueing, batching, and delivery with retries.
@@ -45,6 +47,7 @@ export class MetaRouterAnalyticsClient {
   private networkMonitor: NetworkReachability;
   private networkStatus: NetworkStatus = 'connected';
   private unsubscribeNetwork: (() => void) | null = null;
+  private onlineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -178,14 +181,28 @@ export class MetaRouterAnalyticsClient {
         this.unsubscribeNetwork = this.networkMonitor.onStatusChange(
           (status) => {
             const wasOffline = this.networkStatus === 'disconnected';
-            this.networkStatus = status;
 
-            if (wasOffline && status === 'connected') {
-              log('Network connectivity restored — resuming flush');
-              this.dispatcher.resetCircuitBreaker();
-              void this.flush();
-            } else if (status === 'disconnected') {
+            if (status === 'disconnected') {
+              // Offline: act immediately, cancel any pending online debounce
+              if (this.onlineDebounceTimer) {
+                clearTimeout(this.onlineDebounceTimer);
+                this.onlineDebounceTimer = null;
+              }
+              this.networkStatus = status;
               log('Network connectivity lost — pausing HTTP attempts');
+            } else if (wasOffline && status === 'connected') {
+              // Online: debounce — only act after connectivity is stable for 2s
+              log('Network connectivity detected — debouncing for stability');
+              if (this.onlineDebounceTimer) {
+                clearTimeout(this.onlineDebounceTimer);
+              }
+              this.onlineDebounceTimer = setTimeout(() => {
+                this.onlineDebounceTimer = null;
+                this.networkStatus = status;
+                log('Network connectivity stable — resuming flush');
+                this.dispatcher.resetCircuitBreaker();
+                void this.flush();
+              }, ONLINE_DEBOUNCE_MS);
             }
           }
         );
@@ -511,7 +528,11 @@ export class MetaRouterAnalyticsClient {
     // Flip lifecycle first so other paths see we're resetting
     this.lifecycle = 'resetting';
 
-    // Stop network monitoring
+    // Stop network monitoring and cancel pending debounce
+    if (this.onlineDebounceTimer) {
+      clearTimeout(this.onlineDebounceTimer);
+      this.onlineDebounceTimer = null;
+    }
     this.unsubscribeNetwork?.();
     this.unsubscribeNetwork = null;
     this.networkMonitor.stop();
