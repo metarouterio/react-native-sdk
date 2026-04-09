@@ -79,6 +79,12 @@ export default class Dispatcher {
     this.maxBatchSize = this.initialMaxBatchSize;
   }
 
+  resetCircuitBreaker(): void {
+    this.consecutiveRetries = 0;
+    this.circuit = this.opts.createBreaker();
+    this.maxBatchSize = this.initialMaxBatchSize;
+  }
+
   /**
    * Retry floor: exponential backoff independent of circuit breaker.
    * Applies from the very first failure so retries aren't immediate while circuit is closed.

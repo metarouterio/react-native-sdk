@@ -1,6 +1,7 @@
 import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import type { InitOptions } from './types';
 import { AppState } from 'react-native';
+import { StubNetworkMonitor } from './network/StubNetworkMonitor';
 
 const mockAddEventListener = jest.fn();
 jest
@@ -744,6 +745,146 @@ describe('MetaRouterAnalyticsClient', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('network awareness', () => {
+    beforeEach(() => {
+      // Clear leftover timers (flush intervals) from previous tests' client instances
+      jest.clearAllTimers();
+    });
+
+    it('online transition is debounced — rapid flapping produces single flush', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      // Track an event, then go offline
+      client.track('Event 1');
+      monitor.simulate('disconnected');
+
+      // Rapid flap: online -> offline -> online -> offline -> online
+      monitor.simulate('connected');
+      jest.advanceTimersByTime(500);
+      monitor.simulate('disconnected');
+      monitor.simulate('connected');
+      jest.advanceTimersByTime(500);
+      monitor.simulate('disconnected');
+      monitor.simulate('connected');
+
+      // Reset fetch mock to isolate debounce-triggered flush
+      (global as any).fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200 });
+
+      // Before debounce window: no flush should have fired
+      jest.advanceTimersByTime(1999);
+      expect(fetch).not.toHaveBeenCalled();
+
+      // After debounce window: exactly one flush
+      jest.advanceTimersByTime(1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('debounce timer is cancelled when device goes back offline', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      client.track('Event 1');
+      monitor.simulate('disconnected');
+
+      // Come back online
+      monitor.simulate('connected');
+      jest.advanceTimersByTime(1500); // 1.5s into 2s debounce
+
+      // Go offline again before debounce fires
+      monitor.simulate('disconnected');
+
+      // Reset fetch to isolate
+      (global as any).fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200 });
+
+      // Advance past where the debounce would have fired
+      jest.advanceTimersByTime(2000);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).not.toHaveBeenCalled();
+
+      // Events should still be queued
+      expect(client.queue.length).toBeGreaterThan(0);
+    });
+
+    it('clean online transition flushes after 2s debounce', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      client.track('Event 1');
+      monitor.simulate('disconnected');
+
+      (global as any).fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200 });
+      monitor.simulate('connected');
+
+      // Should NOT flush immediately
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).not.toHaveBeenCalled();
+
+      // Should flush after 2s
+      jest.advanceTimersByTime(2000);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    it('offline transition is immediate (not debounced)', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      monitor.simulate('disconnected');
+
+      const debugInfo = await client.getDebugInfo();
+      expect(debugInfo.networkStatus).toBe('disconnected');
+    });
+
+    it('reset() cancels pending online debounce timer', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      monitor.simulate('disconnected');
+      monitor.simulate('connected'); // starts 2s debounce
+
+      (global as any).fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200 });
+      await client.reset();
+
+      // Advance past debounce — should NOT flush (timer was cancelled by reset)
+      jest.advanceTimersByTime(3000);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('networkStatus shows connected by default without a monitor', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      const debugInfo = await client.getDebugInfo();
+      expect(debugInfo.networkStatus).toBe('connected');
     });
   });
 });
