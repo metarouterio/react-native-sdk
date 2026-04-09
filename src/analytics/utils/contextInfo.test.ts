@@ -123,38 +123,46 @@ describe('getContextInfo', () => {
     expect(context.device.advertisingId).toBeUndefined();
   });
 
-  it('returns Android-specific device context with name and Build.MODEL', async () => {
-    // Override Platform.OS to android
-    const { Platform } = require('react-native');
-    Platform.OS = 'android';
+  describe('Android', () => {
+    let originalOS: string;
 
-    jest.doMock('react-native-device-info', () => ({
-      getManufacturer: () => Promise.resolve('Zebra Technologies'),
-      getModel: () => 'TC52',
-      getDevice: () => Promise.resolve('TC52'),
-      getDeviceId: () => 'tc52',
-      getSystemName: () => 'Android',
-      getSystemVersion: () => '14',
-      getVersion: () => '1.5.0',
-      getBuildNumber: () => '127',
-      getApplicationName: () => 'SidelineAssist',
-      getBundleId: () => 'com.sidelineassist',
-      isWifiEnabled: () => Promise.resolve(true),
-    }));
-
-    const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
-    const context = await getContextInfoMocked();
-
-    expect(context.device).toEqual({
-      manufacturer: 'Zebra Technologies',
-      model: 'TC52',
-      name: 'TC52',
-      type: 'android',
+    beforeEach(() => {
+      const { Platform } = require('react-native');
+      originalOS = Platform.OS;
+      Platform.OS = 'android';
     });
-    expect(context.device.name).toBe('TC52');
 
-    // Reset Platform
-    Platform.OS = 'ios';
+    afterEach(() => {
+      const { Platform } = require('react-native');
+      Platform.OS = originalOS;
+    });
+
+    it('returns device context with name and Build.MODEL', async () => {
+      jest.doMock('react-native-device-info', () => ({
+        getManufacturer: () => Promise.resolve('Samsung'),
+        getModel: () => 'SM-G991B',
+        getDevice: () => Promise.resolve('SM-G991B'),
+        getDeviceId: () => 'o1s',
+        getSystemName: () => 'Android',
+        getSystemVersion: () => '14',
+        getVersion: () => '1.5.0',
+        getBuildNumber: () => '127',
+        getApplicationName: () => 'TestApp',
+        getBundleId: () => 'com.example.testapp',
+        isWifiEnabled: () => Promise.resolve(true),
+      }));
+
+      const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
+      const context = await getContextInfoMocked();
+
+      expect(context.device).toEqual({
+        manufacturer: 'Samsung',
+        model: 'SM-G991B',
+        name: 'SM-G991B',
+        type: 'android',
+      });
+      expect(context.device.name).toBe('SM-G991B');
+    });
   });
 
   it('omits device name on iOS', async () => {
