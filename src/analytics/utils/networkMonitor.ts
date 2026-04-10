@@ -1,3 +1,5 @@
+import { warn } from './logger';
+
 export type NetworkStatus = 'connected' | 'disconnected';
 
 export interface NetworkReachability {
@@ -38,8 +40,11 @@ export class NetworkMonitor implements NetworkReachability {
             this.handler?.(newStatus);
           }
         })
-        .catch(() => {
-          /* fallback: stay connected */
+        .catch((err: unknown) => {
+          warn(
+            'Failed to get initial network status, defaulting to connected',
+            err
+          );
         });
 
       // Subscribe to native connectivity events
@@ -59,8 +64,11 @@ export class NetworkMonitor implements NetworkReachability {
       );
 
       this.unsubscribe = () => subscription.remove();
-    } catch {
-      // Native module not available — stay as always-connected (default behavior)
+    } catch (err) {
+      warn(
+        'Native network monitor not available, defaulting to connected',
+        err
+      );
     }
   }
 

@@ -1,13 +1,12 @@
 import type { NetworkReachability, NetworkStatus } from './networkMonitor';
 
-const DEBOUNCE_MS = 2_000;
-
 /**
  * Decorator that wraps a NetworkReachability monitor and debounces online transitions.
  * Offline transitions fire immediately; online transitions only fire after
  * connectivity has been stable for 2 seconds.
  */
 export class DebouncedNetworkMonitor implements NetworkReachability {
+  private static readonly DEBOUNCE_MS = 2_000;
   private inner: NetworkReachability;
   private _currentStatus: NetworkStatus;
   private handler: ((status: NetworkStatus) => void) | null = null;
@@ -67,7 +66,7 @@ export class DebouncedNetworkMonitor implements NetworkReachability {
           this._currentStatus = 'connected';
           this.handler?.('connected');
         }
-      }, DEBOUNCE_MS);
+      }, DebouncedNetworkMonitor.DEBOUNCE_MS);
     }
   }
 }
