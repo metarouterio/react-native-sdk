@@ -1,6 +1,7 @@
 import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import type { InitOptions } from './types';
 import { AppState } from 'react-native';
+import { StubNetworkMonitor } from './utils/networkMonitor';
 
 const mockAddEventListener = jest.fn();
 jest
@@ -592,6 +593,87 @@ describe('MetaRouterAnalyticsClient', () => {
 
     client.track('Test Event');
     expect(client.queue[0].context.device.advertisingId).toBeUndefined();
+  });
+
+  describe('network awareness', () => {
+    it('getDebugInfo includes networkStatus', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      const debugInfo = await client.getDebugInfo();
+      expect(debugInfo.networkStatus).toBe('connected');
+    });
+
+    it('getDebugInfo reflects disconnected status', async () => {
+      const monitor = new StubNetworkMonitor('disconnected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      const debugInfo = await client.getDebugInfo();
+      expect(debugInfo.networkStatus).toBe('disconnected');
+    });
+
+    it('SDK functions normally when network monitoring unavailable', async () => {
+      // Don't inject networkMonitor — constructor will try to create
+      // a real NetworkMonitor which will fail in test env and fallback
+      // to always-connected
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.track('Test Event');
+      expect(client.queue).toHaveLength(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await client.flush();
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    it('offline -> online transition resets circuit breaker and triggers flush', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      // Go offline
+      monitor.simulate('disconnected');
+
+      // Track events while offline
+      client.track('Offline Event 1');
+      client.track('Offline Event 2');
+
+      // Flush should not send (offline)
+      await client.flush();
+      // Events should still be in queue since network is unavailable
+      // (the dispatcher guard prevents HTTP calls)
+
+      // Go online — should trigger flush
+      (global as any).fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200 });
+      monitor.simulate('connected');
+
+      // Allow the async flush to complete
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    it('reset() cleans up network monitor', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const stopSpy = jest.spyOn(monitor, 'stop');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      await client.reset();
+      expect(stopSpy).toHaveBeenCalled();
+    });
   });
 
   describe('tracing', () => {

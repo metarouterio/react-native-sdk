@@ -7,8 +7,8 @@ module.exports = {
       android: {
         sourceDir: './android',
         packageImportPath:
-          'import com.metarouter.reactnative.MetaRouterQueueStoragePackage;',
-        packageInstance: 'new MetaRouterQueueStoragePackage()',
+          'import com.metarouter.reactnative.MetaRouterPackage;',
+        packageInstance: 'new MetaRouterPackage()',
       },
     },
   },

@@ -5,11 +5,14 @@ import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
-class MetaRouterQueueStoragePackage : ReactPackage {
+class MetaRouterPackage : ReactPackage {
     override fun createNativeModules(
         reactContext: ReactApplicationContext
     ): List<NativeModule> {
-        return listOf(MetaRouterQueueStorageModule(reactContext))
+        return listOf(
+            MetaRouterQueueStorageModule(reactContext),
+            MetaRouterNetworkMonitorModule(reactContext)
+        )
     }
 
     override fun createViewManagers(

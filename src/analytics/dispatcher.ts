@@ -11,6 +11,8 @@ export interface DispatcherOptions {
   baseRetryDelayMs: number; // retry floor base delay (default 1000)
   maxRetryDelayMs: number; // retry floor cap (default 8000)
 
+  isNetworkAvailable: () => boolean; // returns false when offline
+
   endpoint: (path: string) => string;
   fetchWithTimeout: (
     url: string,
@@ -217,6 +219,13 @@ export default class Dispatcher {
 
     const doFlush = async () => {
       while (this.queue.length) {
+        if (!this.opts.isNetworkAvailable()) {
+          this.opts.warn(
+            `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`
+          );
+          return;
+        }
+
         if (!this.circuit.allowRequest()) {
           const state = this.circuit.getState();
           const wait = this.circuit.remainingCooldownMs();
@@ -380,6 +389,11 @@ export default class Dispatcher {
     return this.flushInFlight;
   }
 
+  resetCircuitBreaker(): void {
+    this.circuit.reset();
+    this.consecutiveRetries = 0;
+  }
+
   getDebugInfo() {
     return {
       queueLength: this.queue.length,
@@ -391,6 +405,7 @@ export default class Dispatcher {
       maxQueueBytes: this.opts.maxQueueBytes,
       maxBatchSize: this.maxBatchSize,
       consecutiveRetries: this.consecutiveRetries,
+      isNetworkAvailable: this.opts.isNetworkAvailable(),
     };
   }
 }

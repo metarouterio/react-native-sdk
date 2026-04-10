@@ -8,6 +8,7 @@ const baseOpts = () => ({
   flushIntervalSeconds: 3600, // keep timer quiet unless started
   baseRetryDelayMs: 1000,
   maxRetryDelayMs: 8000,
+  isNetworkAvailable: () => true,
   endpoint: (p: string) => `https://example.com${p}`,
   fetchWithTimeout: jest.fn(
     async (_url?: string, _init?: any) => ({ ok: true, status: 200 }) as any
@@ -324,6 +325,106 @@ describe('Dispatcher', () => {
 
     d.reset();
     expect(d.getQueueSizeBytes()).toBe(0);
+  });
+
+  describe('network awareness', () => {
+    it('events enqueue while offline, no HTTP attempts', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'e1' } as any);
+      d.enqueue({ type: 'track', event: 'e2' } as any);
+      await d.flush();
+
+      expect(opts.fetchWithTimeout).not.toHaveBeenCalled();
+      expect(d.getQueueRef().length).toBe(2);
+    });
+
+    it('offline -> online triggers flush', async () => {
+      const opts = baseOpts();
+      let online = false;
+      opts.isNetworkAvailable = () => online;
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'e1' } as any);
+      await d.flush();
+      expect(opts.fetchWithTimeout).not.toHaveBeenCalled();
+
+      // Go online
+      online = true;
+      await d.flush();
+      expect(opts.fetchWithTimeout).toHaveBeenCalled();
+      expect(d.getQueueRef().length).toBe(0);
+    });
+
+    it('resetCircuitBreaker() resets circuit state', async () => {
+      const opts = baseOpts();
+      opts.fetchWithTimeout = jest.fn(
+        async () =>
+          ({ ok: false, status: 500, headers: { get: () => null } }) as any
+      );
+      const d = new Dispatcher(opts);
+
+      // Trip the circuit breaker
+      d.enqueue({ type: 'track', event: 'x' } as any);
+      await d.flush();
+      d.enqueue({ type: 'track', event: 'y' } as any);
+      await d.flush();
+      d.enqueue({ type: 'track', event: 'z' } as any);
+      await d.flush();
+
+      // Circuit should be impacted
+      expect(d.getDebugInfo().consecutiveRetries).toBeGreaterThan(0);
+
+      // Reset
+      d.resetCircuitBreaker();
+      expect(d.getDebugInfo().consecutiveRetries).toBe(0);
+      expect(d.getDebugInfo().circuitState).toBe('CLOSED');
+    });
+
+    it('circuit breaker does NOT reset while still connected but failing', async () => {
+      const opts = baseOpts();
+      opts.fetchWithTimeout = jest.fn(
+        async () =>
+          ({ ok: false, status: 500, headers: { get: () => null } }) as any
+      );
+      const d = new Dispatcher(opts);
+
+      // Trip the circuit breaker (3 failures = threshold)
+      for (let i = 0; i < 3; i++) {
+        d.enqueue({ type: 'track', event: `e${i}` } as any);
+        await d.flush();
+      }
+
+      // Circuit should be OPEN (not auto-reset)
+      expect(d.getDebugInfo().circuitState).toBe('OPEN');
+    });
+
+    it('getDebugInfo includes isNetworkAvailable', () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      const d = new Dispatcher(opts);
+      expect(d.getDebugInfo().isNetworkAvailable).toBe(false);
+    });
+
+    it('offline log warns with queue count', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'e1' } as any);
+      d.enqueue({ type: 'track', event: 'e2' } as any);
+      await d.flush();
+
+      expect(
+        (opts.warn as jest.Mock).mock.calls.some(
+          (c) =>
+            String(c[0]).includes('Offline') &&
+            String(c[0]).includes('2 event(s)')
+        )
+      ).toBe(true);
+    });
   });
 
   it('stress test: all ~2K queued events successfully transmit in batches', async () => {
