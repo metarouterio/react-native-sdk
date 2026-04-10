@@ -16,10 +16,8 @@ import { PersistentEventQueue } from './persistence/PersistentEventQueue';
 import {
   NetworkMonitor,
   type NetworkReachability,
-  type NetworkStatus,
 } from './utils/networkMonitor';
-
-const ONLINE_DEBOUNCE_MS = 2_000;
+import { DebouncedNetworkMonitor } from './utils/debouncedNetworkMonitor';
 
 /**
  * Analytics client for MetaRouter.
@@ -44,10 +42,8 @@ export class MetaRouterAnalyticsClient {
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
-  private networkMonitor: NetworkReachability;
-  private networkStatus: NetworkStatus = 'connected';
+  private networkMonitor: DebouncedNetworkMonitor;
   private unsubscribeNetwork: (() => void) | null = null;
-  private onlineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -87,7 +83,9 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.networkMonitor = deps?.networkMonitor ?? new NetworkMonitor();
+    this.networkMonitor = new DebouncedNetworkMonitor(
+      deps?.networkMonitor ?? new NetworkMonitor()
+    );
     this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
       maxQueueBytes: this.maxQueueBytes,
@@ -96,7 +94,8 @@ export class MetaRouterAnalyticsClient {
       flushIntervalSeconds: this.flushIntervalSeconds,
       baseRetryDelayMs: 1000,
       maxRetryDelayMs: 8000,
-      isNetworkAvailable: () => this.networkStatus === 'connected',
+      isNetworkAvailable: () =>
+        this.networkMonitor.currentStatus === 'connected',
       endpoint: (path) => this.endpoint(path),
       fetchWithTimeout: (url, init, timeoutMs) =>
         this.fetchWithTimeout(url, init, timeoutMs),
@@ -176,33 +175,15 @@ export class MetaRouterAnalyticsClient {
 
         this.lifecycle = 'ready';
 
-        // Set initial network state and subscribe to changes
-        this.networkStatus = this.networkMonitor.currentStatus;
+        // Subscribe to debounced network transitions
         this.unsubscribeNetwork = this.networkMonitor.onStatusChange(
           (status) => {
-            const wasOffline = this.networkStatus === 'disconnected';
-
-            if (status === 'disconnected') {
-              // Offline: act immediately, cancel any pending online debounce
-              if (this.onlineDebounceTimer) {
-                clearTimeout(this.onlineDebounceTimer);
-                this.onlineDebounceTimer = null;
-              }
-              this.networkStatus = status;
+            if (status === 'connected') {
+              log('Network connectivity stable — resuming flush');
+              this.dispatcher.resetCircuitBreaker();
+              void this.flush();
+            } else {
               log('Network connectivity lost — pausing HTTP attempts');
-            } else if (wasOffline && status === 'connected') {
-              // Online: debounce — only act after connectivity is stable for 2s
-              log('Network connectivity detected — debouncing for stability');
-              if (this.onlineDebounceTimer) {
-                clearTimeout(this.onlineDebounceTimer);
-              }
-              this.onlineDebounceTimer = setTimeout(() => {
-                this.onlineDebounceTimer = null;
-                this.networkStatus = status;
-                log('Network connectivity stable — resuming flush');
-                this.dispatcher.resetCircuitBreaker();
-                void this.flush();
-              }, ONLINE_DEBOUNCE_MS);
             }
           }
         );
@@ -507,7 +488,7 @@ export class MetaRouterAnalyticsClient {
       maxQueueBytes: d.maxQueueBytes,
       tracingEnabled: this.tracingEnabled,
       rehydratedEvents: this.persistentQueue.rehydratedEvents,
-      networkStatus: this.networkStatus,
+      networkStatus: this.networkMonitor.currentStatus,
     };
   }
 
@@ -528,11 +509,7 @@ export class MetaRouterAnalyticsClient {
     // Flip lifecycle first so other paths see we're resetting
     this.lifecycle = 'resetting';
 
-    // Stop network monitoring and cancel pending debounce
-    if (this.onlineDebounceTimer) {
-      clearTimeout(this.onlineDebounceTimer);
-      this.onlineDebounceTimer = null;
-    }
+    // Stop network monitoring (cancels pending debounce internally)
     this.unsubscribeNetwork?.();
     this.unsubscribeNetwork = null;
     this.networkMonitor.stop();
