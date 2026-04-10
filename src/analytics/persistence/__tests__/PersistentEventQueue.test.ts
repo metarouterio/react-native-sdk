@@ -4,7 +4,10 @@ import CircuitBreaker from '../../utils/circuitBreaker';
 
 // Helpers
 function mockNativeStorage() {
-  const store: { data: string | null } = { data: null };
+  const store: { data: string | null; overflow: string | null } = {
+    data: null,
+    overflow: null,
+  };
   NativeModules.MetaRouterQueueStorage = {
     readSnapshot: jest.fn(async () => store.data),
     writeSnapshot: jest.fn(async (data: string) => {
@@ -12,6 +15,13 @@ function mockNativeStorage() {
     }),
     deleteSnapshot: jest.fn(async () => {
       store.data = null;
+    }),
+    readOverflowSnapshot: jest.fn(async () => store.overflow),
+    writeOverflowSnapshot: jest.fn(async (data: string) => {
+      store.overflow = data;
+    }),
+    deleteOverflowSnapshot: jest.fn(async () => {
+      store.overflow = null;
     }),
   };
   return { store, mock: NativeModules.MetaRouterQueueStorage };
@@ -541,6 +551,380 @@ describe('PersistentEventQueue', () => {
 
       await pq.rehydrate();
       expect(pq.rehydratedEvents).toBe(0);
+    });
+  });
+
+  describe('handleOverflow', () => {
+    it('accumulates events in overflow buffer', () => {
+      mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.handleOverflow([
+        { type: 'track', event: 'o1' },
+        { type: 'track', event: 'o2' },
+      ]);
+
+      expect(pq.overflowBufferCount).toBe(2);
+    });
+
+    it('respects maxOfflineDiskEvents cap on buffer', () => {
+      mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher, {
+        maxOfflineDiskEvents: 5,
+      });
+
+      const events = Array.from({ length: 10 }, (_, i) => ({
+        type: 'track',
+        event: `e${i}`,
+      }));
+      pq.handleOverflow(events);
+
+      // Buffer should be capped at 5 (oldest dropped)
+      expect(pq.overflowBufferCount).toBe(5);
+    });
+
+    it('triggers flush to disk at batch threshold', async () => {
+      const { mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      // Overflow exactly 100 events (the OVERFLOW_BATCH_THRESHOLD)
+      const events = Array.from({ length: 100 }, (_, i) => ({
+        type: 'track',
+        event: `e${i}`,
+      }));
+      pq.handleOverflow(events);
+
+      // Allow async flush to complete
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
+    });
+
+    it('does not flush to disk below batch threshold', () => {
+      const { mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.handleOverflow([{ type: 'track', event: 'e1' }]);
+
+      expect(mock.writeOverflowSnapshot).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('flushOverflowBufferToDisk', () => {
+    it('writes buffer contents to overflow disk store', async () => {
+      const { store, mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.handleOverflow([
+        { type: 'track', event: 'o1' },
+        { type: 'track', event: 'o2' },
+      ]);
+
+      await pq.flushOverflowBufferToDisk();
+
+      expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
+      const written = JSON.parse(store.overflow!);
+      expect(written.version).toBe(1);
+      expect(written.events.length).toBe(2);
+      expect(written.events[0].event).toBe('o1');
+
+      // Buffer should be emptied
+      expect(pq.overflowBufferCount).toBe(0);
+    });
+
+    it('merges with existing overflow on disk', async () => {
+      const { store } = mockNativeStorage();
+
+      // Pre-populate overflow on disk
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'existing1' }],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.handleOverflow([{ type: 'track', event: 'new1' }]);
+      await pq.flushOverflowBufferToDisk();
+
+      const written = JSON.parse(store.overflow!);
+      expect(written.events.length).toBe(2);
+      expect(written.events[0].event).toBe('existing1');
+      expect(written.events[1].event).toBe('new1');
+    });
+
+    it('enforces disk cap when merging', async () => {
+      const { store } = mockNativeStorage();
+
+      // Pre-populate with 4 events on disk
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: Array.from({ length: 4 }, (_, i) => ({
+          type: 'track',
+          event: `old${i}`,
+        })),
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher, {
+        maxOfflineDiskEvents: 5,
+      });
+
+      pq.handleOverflow([
+        { type: 'track', event: 'new1' },
+        { type: 'track', event: 'new2' },
+      ]);
+      await pq.flushOverflowBufferToDisk();
+
+      const written = JSON.parse(store.overflow!);
+      // 4 + 2 = 6, cap = 5, drop 1 oldest
+      expect(written.events.length).toBe(5);
+      // oldest (old0) should be dropped
+      expect(written.events[0].event).toBe('old1');
+    });
+
+    it('is a no-op when buffer is empty', async () => {
+      const { mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.flushOverflowBufferToDisk();
+
+      expect(mock.writeOverflowSnapshot).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('drainDiskToNetwork', () => {
+    it('sends overflow events directly to network without entering memory queue', async () => {
+      const { store } = mockNativeStorage();
+
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'overflow1' },
+          { type: 'track', event: 'overflow2' },
+        ],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      // Events sent via sendBatchDirect (fetchWithTimeout)
+      expect(dispatcher.getQueueRef().length).toBe(0); // memory queue untouched
+      expect((dispatcher as any).opts.fetchWithTimeout).toHaveBeenCalled();
+    });
+
+    it('deletes overflow file after drain', async () => {
+      const { store, mock } = mockNativeStorage();
+
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'e1' }],
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect(mock.deleteOverflowSnapshot).toHaveBeenCalled();
+      expect(store.overflow).toBeNull();
+    });
+
+    it('stops on network failure', async () => {
+      const { store } = mockNativeStorage();
+
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: Array.from({ length: 5 }, (_, i) => ({
+          type: 'track',
+          event: `e${i}`,
+        })),
+      });
+
+      const fetchMock = jest.fn(async () => ({
+        ok: false,
+        status: 500,
+      }));
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: fetchMock,
+      });
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      // Events should still be on disk
+      expect(store.overflow).not.toBeNull();
+      const remaining = JSON.parse(store.overflow!);
+      expect(remaining.events.length).toBe(5);
+    });
+
+    it('drains in batches of 100', async () => {
+      const { store } = mockNativeStorage();
+
+      store.overflow = JSON.stringify({
+        version: 1,
+        events: Array.from({ length: 250 }, (_, i) => ({
+          type: 'track',
+          event: `e${i}`,
+        })),
+      });
+
+      const fetchCalls: number[] = [];
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: jest.fn(async (_url?: string, init?: any) => {
+          fetchCalls.push(JSON.parse(init.body).batch.length);
+          return { ok: true, status: 200 } as any;
+        }),
+      });
+
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      // Should have sent 3 batches: 100 + 100 + 50
+      expect(fetchCalls).toEqual([100, 100, 50]);
+      expect(store.overflow).toBeNull();
+    });
+
+    it('is a no-op when no overflow file exists', async () => {
+      mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect((dispatcher as any).opts.fetchWithTimeout).not.toHaveBeenCalled();
+    });
+
+    it('filters expired events during drain', async () => {
+      const { store: overflowStore } = mockNativeStorage();
+
+      const eightDaysAgo = new Date(
+        Date.now() - 8 * 24 * 60 * 60 * 1000
+      ).toISOString();
+      const oneDayAgo = new Date(
+        Date.now() - 1 * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      overflowStore.overflow = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'expired', timestamp: eightDaysAgo },
+          { type: 'track', event: 'fresh', timestamp: oneDayAgo },
+        ],
+      });
+
+      let sentBatch: any[] = [];
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: jest.fn(async (_url?: string, init?: any) => {
+          sentBatch = JSON.parse(init.body).batch;
+          return { ok: true, status: 200 } as any;
+        }),
+      });
+
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect(sentBatch.length).toBe(1);
+      expect(sentBatch[0].event).toBe('fresh');
+    });
+
+    it('flushes overflow buffer before draining', async () => {
+      mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      // Add events to buffer (below batch threshold — won't auto-flush)
+      pq.handleOverflow([
+        { type: 'track', event: 'buffered1' },
+        { type: 'track', event: 'buffered2' },
+      ]);
+
+      let sentBatch: any[] = [];
+      // Override fetch to capture sent events
+      (dispatcher as any).opts.fetchWithTimeout = jest.fn(
+        async (_url?: string, init?: any) => {
+          sentBatch.push(...JSON.parse(init.body).batch);
+          return { ok: true, status: 200 } as any;
+        }
+      );
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      // Buffered events should have been flushed to disk and then drained
+      expect(sentBatch.length).toBe(2);
+      expect(sentBatch[0].event).toBe('buffered1');
+    });
+  });
+
+  describe('flushToDisk with overflow', () => {
+    it('flushes overflow buffer to disk alongside queue snapshot', async () => {
+      const { mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      dispatcher.enqueue({ type: 'track', event: 'mem1' } as any);
+
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      // Add overflow events to buffer
+      pq.handleOverflow([{ type: 'track', event: 'overflow1' }]);
+
+      await pq.flushToDisk();
+
+      // Both queue snapshot and overflow should be written
+      expect(mock.writeSnapshot).toHaveBeenCalled();
+      expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteSnapshot with overflow', () => {
+    it('deletes both queue and overflow snapshots', async () => {
+      const { mock } = mockNativeStorage();
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.handleOverflow([{ type: 'track', event: 'o1' }]);
+
+      await pq.deleteSnapshot();
+
+      expect(mock.deleteSnapshot).toHaveBeenCalled();
+      expect(mock.deleteOverflowSnapshot).toHaveBeenCalled();
+      expect(pq.overflowBufferCount).toBe(0);
     });
   });
 

@@ -28,6 +28,7 @@ export interface DispatcherOptions {
   warn: (...args: any[]) => void;
   error: (...args: any[]) => void;
 
+  onOverflow?: (events: EventPayload[]) => void; // called with events evicted from memory queue when cap is hit
   onScheduleFlushIn?: (ms: number) => void; // optional notification for tests/metrics
   onFatalConfig?: () => void; // 401/403/404 handler
 }
@@ -129,14 +130,24 @@ export default class Dispatcher {
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: drop oldest until there's room (byte limit)
+    // Hard cap: evict oldest until there's room (byte limit)
+    const overflowBatch: EventPayload[] = [];
     while (
       this.queue.length > 0 &&
       this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
     ) {
       const dropped = this.queue.shift();
-      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
-      this.opts.warn('Queue cap reached — dropped oldest event');
+      if (dropped) {
+        this.queueSizeBytes -= this.estimateEventSize(dropped);
+        if (this.opts.onOverflow) {
+          overflowBatch.push(dropped);
+        } else {
+          this.opts.warn('Queue cap reached — dropped oldest event');
+        }
+      }
+    }
+    if (overflowBatch.length > 0) {
+      this.opts.onOverflow!(overflowBatch);
     }
 
     this.opts.log(
@@ -392,6 +403,46 @@ export default class Dispatcher {
   resetCircuitBreaker(): void {
     this.circuit.reset();
     this.consecutiveRetries = 0;
+  }
+
+  /**
+   * Send a batch directly to network, bypassing the memory queue.
+   * Used by disk drain to flush overflow without loading into queue.
+   * Returns true on success, false on failure.
+   */
+  async sendBatchDirect(events: EventPayload[]): Promise<boolean> {
+    try {
+      const nowIso = new Date().toISOString();
+      const batch = events.map((e) => ({ ...(e as any), sentAt: nowIso }));
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (this.opts.isTracingEnabled()) {
+        headers.Trace = 'true';
+      }
+
+      const res = await this.opts.fetchWithTimeout(
+        this.opts.endpoint('/v1/batch'),
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ batch }),
+        },
+        8000
+      );
+
+      if (res.ok) {
+        this.opts.log(`Direct batch send successful (${events.length} events)`);
+        return true;
+      }
+
+      this.opts.warn(`Direct batch send failed with status ${res.status}`);
+      return false;
+    } catch (err) {
+      this.opts.warn(`Direct batch send failed: ${(err as any)?.message}`);
+      return false;
+    }
   }
 
   getDebugInfo() {

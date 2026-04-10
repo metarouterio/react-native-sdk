@@ -674,6 +674,52 @@ describe('MetaRouterAnalyticsClient', () => {
       await client.reset();
       expect(stopSpy).toHaveBeenCalled();
     });
+
+    it('overflow events redirect to persistent queue on memory cap exceeded', async () => {
+      const monitor = new StubNetworkMonitor('disconnected');
+      const client = new MetaRouterAnalyticsClient(
+        {
+          ...opts,
+          maxQueueBytes: 500, // very small cap
+          flushIntervalSeconds: 3600,
+        },
+        { networkMonitor: monitor }
+      );
+      await client.init();
+
+      // Override to prevent auto-flush from interfering
+      jest.spyOn(client as any, 'flush').mockResolvedValue(undefined);
+      (client as any).dispatcher.opts.autoFlushThreshold = 9999;
+
+      // Track enough events to overflow memory queue
+      for (let i = 0; i < 30; i++) {
+        client.track(`event_${i}`, { data: 'x'.repeat(20) });
+      }
+
+      // Check that overflow buffer has events
+      expect(
+        (client as any).persistentQueue.overflowBufferCount
+      ).toBeGreaterThan(0);
+    });
+
+    it('offline -> online drains disk overflow', async () => {
+      const monitor = new StubNetworkMonitor('connected');
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      // Spy on drainDiskToNetwork
+      const drainSpy = jest
+        .spyOn((client as any).persistentQueue, 'drainDiskToNetwork')
+        .mockResolvedValue(undefined);
+
+      // Go offline then online
+      monitor.simulate('disconnected');
+      monitor.simulate('connected');
+
+      expect(drainSpy).toHaveBeenCalled();
+    });
   });
 
   describe('tracing', () => {

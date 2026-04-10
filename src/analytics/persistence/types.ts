@@ -20,3 +20,9 @@ export const FLUSH_THRESHOLD_BYTES = 2 * 1024 * 1024;
 
 /** Flush-to-disk threshold: event count */
 export const FLUSH_THRESHOLD_COUNT = 500;
+
+/** Default max events stored on disk during extended offline periods */
+export const DEFAULT_MAX_OFFLINE_DISK_EVENTS = 10_000;
+
+/** Overflow buffer batch threshold: flush buffer to disk at this count */
+export const OVERFLOW_BATCH_THRESHOLD = 100;

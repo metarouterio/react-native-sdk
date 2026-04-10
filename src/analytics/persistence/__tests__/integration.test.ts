@@ -2,7 +2,10 @@ import { NativeModules, AppState } from 'react-native';
 import { _resetRehydrationGuard } from '../PersistentEventQueue';
 
 function mockNativeStorage() {
-  const store: { data: string | null } = { data: null };
+  const store: { data: string | null; overflow: string | null } = {
+    data: null,
+    overflow: null,
+  };
   NativeModules.MetaRouterQueueStorage = {
     readSnapshot: jest.fn(async () => store.data),
     writeSnapshot: jest.fn(async (data: string) => {
@@ -10,6 +13,13 @@ function mockNativeStorage() {
     }),
     deleteSnapshot: jest.fn(async () => {
       store.data = null;
+    }),
+    readOverflowSnapshot: jest.fn(async () => store.overflow),
+    writeOverflowSnapshot: jest.fn(async (data: string) => {
+      store.overflow = data;
+    }),
+    deleteOverflowSnapshot: jest.fn(async () => {
+      store.overflow = null;
     }),
   };
   return { store, mock: NativeModules.MetaRouterQueueStorage };
@@ -142,5 +152,88 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     await client.reset();
 
     expect(mock.deleteSnapshot).toHaveBeenCalled();
+  });
+
+  it('overflow events written to disk when memory queue overflows', async () => {
+    const { mock } = mockNativeStorage();
+
+    // Network fails so events stay in queue
+    (global.fetch as jest.Mock).mockImplementation(() =>
+      Promise.reject(new Error('Network unavailable'))
+    );
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const { StubNetworkMonitor } = require('../../utils/networkMonitor');
+    const monitor = new StubNetworkMonitor('disconnected');
+
+    const client = new MetaRouterAnalyticsClient(
+      {
+        writeKey: 'test-key',
+        ingestionHost: 'https://example.com',
+        // Small queue so we can trigger overflow easily
+        maxQueueBytes: 500,
+        maxOfflineDiskEvents: 100,
+      },
+      { networkMonitor: monitor }
+    );
+    await client.init();
+
+    // Track many events to overflow memory queue
+    for (let i = 0; i < 50; i++) {
+      client.track(`event_${i}`, { idx: i });
+    }
+
+    // Simulate app going to background to flush overflow to disk
+    await handleAppStateChange!('background');
+
+    // Overflow should have been written to disk
+    expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
+  });
+
+  it('events enqueue successfully while offline (no errors, no HTTP attempts)', async () => {
+    mockNativeStorage();
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const { StubNetworkMonitor } = require('../../utils/networkMonitor');
+    const monitor = new StubNetworkMonitor('disconnected');
+
+    const client = new MetaRouterAnalyticsClient(
+      {
+        writeKey: 'test-key',
+        ingestionHost: 'https://example.com',
+      },
+      { networkMonitor: monitor }
+    );
+    await client.init();
+
+    // Track events while offline
+    client.track('offline_event_1');
+    client.track('offline_event_2');
+
+    // Flush should not make any HTTP calls
+    await client.flush();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('reset deletes both queue and overflow snapshots', async () => {
+    const { mock } = mockNativeStorage();
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const client = new MetaRouterAnalyticsClient({
+      writeKey: 'test-key',
+      ingestionHost: 'https://example.com',
+    });
+    await client.init();
+
+    await client.reset();
+
+    expect(mock.deleteSnapshot).toHaveBeenCalled();
+    expect(mock.deleteOverflowSnapshot).toHaveBeenCalled();
   });
 });

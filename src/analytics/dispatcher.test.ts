@@ -427,6 +427,136 @@ describe('Dispatcher', () => {
     });
   });
 
+  describe('onOverflow callback', () => {
+    it('fires with events evicted from queue instead of dropping', () => {
+      const opts = baseOpts();
+      const overflowEvents: any[][] = [];
+      opts.onOverflow = jest.fn((events: any[]) => {
+        overflowEvents.push(events);
+      });
+      opts.maxQueueBytes = 84; // fits ~3 small events
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any);
+      d.enqueue({ type: 'track', event: 'c' } as any);
+      d.enqueue({ type: 'track', event: 'd' } as any); // evicts oldest
+
+      expect(opts.onOverflow).toHaveBeenCalled();
+      expect(overflowEvents[0].length).toBeGreaterThanOrEqual(1);
+      expect(overflowEvents[0][0].event).toBe('a');
+
+      // warn should NOT be called with "dropped oldest" when onOverflow is set
+      expect(
+        (opts.warn as jest.Mock).mock.calls.some((c) =>
+          String(c[0]).includes('Queue cap reached')
+        )
+      ).toBe(false);
+    });
+
+    it('does not fire when queue is within capacity', () => {
+      const opts = baseOpts();
+      opts.onOverflow = jest.fn();
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any);
+
+      expect(opts.onOverflow).not.toHaveBeenCalled();
+    });
+
+    it('batches multiple evictions into a single callback', () => {
+      const opts = baseOpts();
+      const overflowBatches: any[][] = [];
+      opts.onOverflow = jest.fn((events: any[]) => {
+        overflowBatches.push([...events]);
+      });
+      // Set capacity to fit exactly 1 event
+      const eventSize = new TextEncoder().encode(
+        JSON.stringify({ type: 'track', event: 'x' })
+      ).byteLength;
+      opts.maxQueueBytes = eventSize;
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any); // evicts 'a'
+      d.enqueue({ type: 'track', event: 'c' } as any); // evicts 'b'
+
+      // Each enqueue that causes eviction fires a callback
+      expect(opts.onOverflow).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('sendBatchDirect', () => {
+    it('returns true on successful send', async () => {
+      const opts = baseOpts();
+      const d = new Dispatcher(opts);
+
+      const result = await d.sendBatchDirect([
+        { type: 'track', event: 'e1' } as any,
+      ]);
+      expect(result).toBe(true);
+      expect(opts.fetchWithTimeout).toHaveBeenCalled();
+    });
+
+    it('returns false on HTTP error', async () => {
+      const opts = baseOpts();
+      opts.fetchWithTimeout = jest.fn(async () => ({
+        ok: false,
+        status: 500,
+      })) as any;
+      const d = new Dispatcher(opts);
+
+      const result = await d.sendBatchDirect([
+        { type: 'track', event: 'e1' } as any,
+      ]);
+      expect(result).toBe(false);
+    });
+
+    it('returns false on network error', async () => {
+      const opts = baseOpts();
+      opts.fetchWithTimeout = jest.fn(async () => {
+        throw new Error('Network unavailable');
+      });
+      const d = new Dispatcher(opts);
+
+      const result = await d.sendBatchDirect([
+        { type: 'track', event: 'e1' } as any,
+      ]);
+      expect(result).toBe(false);
+    });
+
+    it('does not affect the memory queue', async () => {
+      const opts = baseOpts();
+      opts.autoFlushThreshold = 9999;
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'queued' } as any);
+      await d.sendBatchDirect([{ type: 'track', event: 'direct' } as any]);
+
+      // Memory queue unchanged
+      expect(d.getQueueRef().length).toBe(1);
+      expect((d.getQueueRef()[0] as any).event).toBe('queued');
+    });
+
+    it('stamps sentAt on batch events', async () => {
+      const opts = baseOpts();
+      let sentBody: any = null;
+      opts.fetchWithTimeout = jest.fn(async (_url?: string, init?: any) => {
+        sentBody = JSON.parse(init.body);
+        return { ok: true, status: 200 } as any;
+      });
+      const d = new Dispatcher(opts);
+
+      await d.sendBatchDirect([{ type: 'track', event: 'e1' } as any]);
+
+      expect(sentBody.batch[0].sentAt).toBeDefined();
+    });
+  });
+
   it('stress test: all ~2K queued events successfully transmit in batches', async () => {
     const opts = baseOpts();
     opts.autoFlushThreshold = 9999; // disable auto-flush
