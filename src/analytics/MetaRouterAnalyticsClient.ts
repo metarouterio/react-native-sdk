@@ -13,6 +13,11 @@ import {
 import CircuitBreaker from './utils/circuitBreaker';
 import Dispatcher from './dispatcher';
 import { PersistentEventQueue } from './persistence/PersistentEventQueue';
+import {
+  NetworkMonitor,
+  type NetworkReachability,
+  type NetworkStatus,
+} from './utils/networkMonitor';
 
 /**
  * Analytics client for MetaRouter.
@@ -37,12 +42,18 @@ export class MetaRouterAnalyticsClient {
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
+  private networkMonitor: NetworkReachability;
+  private networkStatus: NetworkStatus = 'connected';
+  private unsubscribeNetwork: (() => void) | null = null;
 
   /**
    * Initializes the analytics client with the provided options.
    * @param options - The initialization options.
    */
-  constructor(options: InitOptions) {
+  constructor(
+    options: InitOptions,
+    deps?: { networkMonitor?: NetworkReachability }
+  ) {
     const { writeKey, ingestionHost, flushIntervalSeconds } = options;
 
     if (!writeKey || typeof writeKey !== 'string' || writeKey.trim() === '') {
@@ -73,6 +84,7 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
+    this.networkMonitor = deps?.networkMonitor ?? new NetworkMonitor();
     this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
       maxQueueBytes: this.maxQueueBytes,
@@ -81,6 +93,7 @@ export class MetaRouterAnalyticsClient {
       flushIntervalSeconds: this.flushIntervalSeconds,
       baseRetryDelayMs: 1000,
       maxRetryDelayMs: 8000,
+      isNetworkAvailable: () => this.networkStatus === 'connected',
       endpoint: (path) => this.endpoint(path),
       fetchWithTimeout: (url, init, timeoutMs) =>
         this.fetchWithTimeout(url, init, timeoutMs),
@@ -159,6 +172,24 @@ export class MetaRouterAnalyticsClient {
         );
 
         this.lifecycle = 'ready';
+
+        // Set initial network state and subscribe to changes
+        this.networkStatus = this.networkMonitor.currentStatus;
+        this.unsubscribeNetwork = this.networkMonitor.onStatusChange(
+          (status) => {
+            const wasOffline = this.networkStatus === 'disconnected';
+            this.networkStatus = status;
+
+            if (wasOffline && status === 'connected') {
+              log('Network connectivity restored — resuming flush');
+              this.dispatcher.resetCircuitBreaker();
+              void this.flush();
+            } else if (status === 'disconnected') {
+              log('Network connectivity lost — pausing HTTP attempts');
+            }
+          }
+        );
+
         log('MetaRouter SDK initialized');
 
         // Flush immediately so rehydrated events ship on cold start
@@ -459,6 +490,7 @@ export class MetaRouterAnalyticsClient {
       maxQueueBytes: d.maxQueueBytes,
       tracingEnabled: this.tracingEnabled,
       rehydratedEvents: this.persistentQueue.rehydratedEvents,
+      networkStatus: this.networkStatus,
     };
   }
 
@@ -478,6 +510,11 @@ export class MetaRouterAnalyticsClient {
 
     // Flip lifecycle first so other paths see we're resetting
     this.lifecycle = 'resetting';
+
+    // Stop network monitoring
+    this.unsubscribeNetwork?.();
+    this.unsubscribeNetwork = null;
+    this.networkMonitor.stop();
 
     // Stop background work
     this.dispatcher.stop();

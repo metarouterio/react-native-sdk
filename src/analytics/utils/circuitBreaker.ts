@@ -1,4 +1,4 @@
-export type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface CircuitBreakerOptions {
   /** Failures in a row to trip OPEN */
@@ -28,10 +28,10 @@ export default class CircuitBreaker {
   private readonly jitterRatio: number;
   private readonly halfOpenMaxConcurrent: number;
   private readonly now: () => number;
-  private readonly onStateChange?: CircuitBreakerOptions["onStateChange"];
+  private readonly onStateChange?: CircuitBreakerOptions['onStateChange'];
 
   private consecutiveFailures = 0;
-  private state: CircuitState = "CLOSED";
+  private state: CircuitState = 'CLOSED';
   private openUntil = 0;
   private halfOpenInFlight = 0;
   /** how many times we've opened (drives exponential backoff) */
@@ -55,17 +55,17 @@ export default class CircuitBreaker {
     const t = this.now();
 
     // Normalize OPEN→HALF_OPEN when cooldown elapsed
-    if (this.state === "OPEN" && t >= this.openUntil) {
+    if (this.state === 'OPEN' && t >= this.openUntil) {
       this.halfOpenInFlight = 0;
-      this.setState("HALF_OPEN");
+      this.setState('HALF_OPEN');
     }
 
-    if (this.state === "OPEN") {
+    if (this.state === 'OPEN') {
       // Still cooling down
       return false;
     }
 
-    if (this.state === "HALF_OPEN") {
+    if (this.state === 'HALF_OPEN') {
       if (this.halfOpenInFlight >= this.halfOpenMaxConcurrent) return false;
       // Admit a probe
       this.halfOpenInFlight += 1;
@@ -78,11 +78,11 @@ export default class CircuitBreaker {
 
   /** Call on successful request */
   onSuccess(): void {
-    if (this.state === "HALF_OPEN") {
+    if (this.state === 'HALF_OPEN') {
       // One successful probe closes the circuit
       this.halfOpenInFlight = 0;
       this.openCount = 0;
-      this.setState("CLOSED");
+      this.setState('CLOSED');
     }
     // Success in CLOSED resets the consecutive failure counter
     this.consecutiveFailures = 0;
@@ -92,14 +92,14 @@ export default class CircuitBreaker {
   onFailure(): void {
     this.consecutiveFailures += 1;
 
-    if (this.state === "HALF_OPEN") {
+    if (this.state === 'HALF_OPEN') {
       // failed probe → re-open with backoff
       this.tripOpen();
       return;
     }
 
     if (
-      this.state === "CLOSED" &&
+      this.state === 'CLOSED' &&
       this.consecutiveFailures >= this.failureThreshold
     ) {
       this.tripOpen();
@@ -115,12 +115,22 @@ export default class CircuitBreaker {
   /** Time when requests are next allowed (ms since epoch) */
   nextAllowedAt(): number {
     const t = this.now();
-    if (this.state === "OPEN") return this.openUntil;
-    if (this.state === "HALF_OPEN") {
+    if (this.state === 'OPEN') return this.openUntil;
+    if (this.state === 'HALF_OPEN') {
       // Capacity-limited in HALF_OPEN; return now (admission depends on allowRequest())
       return t;
     }
     return t; // CLOSED
+  }
+
+  /** Force-reset to CLOSED. Used on offline -> online transition
+   *  to clear stale backoff from the offline period. */
+  reset(): void {
+    this.setState('CLOSED');
+    this.consecutiveFailures = 0;
+    this.openCount = 0;
+    this.openUntil = 0;
+    this.halfOpenInFlight = 0;
   }
 
   /** How long until next attempt (ms) */
@@ -134,8 +144,8 @@ export default class CircuitBreaker {
     // Report HALF_OPEN if cooldown has elapsed,
     // but do not mutate state here — halfOpenInFlight
     // is reset when allowRequest() actually admits a probe.
-    if (this.state === "OPEN" && this.now() >= this.openUntil) {
-      return "HALF_OPEN";
+    if (this.state === 'OPEN' && this.now() >= this.openUntil) {
+      return 'HALF_OPEN';
     }
     return this.state;
   }
@@ -175,6 +185,6 @@ export default class CircuitBreaker {
     const cooldown = Math.max(0, Math.floor(jittered));
 
     this.openUntil = this.now() + cooldown;
-    this.setState("OPEN", { cooldownMs: cooldown });
+    this.setState('OPEN', { cooldownMs: cooldown });
   }
 }
