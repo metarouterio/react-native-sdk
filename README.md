@@ -214,6 +214,7 @@ The analytics client provides the following methods:
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
+- `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
 - `setTracing(enabled: boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately
 - `reset()`: Reset analytics state and clear all stored data (includes clearing advertising ID)
@@ -392,6 +393,13 @@ The `anonymousId` is a unique identifier automatically generated for each device
 - Automatically included in **all** events
 - Remains stable across app sessions until `reset()` is called
 - Cleared on `reset()` and a **new** UUID is generated on next `init()`
+
+**Accessing the anonymous ID:**
+
+```js
+const anonymousId = await analytics.getAnonymousId();
+console.log(anonymousId); // e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+```
 
 **Use case:**
 Track user behavior before they log in or create an account, then connect pre-login and post-login activity using the `alias()` method.
