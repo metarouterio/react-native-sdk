@@ -595,6 +595,53 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(client.queue[0].context.device.advertisingId).toBeUndefined();
   });
 
+  describe('getAnonymousId', () => {
+    it('delegates to the native identity module', async () => {
+      const { NativeModules } = require('react-native');
+      NativeModules.MetaRouterIdentity = {
+        getAnonymousId: jest.fn(() => Promise.resolve('native-anon-456')),
+      };
+
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      const result = await client.getAnonymousId();
+      expect(result).toBe('native-anon-456');
+      expect(
+        NativeModules.MetaRouterIdentity.getAnonymousId
+      ).toHaveBeenCalled();
+    });
+
+    it('returns null when native module returns null', async () => {
+      const { NativeModules } = require('react-native');
+      NativeModules.MetaRouterIdentity = {
+        getAnonymousId: jest.fn(() => Promise.resolve(null)),
+      };
+
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      const result = await client.getAnonymousId();
+      expect(result).toBeNull();
+    });
+
+    it('does not depend on the JS IdentityManager value', async () => {
+      const { NativeModules } = require('react-native');
+      NativeModules.MetaRouterIdentity = {
+        getAnonymousId: jest.fn(() => Promise.resolve('native-id')),
+      };
+
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      // The JS IdentityManager has 'anon-123' from the mock, but
+      // getAnonymousId() should return the native value
+      const result = await client.getAnonymousId();
+      expect(result).toBe('native-id');
+      expect(result).not.toBe('anon-123');
+    });
+  });
+
   describe('network awareness', () => {
     it('getDebugInfo includes networkStatus', async () => {
       const monitor = new StubNetworkMonitor('connected');

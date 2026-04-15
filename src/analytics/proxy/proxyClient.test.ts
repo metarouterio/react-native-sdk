@@ -20,6 +20,7 @@ describe('proxyClient', () => {
       reset: jest.fn().mockResolvedValue(undefined),
       enableDebugLogging: jest.fn(),
       getDebugInfo: jest.fn().mockResolvedValue({ ok: true }),
+      getAnonymousId: jest.fn().mockResolvedValue('anon-mock-id'),
     };
     const { setRealClient } = require('./proxyClient');
     setRealClient(null, { dropPending: true }); // clear state between tests
@@ -204,6 +205,29 @@ describe('proxyClient', () => {
     expect(mockClient.track).toHaveBeenCalledWith('after', undefined);
   });
 
+  it('getAnonymousId queues pre-bind and resolves after real client is bound', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
+
+    const preBindPromise = proxyClient.getAnonymousId();
+
+    mockClient.getAnonymousId.mockResolvedValue('native-anon-789');
+    setRealClient(mockClient);
+
+    const result = await preBindPromise;
+    expect(result).toBe('native-anon-789');
+    expect(mockClient.getAnonymousId).toHaveBeenCalled();
+  });
+
+  it('getAnonymousId forwards immediately post-bind', async () => {
+    const { proxyClient, setRealClient } = require('./proxyClient');
+    mockClient.getAnonymousId.mockResolvedValue('post-bind-id');
+    setRealClient(mockClient);
+
+    const result = await proxyClient.getAnonymousId();
+    expect(result).toBe('post-bind-id');
+    expect(mockClient.getAnonymousId).toHaveBeenCalled();
+  });
+
   it('allows new flush after unbind resets singleflight', async () => {
     const { proxyClient, setRealClient } = require('./proxyClient');
     setRealClient(mockClient);
@@ -237,6 +261,7 @@ describe('proxyClient', () => {
     await proxyClient.flush();
     await proxyClient.reset();
     await proxyClient.getDebugInfo();
+    await proxyClient.getAnonymousId();
 
     expect(mockClient.track).toHaveBeenCalledWith('e', { p: 1 });
     expect(mockClient.identify).toHaveBeenCalledWith('u', { plan: 'pro' });
@@ -248,5 +273,6 @@ describe('proxyClient', () => {
     expect(mockClient.flush).toHaveBeenCalled();
     expect(mockClient.reset).toHaveBeenCalled();
     expect(mockClient.getDebugInfo).toHaveBeenCalled();
+    expect(mockClient.getAnonymousId).toHaveBeenCalled();
   });
 });

@@ -10,6 +10,7 @@ import {
   removeIdentityField,
   ADVERTISING_ID_KEY,
 } from './utils/identityStorage';
+import { getAnonymousId as getNativeAnonymousId } from './NativeIdentity';
 import CircuitBreaker from './utils/circuitBreaker';
 import Dispatcher from './dispatcher';
 import { PersistentEventQueue } from './persistence/PersistentEventQueue';
@@ -467,6 +468,14 @@ export class MetaRouterAnalyticsClient {
   enableDebugLogging() {
     setDebugLogging(true);
     log('Debug logging enabled');
+  }
+
+  /**
+   * Returns the current anonymous ID from the native identity layer.
+   * Resolves null when the native SDK is unavailable or has no anonymous ID.
+   */
+  async getAnonymousId(): Promise<string | null> {
+    return getNativeAnonymousId();
   }
 
   /**
