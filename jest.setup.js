@@ -17,9 +17,6 @@ jest.mock('react-native', () => ({
       writeSnapshot: jest.fn(() => Promise.resolve()),
       deleteSnapshot: jest.fn(() => Promise.resolve()),
     },
-    MetaRouterIdentity: {
-      getAnonymousId: jest.fn(() => Promise.resolve(null)),
-    },
   },
   NativeEventEmitter: jest.fn().mockImplementation(() => ({
     addListener: jest.fn(),

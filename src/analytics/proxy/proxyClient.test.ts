@@ -210,11 +210,11 @@ describe('proxyClient', () => {
 
     const preBindPromise = proxyClient.getAnonymousId();
 
-    mockClient.getAnonymousId.mockResolvedValue('native-anon-789');
+    mockClient.getAnonymousId.mockResolvedValue('anon-789');
     setRealClient(mockClient);
 
     const result = await preBindPromise;
-    expect(result).toBe('native-anon-789');
+    expect(result).toBe('anon-789');
     expect(mockClient.getAnonymousId).toHaveBeenCalled();
   });
 

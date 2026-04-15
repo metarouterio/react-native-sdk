@@ -596,49 +596,24 @@ describe('MetaRouterAnalyticsClient', () => {
   });
 
   describe('getAnonymousId', () => {
-    it('delegates to the native identity module', async () => {
-      const { NativeModules } = require('react-native');
-      NativeModules.MetaRouterIdentity = {
-        getAnonymousId: jest.fn(() => Promise.resolve('native-anon-456')),
-      };
-
+    it('returns the JS IdentityManager anonymous ID', async () => {
       const client = new MetaRouterAnalyticsClient(opts);
       await client.init();
 
       const result = await client.getAnonymousId();
-      expect(result).toBe('native-anon-456');
-      expect(
-        NativeModules.MetaRouterIdentity.getAnonymousId
-      ).toHaveBeenCalled();
+      expect(result).toBe('anon-123');
     });
 
-    it('returns null when native module returns null', async () => {
-      const { NativeModules } = require('react-native');
-      NativeModules.MetaRouterIdentity = {
-        getAnonymousId: jest.fn(() => Promise.resolve(null)),
-      };
-
+    it('is async and returns a string (never null)', async () => {
       const client = new MetaRouterAnalyticsClient(opts);
       await client.init();
 
-      const result = await client.getAnonymousId();
-      expect(result).toBeNull();
-    });
+      const promise = client.getAnonymousId();
+      expect(promise).toBeInstanceOf(Promise);
 
-    it('does not depend on the JS IdentityManager value', async () => {
-      const { NativeModules } = require('react-native');
-      NativeModules.MetaRouterIdentity = {
-        getAnonymousId: jest.fn(() => Promise.resolve('native-id')),
-      };
-
-      const client = new MetaRouterAnalyticsClient(opts);
-      await client.init();
-
-      // The JS IdentityManager has 'anon-123' from the mock, but
-      // getAnonymousId() should return the native value
-      const result = await client.getAnonymousId();
-      expect(result).toBe('native-id');
-      expect(result).not.toBe('anon-123');
+      const result = await promise;
+      expect(typeof result).toBe('string');
+      expect(result).toBeTruthy();
     });
   });
 

@@ -10,7 +10,6 @@ import {
   removeIdentityField,
   ADVERTISING_ID_KEY,
 } from './utils/identityStorage';
-import { getAnonymousId as getNativeAnonymousId } from './NativeIdentity';
 import CircuitBreaker from './utils/circuitBreaker';
 import Dispatcher from './dispatcher';
 import { PersistentEventQueue } from './persistence/PersistentEventQueue';
@@ -471,11 +470,12 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
-   * Returns the current anonymous ID from the native identity layer.
-   * Resolves null when the native SDK is unavailable or has no anonymous ID.
+   * Returns the current anonymous ID managed by the JS identity layer.
+   * Guaranteed non-null after init() — the IdentityManager always generates
+   * or loads an anonymous ID before the client reaches the 'ready' state.
    */
-  async getAnonymousId(): Promise<string | null> {
-    return getNativeAnonymousId();
+  async getAnonymousId(): Promise<string> {
+    return this.identityManager.getAnonymousId()!;
   }
 
   /**
