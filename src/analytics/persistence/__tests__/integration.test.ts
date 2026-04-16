@@ -154,7 +154,7 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     expect(mock.deleteSnapshot).toHaveBeenCalled();
   });
 
-  it('overflow events written to disk when memory queue overflows', async () => {
+  it('overflow events written to overflow disk when memory queue overflows', async () => {
     const { mock } = mockNativeStorage();
 
     // Network fails so events stay in queue
@@ -185,8 +185,8 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
       client.track(`event_${i}`, { idx: i });
     }
 
-    // Simulate app going to background to flush overflow to disk
-    await handleAppStateChange!('background');
+    // Allow async overflow writes to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Overflow should have been written to disk
     expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
@@ -214,7 +214,7 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     client.track('offline_event_1');
     client.track('offline_event_2');
 
-    // Flush should not make any HTTP calls
+    // Flush should not make any HTTP calls (events go to offline storage)
     await client.flush();
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -235,5 +235,45 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
 
     expect(mock.deleteSnapshot).toHaveBeenCalled();
     expect(mock.deleteOverflowSnapshot).toHaveBeenCalled();
+  });
+
+  it('offline flush sends events to overflow disk, online drains them', async () => {
+    const { mock } = mockNativeStorage();
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const { StubNetworkMonitor } = require('../../utils/networkMonitor');
+    const monitor = new StubNetworkMonitor('disconnected');
+
+    const client = new MetaRouterAnalyticsClient(
+      {
+        writeKey: 'test-key',
+        ingestionHost: 'https://example.com',
+      },
+      { networkMonitor: monitor }
+    );
+    await client.init();
+
+    // Track events while offline
+    client.track('offline_1');
+    client.track('offline_2');
+
+    // Flush while offline — events should go to overflow disk
+    await client.flush();
+
+    // Allow async overflow writes to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(mock.writeOverflowSnapshot).toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    // Go online — should drain overflow disk to network
+    monitor.simulate('connected');
+
+    // Allow drain to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(global.fetch).toHaveBeenCalled();
   });
 });

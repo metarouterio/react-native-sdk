@@ -266,29 +266,30 @@ describe('MetaRouterAnalyticsClient', () => {
     (client as any).dispatcher &&
       ((client as any).dispatcher.opts.autoFlushThreshold = 9999);
 
+    // Spy on overflow to verify events get flushed
+    const flushSpy = jest.spyOn(
+      (client as any).persistentQueue,
+      'flushEventsToOverflowDisk'
+    );
+
     // Track one event to measure enriched size, then set byte cap for 10 events
     client.track('e00');
     const enrichedSize = JSON.stringify((client as any).queue[0]).length;
     (client as any).dispatcher.opts.maxQueueBytes = enrichedSize * 10;
 
-    const firstId = (client as any).queue[0].messageId;
-
-    // Add 15 more (padded names for uniform size) => total 16, cap ~10 => drop 6 oldest
+    // Add 15 more (padded names for uniform size) => total 16, cap ~10 => overflow triggered
     for (let i = 1; i <= 15; i++) {
       client.track(`e${String(i).padStart(2, '0')}`);
     }
 
-    // Queue should be capped
-    expect((client as any).queue.length).toBe(10);
+    // Queue should not exceed cap (entire queue flushed on overflow, only latest events remain)
+    expect((client as any).queue.length).toBeLessThanOrEqual(10);
 
-    // The very first event should have been dropped
-    expect(
-      (client as any).queue.find((e: any) => e.messageId === firstId)
-    ).toBeUndefined();
+    // Overflow should have been triggered
+    expect(flushSpy).toHaveBeenCalled();
 
-    // Ordering should be preserved for the tail: remaining should be e06..e15
+    // The most recent event should always be present
     const names = (client as any).queue.map((e: any) => e.event);
-    expect(names[0]).toBe('e06');
     expect(names[names.length - 1]).toBe('e15');
 
     // No network calls needed for this test
@@ -633,12 +634,21 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(fetch).toHaveBeenCalled();
     });
 
-    it('offline -> online transition resets circuit breaker and triggers flush', async () => {
+    it('offline -> online transition resets circuit breaker and triggers flush + drain', async () => {
       const monitor = new StubNetworkMonitor('connected');
       const client = new MetaRouterAnalyticsClient(opts, {
         networkMonitor: monitor,
       });
       await client.init();
+
+      // Spy on flushEventsToOverflowDisk and drainDiskToNetwork
+      const overflowSpy = jest.spyOn(
+        (client as any).persistentQueue,
+        'flushEventsToOverflowDisk'
+      );
+      const drainSpy = jest
+        .spyOn((client as any).persistentQueue, 'drainDiskToNetwork')
+        .mockResolvedValue(undefined);
 
       // Go offline
       monitor.simulate('disconnected');
@@ -647,20 +657,16 @@ describe('MetaRouterAnalyticsClient', () => {
       client.track('Offline Event 1');
       client.track('Offline Event 2');
 
-      // Flush should not send (offline)
+      // Flush while offline — events should be moved to overflow storage
       await client.flush();
-      // Events should still be in queue since network is unavailable
-      // (the dispatcher guard prevents HTTP calls)
+      expect(overflowSpy).toHaveBeenCalled();
 
-      // Go online — should trigger flush
-      (global as any).fetch = jest
-        .fn()
-        .mockResolvedValue({ ok: true, status: 200 });
+      // Go online — should trigger flush and drain
       monitor.simulate('connected');
 
-      // Allow the async flush to complete
+      // Allow the async operations to complete
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(fetch).toHaveBeenCalled();
+      expect(drainSpy).toHaveBeenCalled();
     });
 
     it('reset() cleans up network monitor', async () => {
@@ -675,7 +681,7 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(stopSpy).toHaveBeenCalled();
     });
 
-    it('overflow events redirect to persistent queue on memory cap exceeded', async () => {
+    it('overflow events flush to overflow disk on memory cap exceeded', async () => {
       const monitor = new StubNetworkMonitor('disconnected');
       const client = new MetaRouterAnalyticsClient(
         {
@@ -687,6 +693,12 @@ describe('MetaRouterAnalyticsClient', () => {
       );
       await client.init();
 
+      // Spy on flushEventsToOverflowDisk
+      const flushSpy = jest.spyOn(
+        (client as any).persistentQueue,
+        'flushEventsToOverflowDisk'
+      );
+
       // Override to prevent auto-flush from interfering
       jest.spyOn(client as any, 'flush').mockResolvedValue(undefined);
       (client as any).dispatcher.opts.autoFlushThreshold = 9999;
@@ -696,10 +708,8 @@ describe('MetaRouterAnalyticsClient', () => {
         client.track(`event_${i}`, { data: 'x'.repeat(20) });
       }
 
-      // Check that overflow buffer has events
-      expect(
-        (client as any).persistentQueue.overflowBufferCount
-      ).toBeGreaterThan(0);
+      // Check that events were flushed to overflow disk
+      expect(flushSpy).toHaveBeenCalled();
     });
 
     it('offline -> online drains disk overflow', async () => {

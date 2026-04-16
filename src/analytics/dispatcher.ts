@@ -3,6 +3,10 @@ import type CircuitBreaker from './utils/circuitBreaker';
 
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
+export interface NetworkResponse {
+  statusCode: number;
+}
+
 export interface DispatcherOptions {
   maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
   autoFlushThreshold: number; // e.g., 20
@@ -28,7 +32,9 @@ export interface DispatcherOptions {
   warn: (...args: any[]) => void;
   error: (...args: any[]) => void;
 
-  onOverflow?: (events: EventPayload[]) => void; // called with events evicted from memory queue when cap is hit
+  onCapacityOverflow?: (events: EventPayload[]) => void; // called with entire queue when byte cap is hit — flushes to overflow disk
+  onFlushToOfflineStorage?: (events: EventPayload[]) => void; // called when flush triggers while offline — persists queue to overflow disk
+  onFlushComplete?: () => void; // fires after successful online flush to trigger overflow drain
   onScheduleFlushIn?: (ms: number) => void; // optional notification for tests/metrics
   onFatalConfig?: () => void; // 401/403/404 handler
 }
@@ -130,24 +136,22 @@ export default class Dispatcher {
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: evict oldest until there's room (byte limit)
-    const overflowBatch: EventPayload[] = [];
-    while (
+    // Capacity overflow: flush entire queue to overflow disk, then reset
+    if (
       this.queue.length > 0 &&
       this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
     ) {
-      const dropped = this.queue.shift();
-      if (dropped) {
-        this.queueSizeBytes -= this.estimateEventSize(dropped);
-        if (this.opts.onOverflow) {
-          overflowBatch.push(dropped);
-        } else {
-          this.opts.warn('Queue cap reached — dropped oldest event');
-        }
+      if (this.opts.onCapacityOverflow) {
+        const flushed = this.queue.splice(0);
+        this.queueSizeBytes = 0;
+        this.opts.onCapacityOverflow(flushed);
+      } else {
+        this.opts.warn(
+          `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
+        );
+        this.queue.length = 0;
+        this.queueSizeBytes = 0;
       }
-    }
-    if (overflowBatch.length > 0) {
-      this.opts.onOverflow!(overflowBatch);
     }
 
     this.opts.log(
@@ -173,14 +177,19 @@ export default class Dispatcher {
       this.queueSizeBytes += this.estimateEventSize(e);
     }
 
-    // Enforce cap: drop oldest (from front) until within byte limit
-    while (
-      this.queue.length > 0 &&
-      this.queueSizeBytes > this.opts.maxQueueBytes
-    ) {
-      const dropped = this.queue.shift();
-      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
-      this.opts.warn('Queue cap reached — dropped oldest event');
+    // Enforce cap: if over byte limit, flush entire queue to overflow disk
+    if (this.queueSizeBytes > this.opts.maxQueueBytes) {
+      if (this.opts.onCapacityOverflow) {
+        const flushed = this.queue.splice(0);
+        this.queueSizeBytes = 0;
+        this.opts.onCapacityOverflow(flushed);
+      } else {
+        this.opts.warn(
+          `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
+        );
+        this.queue.length = 0;
+        this.queueSizeBytes = 0;
+      }
     }
 
     if (this.queue.length >= this.opts.autoFlushThreshold) {
@@ -231,9 +240,18 @@ export default class Dispatcher {
     const doFlush = async () => {
       while (this.queue.length) {
         if (!this.opts.isNetworkAvailable()) {
-          this.opts.warn(
-            `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`
-          );
+          if (this.opts.onFlushToOfflineStorage) {
+            const flushed = this.queue.splice(0);
+            this.queueSizeBytes = 0;
+            this.opts.onFlushToOfflineStorage(flushed);
+            this.opts.warn(
+              `Offline — flushed ${flushed.length} event(s) to offline storage`
+            );
+          } else {
+            this.opts.warn(
+              `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`
+            );
+          }
           return;
         }
 
@@ -370,6 +388,11 @@ export default class Dispatcher {
             );
           }
           this.opts.log('API call successful');
+
+          // If queue is now empty after this successful batch, fire onFlushComplete
+          if (this.queue.length === 0 && this.opts.isNetworkAvailable()) {
+            this.opts.onFlushComplete?.();
+          }
         } catch (err) {
           this.circuit.onFailure();
           this.consecutiveRetries += 1;
@@ -408,9 +431,11 @@ export default class Dispatcher {
   /**
    * Send a batch directly to network, bypassing the memory queue.
    * Used by disk drain to flush overflow without loading into queue.
-   * Returns true on success, false on failure.
+   * Returns { statusCode } on HTTP response, null on network/transport error.
    */
-  async sendBatchDirect(events: EventPayload[]): Promise<boolean> {
+  async sendBatchDirect(
+    events: EventPayload[]
+  ): Promise<NetworkResponse | null> {
     try {
       const nowIso = new Date().toISOString();
       const batch = events.map((e) => ({ ...(e as any), sentAt: nowIso }));
@@ -434,14 +459,14 @@ export default class Dispatcher {
 
       if (res.ok) {
         this.opts.log(`Direct batch send successful (${events.length} events)`);
-        return true;
+      } else {
+        this.opts.warn(`Direct batch send failed with status ${res.status}`);
       }
 
-      this.opts.warn(`Direct batch send failed with status ${res.status}`);
-      return false;
+      return { statusCode: res.status };
     } catch (err) {
       this.opts.warn(`Direct batch send failed: ${(err as any)?.message}`);
-      return false;
+      return null;
     }
   }
 

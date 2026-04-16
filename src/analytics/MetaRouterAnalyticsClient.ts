@@ -121,7 +121,15 @@ export class MetaRouterAnalyticsClient {
       log,
       warn,
       error,
-      onOverflow: (events) => this.persistentQueue.handleOverflow(events),
+      onCapacityOverflow: (events) =>
+        this.persistentQueue.flushEventsToOverflowDisk(events),
+      onFlushToOfflineStorage: (events) =>
+        this.persistentQueue.flushEventsToOverflowDisk(events),
+      onFlushComplete: () => {
+        if (this.networkStatus === 'connected') {
+          void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
+        }
+      },
       onScheduleFlushIn: (ms) => {
         (this as any).scheduleFlushIn(ms, { fromDispatcher: true });
       },

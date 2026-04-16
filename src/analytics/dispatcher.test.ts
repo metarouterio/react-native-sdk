@@ -48,17 +48,27 @@ describe('Dispatcher', () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 
-  it('respects maxQueueBytes by dropping oldest', () => {
+  it('respects maxQueueBytes by flushing entire queue to overflow on capacity', () => {
     const opts = baseOpts();
     // Each event is 28 chars: {"type":"track","event":"a"}
     // Set cap to fit exactly 3 events (84 chars)
     opts.maxQueueBytes = 84;
+    opts.onCapacityOverflow = jest.fn();
     const d = new Dispatcher(opts);
     d.enqueue({ type: 'track', event: 'a' } as any);
     d.enqueue({ type: 'track', event: 'b' } as any);
     d.enqueue({ type: 'track', event: 'c' } as any);
-    d.enqueue({ type: 'track', event: 'd' } as any); // drops oldest
-    expect(d.getQueueRef().map((e: any) => e.event)).toEqual(['b', 'c', 'd']);
+    d.enqueue({ type: 'track', event: 'd' } as any); // triggers full flush + enqueue 'd'
+    // Queue should only contain the new event 'd'
+    expect(d.getQueueRef().map((e: any) => e.event)).toEqual(['d']);
+    // Overflow callback should have received 'a', 'b', 'c'
+    expect(opts.onCapacityOverflow).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ event: 'a' }),
+        expect.objectContaining({ event: 'b' }),
+        expect.objectContaining({ event: 'c' }),
+      ])
+    );
   });
 
   it('batches in chunks up to maxBatchSize', async () => {
@@ -157,26 +167,21 @@ describe('Dispatcher', () => {
       d.enqueue(makeEvent(i) as any);
     }
 
-    // Queue should be capped at 2000
-    expect(d.getQueueRef().length).toBe(2000);
-
-    // Verify oldest events were dropped and newest remain
+    // With the new flush-entire-queue overflow model, each time the cap is exceeded
+    // the entire queue is dropped (no onCapacityOverflow set).
+    // Only the most recent event(s) that fit within the cap after the last overflow remain.
     const queue = d.getQueueRef();
-    expect((queue[0] as any).properties.id).toBe('08000');
+    // Queue should not exceed cap
+    expect(d.getQueueSizeBytes()).toBeLessThanOrEqual(eventSize * 2000);
+    // The last event should always be present
     expect((queue[queue.length - 1] as any).properties.id).toBe('09999');
 
-    // Verify all IDs in queue are contiguous
-    for (let i = 0; i < 2000; i++) {
-      expect((queue[i] as any).properties.id).toBe(
-        String(8000 + i).padStart(5, '0')
-      );
-    }
-
-    // Verify warn was called 8000 times (once per dropped event)
-    expect((opts.warn as jest.Mock).mock.calls.length).toBe(8000);
-    expect((opts.warn as jest.Mock).mock.calls[0][0]).toContain(
-      'Queue cap reached'
-    );
+    // Verify warn was called for each overflow (entire queue dropped each time)
+    expect(
+      (opts.warn as jest.Mock).mock.calls.some((c) =>
+        String(c[0]).includes('Queue cap reached')
+      )
+    ).toBe(true);
   });
 
   it('gradually recovers maxBatchSize after 413-induced reduction on subsequent successes', async () => {
@@ -248,11 +253,12 @@ describe('Dispatcher', () => {
     ]);
   });
 
-  it('enqueueFront respects maxQueueBytes by dropping oldest from front-loaded batch', () => {
+  it('enqueueFront flushes entire queue to overflow when exceeding capacity', () => {
     const opts = baseOpts();
     // Each event is 28 chars — set cap to fit exactly 3 (84 chars)
     opts.maxQueueBytes = 84;
     opts.autoFlushThreshold = 9999;
+    opts.onCapacityOverflow = jest.fn();
     const d = new Dispatcher(opts);
     d.enqueue({ type: 'track', event: 'a' } as any);
     d.enqueue({ type: 'track', event: 'b' } as any);
@@ -263,10 +269,14 @@ describe('Dispatcher', () => {
       { type: 'track', event: 'z' } as any,
     ]);
 
-    // Total would be 5×28=140 chars, cap is 84. After prepend: [x, y, z, a, b] -> drop oldest 2 -> [z, a, b]
-    const queue = d.getQueueRef();
-    expect(queue.length).toBe(3);
-    expect(queue.map((e: any) => e.event)).toEqual(['z', 'a', 'b']);
+    // Total would be 5×28=140 chars, cap is 84. Entire merged queue flushed to overflow.
+    expect(opts.onCapacityOverflow).toHaveBeenCalledTimes(1);
+    const flushed = (opts.onCapacityOverflow as jest.Mock).mock.calls[0][0];
+    expect(flushed.length).toBe(5);
+    expect(flushed.map((e: any) => e.event)).toEqual(['x', 'y', 'z', 'a', 'b']);
+
+    // Queue should be empty after overflow flush
+    expect(d.getQueueRef().length).toBe(0);
   });
 
   it('getQueueSizeBytes returns approximate serialized size', () => {
@@ -408,7 +418,27 @@ describe('Dispatcher', () => {
       expect(d.getDebugInfo().isNetworkAvailable).toBe(false);
     });
 
-    it('offline log warns with queue count', async () => {
+    it('offline log warns with flushed event count when onFlushToOfflineStorage is set', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      opts.onFlushToOfflineStorage = jest.fn();
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'e1' } as any);
+      d.enqueue({ type: 'track', event: 'e2' } as any);
+      await d.flush();
+
+      expect(
+        (opts.warn as jest.Mock).mock.calls.some(
+          (c) =>
+            String(c[0]).includes('Offline') &&
+            String(c[0]).includes('flushed') &&
+            String(c[0]).includes('2 event(s)')
+        )
+      ).toBe(true);
+    });
+
+    it('offline log warns with queue count when no onFlushToOfflineStorage', async () => {
       const opts = baseOpts();
       opts.isNetworkAvailable = () => false;
       const d = new Dispatcher(opts);
@@ -427,11 +457,11 @@ describe('Dispatcher', () => {
     });
   });
 
-  describe('onOverflow callback', () => {
-    it('fires with events evicted from queue instead of dropping', () => {
+  describe('onCapacityOverflow callback', () => {
+    it('fires with entire queue when capacity is hit', () => {
       const opts = baseOpts();
       const overflowEvents: any[][] = [];
-      opts.onOverflow = jest.fn((events: any[]) => {
+      opts.onCapacityOverflow = jest.fn((events: any[]) => {
         overflowEvents.push(events);
       });
       opts.maxQueueBytes = 84; // fits ~3 small events
@@ -441,68 +471,136 @@ describe('Dispatcher', () => {
       d.enqueue({ type: 'track', event: 'a' } as any);
       d.enqueue({ type: 'track', event: 'b' } as any);
       d.enqueue({ type: 'track', event: 'c' } as any);
-      d.enqueue({ type: 'track', event: 'd' } as any); // evicts oldest
+      d.enqueue({ type: 'track', event: 'd' } as any); // flushes a,b,c to overflow
 
-      expect(opts.onOverflow).toHaveBeenCalled();
-      expect(overflowEvents[0].length).toBeGreaterThanOrEqual(1);
-      expect(overflowEvents[0][0].event).toBe('a');
+      expect(opts.onCapacityOverflow).toHaveBeenCalledTimes(1);
+      expect(overflowEvents[0].length).toBe(3);
+      expect(overflowEvents[0].map((e: any) => e.event)).toEqual([
+        'a',
+        'b',
+        'c',
+      ]);
 
-      // warn should NOT be called with "dropped oldest" when onOverflow is set
-      expect(
-        (opts.warn as jest.Mock).mock.calls.some((c) =>
-          String(c[0]).includes('Queue cap reached')
-        )
-      ).toBe(false);
+      // Queue should only contain the new event
+      expect(d.getQueueRef().length).toBe(1);
+      expect((d.getQueueRef()[0] as any).event).toBe('d');
     });
 
     it('does not fire when queue is within capacity', () => {
       const opts = baseOpts();
-      opts.onOverflow = jest.fn();
+      opts.onCapacityOverflow = jest.fn();
       opts.autoFlushThreshold = 9999;
 
       const d = new Dispatcher(opts);
       d.enqueue({ type: 'track', event: 'a' } as any);
       d.enqueue({ type: 'track', event: 'b' } as any);
 
-      expect(opts.onOverflow).not.toHaveBeenCalled();
+      expect(opts.onCapacityOverflow).not.toHaveBeenCalled();
     });
 
-    it('batches multiple evictions into a single callback', () => {
+    it('resets queue bytes to 0 after overflow', () => {
       const opts = baseOpts();
-      const overflowBatches: any[][] = [];
-      opts.onOverflow = jest.fn((events: any[]) => {
-        overflowBatches.push([...events]);
-      });
-      // Set capacity to fit exactly 1 event
+      opts.onCapacityOverflow = jest.fn();
       const eventSize = new TextEncoder().encode(
         JSON.stringify({ type: 'track', event: 'x' })
       ).byteLength;
-      opts.maxQueueBytes = eventSize;
+      opts.maxQueueBytes = eventSize; // fits exactly 1 event
       opts.autoFlushThreshold = 9999;
 
       const d = new Dispatcher(opts);
       d.enqueue({ type: 'track', event: 'a' } as any);
-      d.enqueue({ type: 'track', event: 'b' } as any); // evicts 'a'
-      d.enqueue({ type: 'track', event: 'c' } as any); // evicts 'b'
+      d.enqueue({ type: 'track', event: 'b' } as any); // overflows 'a', enqueues 'b'
 
-      // Each enqueue that causes eviction fires a callback
-      expect(opts.onOverflow).toHaveBeenCalledTimes(2);
+      // Queue should have just 'b', size should be 1 event's worth
+      expect(d.getQueueRef().length).toBe(1);
+      expect(d.getQueueSizeBytes()).toBe(eventSize);
+    });
+  });
+
+  describe('onFlushToOfflineStorage callback', () => {
+    it('fires when flush is called while offline', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      opts.onFlushToOfflineStorage = jest.fn();
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any);
+
+      await d.flush();
+
+      expect(opts.onFlushToOfflineStorage).toHaveBeenCalledTimes(1);
+      expect(opts.onFlushToOfflineStorage).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ event: 'a' }),
+          expect.objectContaining({ event: 'b' }),
+        ])
+      );
+      // Queue should be empty after flushing to offline storage
+      expect(d.getQueueRef().length).toBe(0);
+    });
+
+    it('does not fire when online', async () => {
+      const opts = baseOpts();
+      opts.onFlushToOfflineStorage = jest.fn();
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any);
+
+      await d.flush();
+
+      expect(opts.onFlushToOfflineStorage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('onFlushComplete callback', () => {
+    it('fires after successful online flush that empties the queue', async () => {
+      const opts = baseOpts();
+      opts.onFlushComplete = jest.fn();
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+
+      await d.flush();
+
+      expect(opts.onFlushComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire on failed flush', async () => {
+      const opts = baseOpts();
+      opts.onFlushComplete = jest.fn();
+      opts.autoFlushThreshold = 9999;
+      opts.fetchWithTimeout = jest.fn(async () => ({
+        ok: false,
+        status: 500,
+        headers: { get: () => null },
+      })) as any;
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+
+      await d.flush();
+
+      expect(opts.onFlushComplete).not.toHaveBeenCalled();
     });
   });
 
   describe('sendBatchDirect', () => {
-    it('returns true on successful send', async () => {
+    it('returns statusCode on successful send', async () => {
       const opts = baseOpts();
       const d = new Dispatcher(opts);
 
       const result = await d.sendBatchDirect([
         { type: 'track', event: 'e1' } as any,
       ]);
-      expect(result).toBe(true);
+      expect(result).toEqual({ statusCode: 200 });
       expect(opts.fetchWithTimeout).toHaveBeenCalled();
     });
 
-    it('returns false on HTTP error', async () => {
+    it('returns statusCode on HTTP error', async () => {
       const opts = baseOpts();
       opts.fetchWithTimeout = jest.fn(async () => ({
         ok: false,
@@ -513,10 +611,10 @@ describe('Dispatcher', () => {
       const result = await d.sendBatchDirect([
         { type: 'track', event: 'e1' } as any,
       ]);
-      expect(result).toBe(false);
+      expect(result).toEqual({ statusCode: 500 });
     });
 
-    it('returns false on network error', async () => {
+    it('returns null on network error', async () => {
       const opts = baseOpts();
       opts.fetchWithTimeout = jest.fn(async () => {
         throw new Error('Network unavailable');
@@ -526,7 +624,7 @@ describe('Dispatcher', () => {
       const result = await d.sendBatchDirect([
         { type: 'track', event: 'e1' } as any,
       ]);
-      expect(result).toBe(false);
+      expect(result).toBeNull();
     });
 
     it('does not affect the memory queue', async () => {
