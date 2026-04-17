@@ -5,6 +5,7 @@ import CircuitBreaker from '../../utils/circuitBreaker';
 function mockNativeStorage() {
   const store: { data: string | null } = { data: null };
   NativeModules.MetaRouterQueueStorage = {
+    exists: jest.fn(async () => store.data !== null),
     readSnapshot: jest.fn(async () => store.data),
     writeSnapshot: jest.fn(async (data: string) => {
       store.data = data;
@@ -48,169 +49,44 @@ function createDispatcher(overrides?: Partial<any>) {
 describe('PersistentEventQueue', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    const { _resetRehydrationGuard } = require('../PersistentEventQueue');
-    _resetRehydrationGuard();
   });
 
   afterEach(() => {
     NativeModules.MetaRouterQueueStorage = undefined as any;
   });
 
-  describe('rehydrate', () => {
-    it('loads events from disk on first call and prepends to queue', async () => {
+  describe('checkForPersistedEvents', () => {
+    it('sets hasDiskData=true when the snapshot file exists', async () => {
       const { store } = mockNativeStorage();
-      const events = [
-        { type: 'track', event: 'disk1', messageId: '1' },
-        { type: 'track', event: 'disk2', messageId: '2' },
-      ];
-      store.data = JSON.stringify({ version: 1, events });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(2);
-      expect((dispatcher.getQueueRef()[0] as any).event).toBe('disk1');
-    });
-
-    it('does not rehydrate a second time', async () => {
-      const { store, mock } = mockNativeStorage();
       store.data = JSON.stringify({
         version: 1,
-        events: [{ type: 'track', event: 'disk1' }],
+        events: [{ type: 'track', event: 'e1' }],
       });
 
       const dispatcher = createDispatcher();
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
-      await pq.rehydrate();
-      await pq.rehydrate();
-
-      expect(mock.readSnapshot).toHaveBeenCalledTimes(1);
-      expect(dispatcher.getQueueRef().length).toBe(1);
-    });
-
-    it('flushes entire queue to disk when rehydrated events exceed memory byte cap', async () => {
-      const { store } = mockNativeStorage();
-      // Use uniform-size events so byte cap maps to exact count
-      const events = Array.from({ length: 2500 }, (_, i) => ({
-        type: 'track',
-        event: 'evt',
-        properties: { id: String(i).padStart(5, '0') },
-      }));
-      const eventSize = JSON.stringify(events[0]).length;
-      store.data = JSON.stringify({ version: 1, events });
-
-      const overflowEvents: any[] = [];
-      const dispatcher = createDispatcher({
-        maxQueueBytes: eventSize * 2000,
-        onCapacityOverflow: (evts: any[]) => {
-          overflowEvents.push(...evts);
-        },
-      });
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(0);
-      expect(overflowEvents.length).toBe(2500);
-    });
-
-    it('skips rehydration if snapshot has unknown version', async () => {
-      const { store } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 99,
-        events: [{ type: 'track', event: 'x' }],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
+      const result = await pq.checkForPersistedEvents();
+      expect(result).toBe(true);
+      expect(pq.hasDiskData).toBe(true);
+      // Memory queue stays empty — no load on boot.
       expect(dispatcher.getQueueRef().length).toBe(0);
     });
 
-    it('handles corrupt JSON gracefully', async () => {
-      const { store } = mockNativeStorage();
-      store.data = '{not valid json';
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(0);
-    });
-
-    it('handles null snapshot (no file on disk)', async () => {
+    it('sets hasDiskData=false when there is no snapshot', async () => {
       mockNativeStorage();
 
       const dispatcher = createDispatcher();
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(0);
+      const result = await pq.checkForPersistedEvents();
+      expect(result).toBe(false);
+      expect(pq.hasDiskData).toBe(false);
     });
 
-    it('deletes snapshot after successful rehydration', async () => {
-      const { store, mock } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 1,
-        events: [{ type: 'track', event: 'x' }],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(mock.deleteSnapshot).toHaveBeenCalled();
-    });
-
-    it('deletes snapshot when version is unknown', async () => {
-      const { store, mock } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 99,
-        events: [{ type: 'track', event: 'x' }],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(mock.deleteSnapshot).toHaveBeenCalled();
-      expect(dispatcher.getQueueRef().length).toBe(0);
-    });
-
-    it('deletes snapshot when JSON is corrupt', async () => {
-      const { store, mock } = mockNativeStorage();
-      store.data = '{not valid json';
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(mock.deleteSnapshot).toHaveBeenCalled();
-      expect(dispatcher.getQueueRef().length).toBe(0);
-    });
-  });
-
-  describe('resetRehydrationGuard', () => {
-    it('allows rehydration again after reset', async () => {
+    it('does not read the snapshot file (cheap exists-only check)', async () => {
       const { store, mock } = mockNativeStorage();
       store.data = JSON.stringify({
         version: 1,
@@ -218,25 +94,28 @@ describe('PersistentEventQueue', () => {
       });
 
       const dispatcher = createDispatcher();
-      const {
-        PersistentEventQueue,
-        _resetRehydrationGuard,
-      } = require('../PersistentEventQueue');
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
-      await pq.rehydrate();
-      expect(dispatcher.getQueueRef().length).toBe(1);
+      await pq.checkForPersistedEvents();
 
-      _resetRehydrationGuard();
-      store.data = JSON.stringify({
-        version: 1,
-        events: [{ type: 'track', event: 'e2' }],
-      });
+      expect(mock.exists).toHaveBeenCalled();
+      expect(mock.readSnapshot).not.toHaveBeenCalled();
+    });
 
-      const pq2 = new PersistentEventQueue(dispatcher);
-      await pq2.rehydrate();
+    it('returns false if the exists check throws', async () => {
+      mockNativeStorage();
+      (
+        NativeModules.MetaRouterQueueStorage as any
+      ).exists.mockRejectedValueOnce(new Error('boom'));
 
-      expect(mock.readSnapshot).toHaveBeenCalledTimes(2);
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      const result = await pq.checkForPersistedEvents();
+      expect(result).toBe(false);
+      expect(pq.hasDiskData).toBe(false);
     });
   });
 
@@ -266,8 +145,8 @@ describe('PersistentEventQueue', () => {
       expect(written.version).toBe(1);
       expect(written.events.length).toBe(2);
       expect(written.events[0].event).toBe('mem1');
-      // Memory queue drained
       expect(dispatcher.getQueueRef().length).toBe(0);
+      expect(pq.hasDiskData).toBe(true);
     });
 
     it('is a no-op when memory queue is empty', async () => {
@@ -346,193 +225,22 @@ describe('PersistentEventQueue', () => {
   });
 
   describe('deleteSnapshot', () => {
-    it('delegates to native module', async () => {
+    it('delegates to native module and clears hasDiskData', async () => {
       const { mock } = mockNativeStorage();
 
       const dispatcher = createDispatcher();
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
+      // Force hasDiskData=true by flushing something first
+      dispatcher.enqueue({ type: 'track', event: 'e1' } as any);
+      await pq.flushToDisk();
+      expect(pq.hasDiskData).toBe(true);
+
       await pq.deleteSnapshot();
 
       expect(mock.deleteSnapshot).toHaveBeenCalled();
-    });
-  });
-
-  describe('rehydrate + enqueue ordering', () => {
-    it('rehydrated events appear before new events', async () => {
-      const { store } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 1,
-        events: [
-          { type: 'track', event: 'old1', messageId: '1' },
-          { type: 'track', event: 'old2', messageId: '2' },
-        ],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      dispatcher.enqueue({ type: 'track', event: 'new1' } as any);
-
-      const queue = dispatcher.getQueueRef();
-      expect((queue[0] as any).event).toBe('old1');
-      expect((queue[1] as any).event).toBe('old2');
-      expect((queue[2] as any).event).toBe('new1');
-    });
-  });
-
-  describe('TTL expiry', () => {
-    it('drops events older than 7 days on rehydrate', async () => {
-      const { store } = mockNativeStorage();
-      const now = Date.now();
-      const eightDaysAgo = new Date(
-        now - 8 * 24 * 60 * 60 * 1000
-      ).toISOString();
-      const oneDayAgo = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
-
-      store.data = JSON.stringify({
-        version: 1,
-        events: [
-          { type: 'track', event: 'expired', timestamp: eightDaysAgo },
-          { type: 'track', event: 'fresh', timestamp: oneDayAgo },
-        ],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(1);
-      expect((dispatcher.getQueueRef()[0] as any).event).toBe('fresh');
-    });
-
-    it('keeps events without a timestamp field', async () => {
-      const { store } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 1,
-        events: [{ type: 'track', event: 'no_ts' }],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(1);
-    });
-
-    it('discards snapshot and deletes from disk when all events are expired', async () => {
-      const { store, mock } = mockNativeStorage();
-      const eightDaysAgo = new Date(
-        Date.now() - 8 * 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      store.data = JSON.stringify({
-        version: 1,
-        events: [
-          { type: 'track', event: 'old1', timestamp: eightDaysAgo },
-          { type: 'track', event: 'old2', timestamp: eightDaysAgo },
-        ],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      expect(dispatcher.getQueueRef().length).toBe(0);
-      expect(mock.deleteSnapshot).toHaveBeenCalled();
-    });
-  });
-
-  describe('sentAt on rehydrated events', () => {
-    it('does not set sentAt at rehydration time (drainBatch stamps it at send time)', async () => {
-      const { store } = mockNativeStorage();
-      const oneDayAgo = new Date(
-        Date.now() - 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      store.data = JSON.stringify({
-        version: 1,
-        events: [{ type: 'track', event: 'e1', timestamp: oneDayAgo }],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-
-      const rehydrated = dispatcher.getQueueRef()[0] as any;
-      expect(rehydrated.sentAt).toBeUndefined();
-      expect(rehydrated.timestamp).toBe(oneDayAgo);
-    });
-  });
-
-  describe('rehydratedEvents count', () => {
-    it('tracks the number of rehydrated events', async () => {
-      const { store } = mockNativeStorage();
-      store.data = JSON.stringify({
-        version: 1,
-        events: [
-          { type: 'track', event: 'e1' },
-          { type: 'track', event: 'e2' },
-          { type: 'track', event: 'e3' },
-        ],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      expect(pq.rehydratedEvents).toBe(0);
-      await pq.rehydrate();
-      expect(pq.rehydratedEvents).toBe(3);
-    });
-
-    it('excludes expired events from count', async () => {
-      const { store } = mockNativeStorage();
-      const eightDaysAgo = new Date(
-        Date.now() - 8 * 24 * 60 * 60 * 1000
-      ).toISOString();
-      const oneDayAgo = new Date(
-        Date.now() - 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      store.data = JSON.stringify({
-        version: 1,
-        events: [
-          { type: 'track', event: 'expired', timestamp: eightDaysAgo },
-          { type: 'track', event: 'fresh1', timestamp: oneDayAgo },
-          { type: 'track', event: 'fresh2', timestamp: oneDayAgo },
-        ],
-      });
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-      expect(pq.rehydratedEvents).toBe(2);
-    });
-
-    it('is 0 when no snapshot exists', async () => {
-      mockNativeStorage();
-
-      const dispatcher = createDispatcher();
-      const { PersistentEventQueue } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      await pq.rehydrate();
-      expect(pq.rehydratedEvents).toBe(0);
+      expect(pq.hasDiskData).toBe(false);
     });
   });
 
@@ -598,7 +306,6 @@ describe('PersistentEventQueue', () => {
       ]);
 
       const written = JSON.parse(store.data!);
-      // 4 + 2 = 6, cap = 5, drop 1 oldest
       expect(written.events.length).toBe(5);
       expect(written.events[0].event).toBe('old1');
     });
@@ -653,7 +360,7 @@ describe('PersistentEventQueue', () => {
       expect((dispatcher as any).opts.fetchWithTimeout).toHaveBeenCalled();
     });
 
-    it('deletes disk file after drain', async () => {
+    it('deletes disk file after drain and clears hasDiskData', async () => {
       const { store, mock } = mockNativeStorage();
 
       store.data = JSON.stringify({
@@ -665,10 +372,14 @@ describe('PersistentEventQueue', () => {
       const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
+      await pq.checkForPersistedEvents();
+      expect(pq.hasDiskData).toBe(true);
+
       await pq.drainDiskToNetwork(dispatcher);
 
       expect(mock.deleteSnapshot).toHaveBeenCalled();
       expect(store.data).toBeNull();
+      expect(pq.hasDiskData).toBe(false);
     });
 
     it('stops on 5xx server error', async () => {
@@ -939,6 +650,33 @@ describe('PersistentEventQueue', () => {
       expect(sentBatch[0].event).toBe('fresh');
     });
 
+    it('keeps events with unparseable timestamps during drain', async () => {
+      const { store } = mockNativeStorage();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [
+          { type: 'track', event: 'no_ts' },
+          { type: 'track', event: 'bad_ts', timestamp: 'not-a-date' },
+        ],
+      });
+
+      let sentBatch: any[] = [];
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: jest.fn(async (_url?: string, init?: any) => {
+          sentBatch = JSON.parse(init.body).batch;
+          return { ok: true, status: 200 } as any;
+        }),
+      });
+
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect(sentBatch.length).toBe(2);
+    });
+
     it('stops on network/transport error (null response)', async () => {
       const { store } = mockNativeStorage();
 
@@ -959,17 +697,39 @@ describe('PersistentEventQueue', () => {
 
       expect(store.data).not.toBeNull();
     });
+
+    it('concurrent drains coalesce into one', async () => {
+      const { store } = mockNativeStorage();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: Array.from({ length: 3 }, (_, i) => ({
+          type: 'track',
+          event: `e${i}`,
+        })),
+      });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      const [a, b] = await Promise.all([
+        pq.drainDiskToNetwork(dispatcher),
+        pq.drainDiskToNetwork(dispatcher),
+      ]);
+      expect(a).toBe(b);
+      expect((dispatcher as any).opts.fetchWithTimeout).toHaveBeenCalledTimes(
+        1
+      );
+    });
   });
 
-  describe('full round-trip', () => {
-    it('enqueue → flushToDisk → rehydrate preserves events', async () => {
+  describe('full round-trip (persist → drain)', () => {
+    it('flushToDisk persists events, drainDiskToNetwork sends them', async () => {
       mockNativeStorage();
 
       const dispatcher = createDispatcher();
-      const {
-        PersistentEventQueue,
-        _resetRehydrationGuard,
-      } = require('../PersistentEventQueue');
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
       const pq = new PersistentEventQueue(dispatcher);
 
       for (let i = 0; i < 5; i++) {
@@ -981,50 +741,25 @@ describe('PersistentEventQueue', () => {
       }
 
       await pq.flushToDisk();
+      expect(pq.hasDiskData).toBe(true);
 
-      _resetRehydrationGuard();
       const dispatcher2 = createDispatcher();
       const pq2 = new PersistentEventQueue(dispatcher2);
 
-      await pq2.rehydrate();
+      await pq2.checkForPersistedEvents();
+      expect(pq2.hasDiskData).toBe(true);
 
-      expect(dispatcher2.getQueueRef().length).toBe(5);
-      expect((dispatcher2.getQueueRef()[0] as any).event).toBe('e0');
-      expect((dispatcher2.getQueueRef()[4] as any).event).toBe('e4');
-    });
+      await pq2.drainDiskToNetwork(dispatcher2);
 
-    it('partial drain then flush only persists remaining events', async () => {
-      mockNativeStorage();
-
-      const dispatcher = createDispatcher();
-      const {
-        PersistentEventQueue,
-        _resetRehydrationGuard,
-      } = require('../PersistentEventQueue');
-      const pq = new PersistentEventQueue(dispatcher);
-
-      for (let i = 0; i < 5; i++) {
-        dispatcher.enqueue({
-          type: 'track',
-          event: `e${i}`,
-        } as any);
-      }
-
-      await dispatcher.flush();
-      expect(dispatcher.getQueueRef().length).toBe(0);
-
-      dispatcher.enqueue({ type: 'track', event: 'late1' } as any);
-      dispatcher.enqueue({ type: 'track', event: 'late2' } as any);
-
-      await pq.flushToDisk();
-
-      _resetRehydrationGuard();
-      const dispatcher2 = createDispatcher();
-      const pq2 = new PersistentEventQueue(dispatcher2);
-      await pq2.rehydrate();
-
-      expect(dispatcher2.getQueueRef().length).toBe(2);
-      expect((dispatcher2.getQueueRef()[0] as any).event).toBe('late1');
+      // All 5 events delivered via a single batch
+      expect((dispatcher2 as any).opts.fetchWithTimeout).toHaveBeenCalledTimes(
+        1
+      );
+      const body = JSON.parse(
+        (dispatcher2 as any).opts.fetchWithTimeout.mock.calls[0][1].body
+      );
+      expect(body.batch.length).toBe(5);
+      expect(pq2.hasDiskData).toBe(false);
     });
   });
 });

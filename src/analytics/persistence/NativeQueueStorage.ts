@@ -13,6 +13,7 @@ import { warn } from '../utils/logger';
  * native so the policy stays in one place and is easy to test.
  */
 interface NativeQueueStorageModule {
+  exists(): Promise<boolean>;
   readSnapshot(): Promise<string | null>;
   writeSnapshot(data: string): Promise<void>;
   deleteSnapshot(): Promise<void>;
@@ -29,6 +30,17 @@ function getModule(): NativeQueueStorageModule | null {
     return null;
   }
   return mod;
+}
+
+export async function exists(): Promise<boolean> {
+  const mod = getModule();
+  if (!mod?.exists) return false;
+  try {
+    return await mod.exists();
+  } catch (err) {
+    warn('Failed to check queue snapshot existence:', err);
+    return false;
+  }
 }
 
 export async function readSnapshot(): Promise<string | null> {

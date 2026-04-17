@@ -1,6 +1,7 @@
 import type { EventPayload } from '../types';
 import type Dispatcher from '../dispatcher';
 import {
+  exists as nativeExists,
   readSnapshot,
   writeSnapshot,
   deleteSnapshot as nativeDeleteSnapshot,
@@ -20,13 +21,6 @@ import {
 import { log, warn } from '../utils/logger';
 
 /**
- * Module-level guard: rehydrate at most once per process lifetime.
- * Prevents duplicate rehydration if init() is called multiple times
- * (e.g. after a reset + reinit in the same session).
- */
-let hasRehydrated = false;
-
-/**
  * Default batch size for draining disk events to network.
  * May be halved on 413 responses.
  */
@@ -39,11 +33,16 @@ const DRAIN_BATCH_SIZE = 100;
  * and offline overflow. All writes go through {@link flushEventsToDisk} which
  * reads existing disk contents, merges the new events, enforces the disk cap,
  * and atomically writes back.
+ *
+ * On boot, {@link checkForPersistedEvents} does a cheap existence check and
+ * sets {@link hasDiskData}. The in-memory queue starts empty; when online,
+ * the dispatcher drains disk events directly to the network via
+ * {@link drainDiskToNetwork} instead of rehydrating into memory.
  */
 export class PersistentEventQueue {
   private readonly dispatcher: Dispatcher;
   private readonly maxDiskEvents: number;
-  private _rehydratedEvents: number = 0;
+  private _hasDiskData: boolean = false;
 
   /** Serializes all disk writes (flushEventsToDisk, flushToDisk). */
   private diskWriteInFlight: Promise<void> | null = null;
@@ -55,73 +54,28 @@ export class PersistentEventQueue {
     this.maxDiskEvents = opts?.maxDiskEvents ?? DEFAULT_MAX_DISK_EVENTS;
   }
 
-  get rehydratedEvents(): number {
-    return this._rehydratedEvents;
+  /** True when a disk snapshot existed at boot or was written since. */
+  get hasDiskData(): boolean {
+    return this._hasDiskData;
   }
 
   /**
-   * Rehydrate events from disk into the in-memory queue.
-   * Only runs once per process lifetime.
-   *
-   * (NOTE: C3 will replace this with a cheap exists() check + hasDiskData flag
-   * so disk events drain directly to network instead of being loaded into memory.)
+   * Boot-time cheap existence check.
+   * Sets {@link hasDiskData} without reading or parsing the snapshot file,
+   * so we can decide whether to trigger a drain without paying the cost of
+   * loading a potentially-large snapshot into memory.
    */
-  async rehydrate(): Promise<void> {
-    if (hasRehydrated) {
-      log('Rehydration already completed this process — skipping');
-      return;
-    }
-    hasRehydrated = true;
-
+  async checkForPersistedEvents(): Promise<boolean> {
     try {
-      const raw = await readSnapshot();
-      if (!raw) {
-        log('No queue snapshot found on disk');
-        return;
+      this._hasDiskData = await nativeExists();
+      if (this._hasDiskData) {
+        log('Persisted events detected on disk — drain pending');
       }
-
-      let snapshot: QueueSnapshot;
-      try {
-        snapshot = JSON.parse(raw);
-      } catch {
-        warn('Queue snapshot is corrupt JSON — discarding');
-        await nativeDeleteSnapshot();
-        return;
-      }
-
-      if (snapshot.version !== SNAPSHOT_VERSION) {
-        warn(
-          `Queue snapshot version ${snapshot.version} is not supported (expected ${SNAPSHOT_VERSION}) — discarding`
-        );
-        await nativeDeleteSnapshot();
-        return;
-      }
-
-      if (!Array.isArray(snapshot.events) || snapshot.events.length === 0) {
-        log('Queue snapshot has no events — discarding');
-        await nativeDeleteSnapshot();
-        return;
-      }
-
-      const fresh = filterExpired(snapshot.events);
-      const expired = snapshot.events.length - fresh.length;
-      if (expired > 0) {
-        warn(`Dropped ${expired} expired events (older than 7 days)`);
-      }
-
-      if (fresh.length === 0) {
-        log('All snapshot events expired — discarding');
-        await nativeDeleteSnapshot();
-        return;
-      }
-
-      this.dispatcher.enqueueFront(fresh);
-      this._rehydratedEvents = fresh.length;
-      log(`Rehydrated ${fresh.length} events from disk`);
-
-      await nativeDeleteSnapshot();
+      return this._hasDiskData;
     } catch (err) {
-      warn('Failed to rehydrate queue from disk:', err);
+      warn('Failed to check for persisted events:', err);
+      this._hasDiskData = false;
+      return false;
     }
   }
 
@@ -132,10 +86,7 @@ export class PersistentEventQueue {
    */
   async flushToDisk(): Promise<void> {
     const queue = this.dispatcher.getQueueRef();
-    if (queue.length === 0) {
-      // Nothing in memory to persist. Leave any existing disk state alone.
-      return;
-    }
+    if (queue.length === 0) return;
     const events = this.dispatcher.drainQueue();
     return this.flushEventsToDisk(events);
   }
@@ -148,7 +99,6 @@ export class PersistentEventQueue {
   async flushEventsToDisk(events: EventPayload[]): Promise<void> {
     if (events.length === 0) return;
 
-    // Chain onto any in-flight write so writes are ordered.
     const prev = this.diskWriteInFlight;
     const next = (async () => {
       if (prev) await prev;
@@ -165,7 +115,6 @@ export class PersistentEventQueue {
       const existing = await this._readExistingEvents();
       let combined = existing.concat(events);
 
-      // Enforce disk cap by dropping oldest
       if (combined.length > this.maxDiskEvents) {
         const dropCount = combined.length - this.maxDiskEvents;
         combined = combined.slice(dropCount);
@@ -174,6 +123,7 @@ export class PersistentEventQueue {
 
       if (combined.length === 0) {
         await nativeDeleteSnapshot();
+        this._hasDiskData = false;
         return;
       }
 
@@ -182,6 +132,7 @@ export class PersistentEventQueue {
         events: combined,
       };
       await writeSnapshot(JSON.stringify(snapshot));
+      this._hasDiskData = true;
       log(
         `Memory queue flushed to disk: ${events.length} events, ${combined.length} total on disk`
       );
@@ -201,12 +152,12 @@ export class PersistentEventQueue {
   }
 
   /**
-   * Drain disk events directly to network in batches.
-   * Does NOT load events into the memory queue.
-   * Called on offline→online transition and after successful online flushes.
+   * Drain disk events directly to network in batches. Does NOT load events
+   * into the memory queue. Called on offline→online transition and after
+   * successful online flushes.
    *
    * Response handling:
-   * - 200-299: advances and deletes sent events; restores batch size after 413
+   * - 2xx: advances and deletes sent events; restores batch size after 413
    * - 413: halves batch size, retries. Drops at batchSize=1
    * - 5xx/408/429: stops, writes remainder back, retries on next online transition
    * - 401/403/404: fatal, deletes disk store
@@ -227,7 +178,10 @@ export class PersistentEventQueue {
     try {
       while (true) {
         const raw = await readSnapshot();
-        if (!raw) return;
+        if (!raw) {
+          this._hasDiskData = false;
+          return;
+        }
 
         let snapshot: QueueSnapshot;
         try {
@@ -235,11 +189,13 @@ export class PersistentEventQueue {
         } catch {
           warn('Queue snapshot is corrupt during drain — deleting');
           await nativeDeleteSnapshot();
+          this._hasDiskData = false;
           return;
         }
 
         if (!Array.isArray(snapshot.events) || snapshot.events.length === 0) {
           await nativeDeleteSnapshot();
+          this._hasDiskData = false;
           return;
         }
 
@@ -254,17 +210,16 @@ export class PersistentEventQueue {
         if (events.length === 0) {
           log('All disk events expired — deleting');
           await nativeDeleteSnapshot();
+          this._hasDiskData = false;
           return;
         }
 
-        // Take a batch from the front (oldest first)
         const n = Math.min(batchSize, events.length);
         const batch = events.slice(0, n);
         const remaining = events.slice(n);
 
         const response = await dispatcher.sendBatchDirect(batch);
 
-        // Network/transport error — stop, retry on next online transition
         if (!response) {
           log(
             `Disk drain paused — network error, ${events.length} event(s) remain on disk`
@@ -287,6 +242,7 @@ export class PersistentEventQueue {
 
             if (remaining.length === 0) {
               await nativeDeleteSnapshot();
+              this._hasDiskData = false;
               log('Disk store drain complete');
             } else {
               await writeSnapshot(
@@ -311,7 +267,6 @@ export class PersistentEventQueue {
                   JSON.stringify({ version: SNAPSHOT_VERSION, events })
                 );
               }
-              // Continue loop with smaller batch
             } else {
               const ids = (batch as any[])
                 .map((e) => (e as any).messageId)
@@ -321,6 +276,7 @@ export class PersistentEventQueue {
               );
               if (remaining.length === 0) {
                 await nativeDeleteSnapshot();
+                this._hasDiskData = false;
               } else {
                 await writeSnapshot(
                   JSON.stringify({
@@ -351,6 +307,7 @@ export class PersistentEventQueue {
               `Disk drain: fatal config error ${response.statusCode} — deleting disk store`
             );
             await nativeDeleteSnapshot();
+            this._hasDiskData = false;
             return;
           }
 
@@ -360,6 +317,7 @@ export class PersistentEventQueue {
             );
             if (remaining.length === 0) {
               await nativeDeleteSnapshot();
+              this._hasDiskData = false;
             } else {
               await writeSnapshot(
                 JSON.stringify({
@@ -382,6 +340,7 @@ export class PersistentEventQueue {
    */
   async deleteSnapshot(): Promise<void> {
     await nativeDeleteSnapshot();
+    this._hasDiskData = false;
   }
 
   private async _readExistingEvents(): Promise<EventPayload[]> {
@@ -409,14 +368,9 @@ function filterExpired(events: EventPayload[]): EventPayload[] {
     const ts = (e as any).timestamp;
     if (!ts) return true;
     const eventTime = new Date(ts).getTime();
-    return !isNaN(eventTime) && eventTime > cutoff;
+    // Unparseable timestamp — keep it. Conservative: better to send than to
+    // silently drop an event whose age we can't verify.
+    if (isNaN(eventTime)) return true;
+    return eventTime > cutoff;
   });
-}
-
-/**
- * Reset the rehydration guard. Exposed ONLY for testing.
- * @internal
- */
-export function _resetRehydrationGuard(): void {
-  hasRehydrated = false;
 }

@@ -169,7 +169,11 @@ export class MetaRouterAnalyticsClient {
       try {
         await this.identityManager.init();
 
-        await this.persistentQueue.rehydrate();
+        // Cheap existence check — memory queue starts empty. Any on-disk
+        // events are drained directly to the network below (if online) via
+        // drainDiskToNetwork, avoiding a memory spike from rehydrating a
+        // potentially-large backlog.
+        await this.persistentQueue.checkForPersistedEvents();
 
         this.startFlushLoop();
         this.setupAppStateListener();
@@ -196,7 +200,7 @@ export class MetaRouterAnalyticsClient {
               this.dispatcher.resetCircuitBreaker();
               // (1) Memory queue → network (existing path)
               void this.flush();
-              // (2) Disk overflow → network directly (no rehydration into memory queue)
+              // (2) Disk → network directly (no load into memory queue)
               void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
             } else if (status === 'disconnected') {
               log('Network connectivity lost — pausing HTTP attempts');
@@ -206,12 +210,12 @@ export class MetaRouterAnalyticsClient {
 
         log('MetaRouter SDK initialized');
 
-        // Flush immediately so rehydrated events ship on cold start
-        // (AppState 'change' won't fire because the app is already active)
-        void this.flush();
-
-        // If online at launch, drain any overflow from a previous session
-        if (this.networkStatus === 'connected') {
+        // If online at launch with on-disk events, drain them to the network.
+        // Memory queue starts empty, so there's no cold-start flush to run.
+        if (
+          this.networkStatus === 'connected' &&
+          this.persistentQueue.hasDiskData
+        ) {
           void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
         }
       } catch (error) {
@@ -508,7 +512,7 @@ export class MetaRouterAnalyticsClient {
       circuitRemainingMs: d.circuitRemainingMs,
       maxQueueBytes: d.maxQueueBytes,
       tracingEnabled: this.tracingEnabled,
-      rehydratedEvents: this.persistentQueue.rehydratedEvents,
+      hasDiskData: this.persistentQueue.hasDiskData,
       networkStatus: this.networkStatus,
     };
   }

@@ -1,9 +1,9 @@
 import { NativeModules, AppState } from 'react-native';
-import { _resetRehydrationGuard } from '../PersistentEventQueue';
 
 function mockNativeStorage() {
   const store: { data: string | null } = { data: null };
   NativeModules.MetaRouterQueueStorage = {
+    exists: jest.fn(async () => store.data !== null),
     readSnapshot: jest.fn(async () => store.data),
     writeSnapshot: jest.fn(async (data: string) => {
       store.data = data;
@@ -20,7 +20,6 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    _resetRehydrationGuard();
     handleAppStateChange = null;
 
     // Mock fetch so flush() doesn't hang on a real network call
@@ -41,7 +40,7 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     (global.fetch as jest.Mock).mockRestore?.();
   });
 
-  it('rehydrates events from disk during init', async () => {
+  it('drains on-disk events directly to network during init (no memory rehydrate)', async () => {
     const { store } = mockNativeStorage();
     store.data = JSON.stringify({
       version: 1,
@@ -66,7 +65,10 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     });
     await client.init();
 
-    // Rehydrated events should have been flushed immediately on init
+    // Allow async drain to run
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Disk events should have been sent via drainDiskToNetwork → fetch
     expect(global.fetch).toHaveBeenCalled();
     const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
     expect(body.batch).toEqual(
@@ -76,10 +78,40 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     );
   });
 
+  it('does not load disk events into the memory queue on init (cheap exists-only check)', async () => {
+    const { store, mock } = mockNativeStorage();
+    store.data = JSON.stringify({
+      version: 1,
+      events: [{ type: 'track', event: 'persisted' }],
+    });
+
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('../../MetaRouterAnalyticsClient');
+    const { StubNetworkMonitor } = require('../../utils/networkMonitor');
+    const monitor = new StubNetworkMonitor('disconnected');
+
+    const client = new MetaRouterAnalyticsClient(
+      {
+        writeKey: 'test-key',
+        ingestionHost: 'https://example.com',
+      },
+      { networkMonitor: monitor }
+    );
+    await client.init();
+
+    // Offline, so no drain runs. readSnapshot should not have fired.
+    expect(mock.exists).toHaveBeenCalled();
+    expect(mock.readSnapshot).not.toHaveBeenCalled();
+    // Memory queue remains empty — disk events will drain when online.
+    const debug = await client.getDebugInfo();
+    expect(debug.queueLength).toBe(0);
+    expect(debug.hasDiskData).toBe(true);
+  });
+
   it('flushes to disk when app goes to background and network fails', async () => {
     const { mock } = mockNativeStorage();
 
-    // Simulate network failure so events remain in queue for persistence
     (global.fetch as jest.Mock).mockImplementation(() =>
       Promise.reject(new Error('Network unavailable'))
     );
@@ -93,11 +125,9 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     });
     await client.init();
 
-    // Track some events
     client.track('event1', { key: 'value' });
     client.track('event2', { key: 'value' });
 
-    // Simulate app going to background — flush fails, events persisted to disk
     await handleAppStateChange!('background');
 
     expect(mock.writeSnapshot).toHaveBeenCalled();
@@ -115,15 +145,11 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     });
     await client.init();
 
-    // Track some events
     client.track('event1', { key: 'value' });
     client.track('event2', { key: 'value' });
 
-    // Simulate app going to background — flush succeeds, queue empty, no disk write
     await handleAppStateChange!('background');
 
-    // Queue was drained by network flush — post-consolidation, flushToDisk is
-    // a no-op when memory is empty (doesn't touch disk state).
     expect(mock.writeSnapshot).not.toHaveBeenCalled();
     expect(mock.deleteSnapshot).not.toHaveBeenCalled();
   });
@@ -148,7 +174,6 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
   it('capacity overflow writes events to disk', async () => {
     const { mock } = mockNativeStorage();
 
-    // Network fails so events stay in queue
     (global.fetch as jest.Mock).mockImplementation(() =>
       Promise.reject(new Error('Network unavailable'))
     );
@@ -163,7 +188,6 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
       {
         writeKey: 'test-key',
         ingestionHost: 'https://example.com',
-        // Small queue so we can trigger overflow easily
         maxQueueBytes: 500,
         maxOfflineDiskEvents: 100,
       },
@@ -171,15 +195,12 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     );
     await client.init();
 
-    // Track many events to overflow memory queue
     for (let i = 0; i < 50; i++) {
       client.track(`event_${i}`, { idx: i });
     }
 
-    // Allow async overflow writes to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Overflow should have been written to the single disk file
     expect(mock.writeSnapshot).toHaveBeenCalled();
   });
 
@@ -201,11 +222,9 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     );
     await client.init();
 
-    // Track events while offline
     client.track('offline_event_1');
     client.track('offline_event_2');
 
-    // Flush should not make any HTTP calls (events go to disk)
     await client.flush();
     expect(global.fetch).not.toHaveBeenCalled();
   });
@@ -228,23 +247,18 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
     );
     await client.init();
 
-    // Track events while offline
     client.track('offline_1');
     client.track('offline_2');
 
-    // Flush while offline — events should go to disk
     await client.flush();
 
-    // Allow async disk writes to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(mock.writeSnapshot).toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
 
-    // Go online — should drain disk to network
     monitor.simulate('connected');
 
-    // Allow drain to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(global.fetch).toHaveBeenCalled();
