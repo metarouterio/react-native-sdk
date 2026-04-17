@@ -681,34 +681,33 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(stopSpy).toHaveBeenCalled();
     });
 
-    it('overflow events flush to overflow disk on memory cap exceeded', async () => {
+    it('overflow events flush to disk when memory cap is exceeded', async () => {
       const monitor = new StubNetworkMonitor('disconnected');
       const client = new MetaRouterAnalyticsClient(
         {
           ...opts,
-          maxQueueBytes: 500, // very small cap
+          // Small count cap so the overflow fires quickly.
+          maxQueueEvents: 10,
           flushIntervalSeconds: 3600,
         },
         { networkMonitor: monitor }
       );
       await client.init();
 
-      // Spy on flushEventsToDisk
       const flushSpy = jest.spyOn(
         (client as any).persistentQueue,
         'flushEventsToDisk'
       );
 
-      // Override to prevent auto-flush from interfering
+      // Prevent auto-flush from interfering with the capacity check.
       jest.spyOn(client as any, 'flush').mockResolvedValue(undefined);
       (client as any).dispatcher.opts.autoFlushThreshold = 9999;
 
-      // Track enough events to overflow memory queue
+      // Track enough events to overflow the count cap.
       for (let i = 0; i < 30; i++) {
         client.track(`event_${i}`, { data: 'x'.repeat(20) });
       }
 
-      // Check that events were flushed to overflow disk
       expect(flushSpy).toHaveBeenCalled();
     });
 
@@ -882,6 +881,139 @@ describe('MetaRouterAnalyticsClient', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('maxDiskEvents validation', () => {
+    it('rejects negative maxDiskEvents at construction', () => {
+      expect(
+        () =>
+          new MetaRouterAnalyticsClient({
+            ...opts,
+            maxDiskEvents: -1,
+          })
+      ).toThrow(/maxDiskEvents.*must be >= 0/);
+    });
+
+    it('accepts maxDiskEvents: 0 (persistence disabled)', () => {
+      expect(
+        () =>
+          new MetaRouterAnalyticsClient({
+            ...opts,
+            maxDiskEvents: 0,
+          })
+      ).not.toThrow();
+    });
+
+    it('warns when 0 < maxDiskEvents < maxQueueEvents', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      new MetaRouterAnalyticsClient({
+        ...opts,
+        maxQueueEvents: 2000,
+        maxDiskEvents: 100,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining(
+          'maxDiskEvents (100) is less than maxQueueEvents (2000)'
+        )
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when maxDiskEvents === maxQueueEvents', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      new MetaRouterAnalyticsClient({
+        ...opts,
+        maxQueueEvents: 500,
+        maxDiskEvents: 500,
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('is less than maxQueueEvents')
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when maxDiskEvents === 0 (disabled, not inverted)', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      new MetaRouterAnalyticsClient({
+        ...opts,
+        maxQueueEvents: 2000,
+        maxDiskEvents: 0,
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('is less than maxQueueEvents')
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when maxDiskEvents > maxQueueEvents', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      new MetaRouterAnalyticsClient({
+        ...opts,
+        maxQueueEvents: 2000,
+        maxDiskEvents: 10000,
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('is less than maxQueueEvents')
+      );
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('maxDiskEvents: 0 (persistence disabled)', () => {
+    it('enqueue at cap drops the oldest event (ring buffer)', async () => {
+      const monitor = new StubNetworkMonitor('disconnected');
+      const client = new MetaRouterAnalyticsClient(
+        {
+          ...opts,
+          maxQueueEvents: 3,
+          maxDiskEvents: 0,
+          flushIntervalSeconds: 3600,
+        },
+        { networkMonitor: monitor }
+      );
+      await client.init();
+      (client as any).dispatcher.opts.autoFlushThreshold = 9999;
+
+      const flushSpy = jest.spyOn(
+        (client as any).persistentQueue,
+        'flushEventsToDisk'
+      );
+
+      for (let i = 0; i < 5; i++) {
+        client.track(`event_${i}`);
+      }
+
+      // With 5 enqueues and cap 3, 2 oldest should have been dropped.
+      const queue = (client as any).queue;
+      expect(queue.length).toBe(3);
+      // No disk write — persistence is disabled.
+      expect(flushSpy).not.toHaveBeenCalled();
+    });
+
+    it('background flush does not touch disk when persistence is disabled', async () => {
+      const client = new MetaRouterAnalyticsClient({
+        ...opts,
+        maxDiskEvents: 0,
+      });
+      await client.init();
+
+      const pq = (client as any).persistentQueue;
+      const flushSpy = jest.spyOn(pq, 'flushEventsToDisk');
+
+      (global as any).fetch = jest.fn(() =>
+        Promise.reject(new Error('offline'))
+      );
+      client.track('evt1');
+      client.track('evt2');
+
+      await pq.flushToDisk();
+
+      expect(flushSpy).not.toHaveBeenCalled();
     });
   });
 });

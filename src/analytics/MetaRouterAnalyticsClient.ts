@@ -38,8 +38,14 @@ export class MetaRouterAnalyticsClient {
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
-  private static readonly MAX_QUEUE_SIZE = 20;
-  private maxQueueBytes: number = 5 * 1024 * 1024; // 5MB default
+  private static readonly AUTO_FLUSH_THRESHOLD = 20;
+  private static readonly DEFAULT_MAX_QUEUE_EVENTS = 2000;
+  private static readonly DEFAULT_MAX_DISK_EVENTS = 10_000;
+  // Byte cap is intentionally internal (parity with iOS/Android). Not a
+  // public option. 5MB — revisit only if a customer actually needs to tune.
+  private static readonly MAX_QUEUE_BYTES = 5 * 1024 * 1024;
+  private maxDiskEvents: number =
+    MetaRouterAnalyticsClient.DEFAULT_MAX_DISK_EVENTS;
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
@@ -83,6 +89,28 @@ export class MetaRouterAnalyticsClient {
     this.writeKey = writeKey;
     this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
 
+    // Validate + normalize persistence caps.
+    const rawMaxDisk =
+      options.maxDiskEvents ??
+      MetaRouterAnalyticsClient.DEFAULT_MAX_DISK_EVENTS;
+    if (rawMaxDisk < 0) {
+      throw new Error(
+        'MetaRouterAnalyticsClient initialization failed: `maxDiskEvents` must be >= 0 (use 0 to disable disk persistence).'
+      );
+    }
+    this.maxDiskEvents = rawMaxDisk;
+
+    const rawMaxQueue =
+      options.maxQueueEvents ??
+      MetaRouterAnalyticsClient.DEFAULT_MAX_QUEUE_EVENTS;
+    const maxQueueEvents = Math.max(1, rawMaxQueue);
+
+    if (this.maxDiskEvents > 0 && this.maxDiskEvents < maxQueueEvents) {
+      warn(
+        `maxDiskEvents (${this.maxDiskEvents}) is less than maxQueueEvents (${maxQueueEvents}) — memory can hold more events than disk can preserve; events may be dropped during background flush`
+      );
+    }
+
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
     // Default: wrap the raw native monitor with the asymmetric debounce
@@ -91,14 +119,15 @@ export class MetaRouterAnalyticsClient {
     // behavior explicitly.
     this.networkMonitor =
       deps?.networkMonitor ?? new DebouncedNetworkMonitor(new NetworkMonitor());
-    this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
-      maxQueueBytes: this.maxQueueBytes,
-      autoFlushThreshold: MetaRouterAnalyticsClient.MAX_QUEUE_SIZE,
+      maxEventCount: maxQueueEvents,
+      maxQueueBytes: MetaRouterAnalyticsClient.MAX_QUEUE_BYTES,
+      autoFlushThreshold: MetaRouterAnalyticsClient.AUTO_FLUSH_THRESHOLD,
       maxBatchSize: 100,
       flushIntervalSeconds: this.flushIntervalSeconds,
       baseRetryDelayMs: 1000,
       maxRetryDelayMs: 8000,
+      isPersistenceEnabled: () => this.maxDiskEvents > 0,
       isNetworkAvailable: () => this.networkStatus === 'connected',
       endpoint: (path) => this.endpoint(path),
       fetchWithTimeout: (url, init, timeoutMs) =>
@@ -146,7 +175,7 @@ export class MetaRouterAnalyticsClient {
 
     this.queue = this.dispatcher.getQueueRef();
     this.persistentQueue = new PersistentEventQueue(this.dispatcher, {
-      maxDiskEvents: options.maxOfflineDiskEvents,
+      maxDiskEvents: this.maxDiskEvents,
     });
   }
 
@@ -516,7 +545,8 @@ export class MetaRouterAnalyticsClient {
       flushInFlight: d.flushInFlight,
       circuitState: d.circuitState,
       circuitRemainingMs: d.circuitRemainingMs,
-      maxQueueBytes: d.maxQueueBytes,
+      maxQueueEvents: d.maxQueueEvents,
+      maxDiskEvents: this.maxDiskEvents,
       tracingEnabled: this.tracingEnabled,
       hasDiskData: this.persistentQueue.hasDiskData,
       networkStatus: this.networkStatus,

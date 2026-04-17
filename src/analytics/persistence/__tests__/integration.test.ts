@@ -188,8 +188,8 @@ describe('MetaRouterAnalyticsClient + persistence integration', () => {
       {
         writeKey: 'test-key',
         ingestionHost: 'https://example.com',
-        maxQueueBytes: 500,
-        maxOfflineDiskEvents: 100,
+        maxQueueEvents: 10,
+        maxDiskEvents: 100,
       },
       { networkMonitor: monitor }
     );

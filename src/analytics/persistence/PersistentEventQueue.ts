@@ -83,8 +83,13 @@ export class PersistentEventQueue {
    * Flush the in-memory queue to disk (append + cap).
    * Called on app background and when the flush-to-disk threshold is hit.
    * Serialized against other disk writes.
+   *
+   * No-op when persistence is disabled (maxDiskEvents === 0). Memory queue
+   * is left intact so a subsequent foreground flush can still try to send
+   * those events; on app kill they are lost (documented tradeoff).
    */
   async flushToDisk(): Promise<void> {
+    if (this.maxDiskEvents === 0) return;
     const queue = this.dispatcher.getQueueRef();
     if (queue.length === 0) return;
     const events = this.dispatcher.drainQueue();
@@ -95,9 +100,14 @@ export class PersistentEventQueue {
    * Append explicit events to the disk store (read-merge-cap-write).
    * Called by dispatcher onCapacityOverflow / onFlushToDisk callbacks.
    * Serialized against other disk writes.
+   *
+   * No-op when persistence is disabled (maxDiskEvents === 0) — events
+   * passed here have already been spliced out of the memory queue by the
+   * dispatcher, so in 0-mode they are lost.
    */
   async flushEventsToDisk(events: EventPayload[]): Promise<void> {
     if (events.length === 0) return;
+    if (this.maxDiskEvents === 0) return;
 
     const prev = this.diskWriteInFlight;
     const next = (async () => {

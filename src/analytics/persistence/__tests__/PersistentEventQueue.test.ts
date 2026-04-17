@@ -19,12 +19,14 @@ function mockNativeStorage() {
 
 function createDispatcher(overrides?: Partial<any>) {
   return new Dispatcher({
+    maxEventCount: 2000,
     maxQueueBytes: 5 * 1024 * 1024,
     autoFlushThreshold: 9999,
     maxBatchSize: 100,
     flushIntervalSeconds: 3600,
     baseRetryDelayMs: 1000,
     maxRetryDelayMs: 8000,
+    isPersistenceEnabled: () => true,
     isNetworkAvailable: () => true,
     endpoint: (p: string) => `https://example.com${p}`,
     fetchWithTimeout: jest.fn(async () => ({ ok: true, status: 200 }) as any),

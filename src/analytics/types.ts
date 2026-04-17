@@ -31,10 +31,15 @@ export interface InitOptions {
   ingestionHost: string;
   flushIntervalSeconds?: number;
   debug?: boolean;
-  /** Max bytes (UTF-8) held in memory queue; oldest are dropped once cap is hit (default: 5MB) */
-  maxQueueBytes?: number;
-  /** Max events stored on disk during extended offline periods (default: 10000) */
-  maxOfflineDiskEvents?: number;
+  /** Max events held in the in-memory queue (default: 2000). Clamped to >= 1. */
+  maxQueueEvents?: number;
+  /**
+   * Max events stored on disk for crash-safety + extended offline periods
+   * (default: 10000). Must be >= 0. When set to 0, disk persistence is
+   * disabled and the SDK runs as a pure in-memory pipeline (events are lost
+   * on app kill — documented tradeoff).
+   */
+  maxDiskEvents?: number;
 }
 
 export interface AnalyticsInterface {

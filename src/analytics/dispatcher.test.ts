@@ -2,12 +2,14 @@ import Dispatcher from './dispatcher';
 import CircuitBreaker from './utils/circuitBreaker';
 
 const baseOpts = () => ({
+  maxEventCount: 2000,
   maxQueueBytes: 5 * 1024 * 1024, // 5MB
   autoFlushThreshold: 20,
   maxBatchSize: 100,
   flushIntervalSeconds: 3600, // keep timer quiet unless started
   baseRetryDelayMs: 1000,
   maxRetryDelayMs: 8000,
+  isPersistenceEnabled: () => true,
   isNetworkAvailable: () => true,
   endpoint: (p: string) => `https://example.com${p}`,
   fetchWithTimeout: jest.fn(

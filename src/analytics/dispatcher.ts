@@ -8,13 +8,20 @@ export interface NetworkResponse {
 }
 
 export interface DispatcherOptions {
-  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
+  maxEventCount: number; // event-count cap on memory queue (default 2000)
+  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default, internal)
   autoFlushThreshold: number; // e.g., 20
   maxBatchSize: number; // initial max; may shrink on 413
   flushIntervalSeconds: number;
   baseRetryDelayMs: number; // retry floor base delay (default 1000)
   maxRetryDelayMs: number; // retry floor cap (default 8000)
 
+  /**
+   * Whether disk persistence is enabled. When false, capacity overflow drops
+   * the oldest event (ring buffer) instead of splicing the whole queue to
+   * the onCapacityOverflow handler, since there is no disk to spill to.
+   */
+  isPersistenceEnabled: () => boolean;
   isNetworkAvailable: () => boolean; // returns false when offline
 
   endpoint: (path: string) => string;
@@ -144,25 +151,58 @@ export default class Dispatcher {
     return Dispatcher.encoder.encode(JSON.stringify(event)).byteLength;
   }
 
+  private handleCapacityOverflow(triggerDesc: string): void {
+    // Persistence disabled (maxDiskEvents === 0): ring-buffer — drop oldest
+    // event one at a time instead of draining the whole queue, since there
+    // is no disk to spill to.
+    if (!this.opts.isPersistenceEnabled()) {
+      const dropped = this.queue.shift();
+      if (dropped !== undefined) {
+        this.queueSizeBytes -= this.estimateEventSize(dropped);
+        if (this.queueSizeBytes < 0) this.queueSizeBytes = 0;
+        this.opts.warn(
+          `Queue cap reached (${triggerDesc}) — dropped oldest event`
+        );
+      }
+      return;
+    }
+
+    // Persistence enabled: splice the whole queue to the disk handler.
+    if (this.opts.onCapacityOverflow) {
+      const flushed = this.queue.splice(0);
+      this.queueSizeBytes = 0;
+      this.opts.onCapacityOverflow(flushed);
+    } else {
+      this.opts.warn(
+        `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
+      );
+      this.queue.length = 0;
+      this.queueSizeBytes = 0;
+    }
+  }
+
+  private isOverCap(extraBytes: number = 0, extraCount: number = 0): boolean {
+    return (
+      this.queue.length + extraCount > this.opts.maxEventCount ||
+      this.queueSizeBytes + extraBytes > this.opts.maxQueueBytes
+    );
+  }
+
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Capacity overflow: flush entire queue to overflow disk, then reset
-    if (
-      this.queue.length > 0 &&
-      this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
-    ) {
-      if (this.opts.onCapacityOverflow) {
-        const flushed = this.queue.splice(0);
-        this.queueSizeBytes = 0;
-        this.opts.onCapacityOverflow(flushed);
-      } else {
-        this.opts.warn(
-          `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
-        );
-        this.queue.length = 0;
-        this.queueSizeBytes = 0;
-      }
+    // Enforce cap: if adding this event would exceed count OR byte limit,
+    // flush/evict first so the new event still fits.
+    while (this.queue.length > 0 && this.isOverCap(eventSize, 1)) {
+      this.handleCapacityOverflow(
+        this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
+          ? 'bytes'
+          : 'count'
+      );
+      if (!this.opts.isPersistenceEnabled() && this.queue.length === 0) break;
+      // When persistence IS enabled, handleCapacityOverflow drains the whole
+      // queue so the loop exits naturally.
+      if (this.opts.isPersistenceEnabled()) break;
     }
 
     this.opts.log(
@@ -188,19 +228,14 @@ export default class Dispatcher {
       this.queueSizeBytes += this.estimateEventSize(e);
     }
 
-    // Enforce cap: if over byte limit, flush entire queue to overflow disk
-    if (this.queueSizeBytes > this.opts.maxQueueBytes) {
-      if (this.opts.onCapacityOverflow) {
-        const flushed = this.queue.splice(0);
-        this.queueSizeBytes = 0;
-        this.opts.onCapacityOverflow(flushed);
-      } else {
-        this.opts.warn(
-          `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
-        );
-        this.queue.length = 0;
-        this.queueSizeBytes = 0;
-      }
+    // Enforce cap: drain to disk (or ring-buffer drop-oldest in 0-mode).
+    while (this.isOverCap()) {
+      const before = this.queue.length;
+      this.handleCapacityOverflow(
+        this.queueSizeBytes > this.opts.maxQueueBytes ? 'bytes' : 'count'
+      );
+      if (this.queue.length === before) break; // safety: avoid infinite loop
+      if (this.opts.isPersistenceEnabled()) break; // drained entire queue
     }
 
     if (this.queue.length >= this.opts.autoFlushThreshold) {
@@ -251,7 +286,7 @@ export default class Dispatcher {
     const doFlush = async () => {
       while (this.queue.length) {
         if (!this.opts.isNetworkAvailable()) {
-          if (this.opts.onFlushToDisk) {
+          if (this.opts.onFlushToDisk && this.opts.isPersistenceEnabled()) {
             const flushed = this.queue.splice(0);
             this.queueSizeBytes = 0;
             this.opts.onFlushToDisk(flushed);
@@ -489,7 +524,7 @@ export default class Dispatcher {
       flushInFlight: !!this.flushInFlight,
       circuitState: this.circuit.getState(),
       circuitRemainingMs: this.circuit.remainingCooldownMs(),
-      maxQueueBytes: this.opts.maxQueueBytes,
+      maxQueueEvents: this.opts.maxEventCount,
       maxBatchSize: this.maxBatchSize,
       consecutiveRetries: this.consecutiveRetries,
       isNetworkAvailable: this.opts.isNetworkAvailable(),
