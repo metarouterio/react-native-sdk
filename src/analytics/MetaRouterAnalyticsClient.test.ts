@@ -615,6 +615,33 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(typeof result).toBe('string');
       expect(result).toBeTruthy();
     });
+
+    it('awaits init() when called while initialization is in-flight', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      const initPromise = client.init();
+      const idPromise = client.getAnonymousId();
+
+      await initPromise;
+      const result = await idPromise;
+      expect(result).toBe('anon-123');
+    });
+
+    it('throws when called before init() has ever been called', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await expect(client.getAnonymousId()).rejects.toThrow(
+        /no anonymous ID available/
+      );
+    });
+
+    it('throws after reset() clears identity', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+      await client.reset();
+
+      await expect(client.getAnonymousId()).rejects.toThrow(
+        /no anonymous ID available/
+      );
+    });
   });
 
   describe('network awareness', () => {
