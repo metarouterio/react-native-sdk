@@ -230,15 +230,18 @@ export class MetaRouterAnalyticsClient {
             const wasOffline = this.networkStatus === 'disconnected';
             this.networkStatus = status;
 
+            log(
+              `Network status changed: ${wasOffline ? 'disconnected' : 'connected'} -> ${status}`
+            );
             if (wasOffline && status === 'connected') {
-              log('Network connectivity restored — resuming flush');
+              log('Dispatcher resumed — device is online, triggering flush');
               this.dispatcher.resetCircuitBreaker();
               // (1) Memory queue → network (existing path)
               void this.flush();
               // (2) Disk → network directly (no load into memory queue)
               void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
             } else if (status === 'disconnected') {
-              log('Network connectivity lost — pausing HTTP attempts');
+              log('Dispatcher paused — device is offline');
             }
           }
         );
