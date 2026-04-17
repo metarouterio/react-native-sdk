@@ -122,9 +122,9 @@ export class MetaRouterAnalyticsClient {
       warn,
       error,
       onCapacityOverflow: (events) =>
-        this.persistentQueue.flushEventsToOverflowDisk(events),
-      onFlushToOfflineStorage: (events) =>
-        this.persistentQueue.flushEventsToOverflowDisk(events),
+        void this.persistentQueue.flushEventsToDisk(events),
+      onFlushToDisk: (events) =>
+        void this.persistentQueue.flushEventsToDisk(events),
       onFlushComplete: () => {
         if (this.networkStatus === 'connected') {
           void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
@@ -140,7 +140,7 @@ export class MetaRouterAnalyticsClient {
 
     this.queue = this.dispatcher.getQueueRef();
     this.persistentQueue = new PersistentEventQueue(this.dispatcher, {
-      maxOfflineDiskEvents: options.maxOfflineDiskEvents,
+      maxDiskEvents: options.maxOfflineDiskEvents,
     });
   }
 

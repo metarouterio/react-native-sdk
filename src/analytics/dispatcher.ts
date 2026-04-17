@@ -32,9 +32,9 @@ export interface DispatcherOptions {
   warn: (...args: any[]) => void;
   error: (...args: any[]) => void;
 
-  onCapacityOverflow?: (events: EventPayload[]) => void; // called with entire queue when byte cap is hit — flushes to overflow disk
-  onFlushToOfflineStorage?: (events: EventPayload[]) => void; // called when flush triggers while offline — persists queue to overflow disk
-  onFlushComplete?: () => void; // fires after successful online flush to trigger overflow drain
+  onCapacityOverflow?: (events: EventPayload[]) => void; // called with entire queue when byte cap is hit — flushes to disk
+  onFlushToDisk?: (events: EventPayload[]) => void; // called when flush triggers while offline — persists queue to disk
+  onFlushComplete?: () => void; // fires after successful online flush to trigger disk drain
   onScheduleFlushIn?: (ms: number) => void; // optional notification for tests/metrics
   onFatalConfig?: () => void; // 401/403/404 handler
 }
@@ -61,6 +61,17 @@ export default class Dispatcher {
 
   getQueueRef(): EventPayload[] {
     return this.queue;
+  }
+
+  /**
+   * Drain the in-memory queue entirely. Returns all events and resets the
+   * byte counter. Used by PersistentEventQueue to persist memory to disk
+   * without leaving duplicates behind.
+   */
+  drainQueue(): EventPayload[] {
+    const events = this.queue.splice(0);
+    this.queueSizeBytes = 0;
+    return events;
   }
 
   start(): void {
@@ -240,12 +251,12 @@ export default class Dispatcher {
     const doFlush = async () => {
       while (this.queue.length) {
         if (!this.opts.isNetworkAvailable()) {
-          if (this.opts.onFlushToOfflineStorage) {
+          if (this.opts.onFlushToDisk) {
             const flushed = this.queue.splice(0);
             this.queueSizeBytes = 0;
-            this.opts.onFlushToOfflineStorage(flushed);
+            this.opts.onFlushToDisk(flushed);
             this.opts.warn(
-              `Offline — flushed ${flushed.length} event(s) to offline storage`
+              `Offline — flushed ${flushed.length} event(s) to disk`
             );
           } else {
             this.opts.warn(

@@ -4,16 +4,13 @@ import {
   readSnapshot,
   writeSnapshot,
   deleteSnapshot as nativeDeleteSnapshot,
-  readOverflowSnapshot,
-  writeOverflowSnapshot,
-  deleteOverflowSnapshot as nativeDeleteOverflowSnapshot,
 } from './NativeQueueStorage';
 import {
   SNAPSHOT_VERSION,
   FLUSH_THRESHOLD_BYTES,
   FLUSH_THRESHOLD_COUNT,
   DEFAULT_EVENT_TTL_MS,
-  DEFAULT_MAX_OFFLINE_DISK_EVENTS,
+  DEFAULT_MAX_DISK_EVENTS,
   type QueueSnapshot,
 } from './types';
 import {
@@ -30,26 +27,32 @@ import { log, warn } from '../utils/logger';
 let hasRehydrated = false;
 
 /**
- * Default batch size for draining overflow disk to network.
+ * Default batch size for draining disk events to network.
  * May be halved on 413 responses.
  */
 const DRAIN_BATCH_SIZE = 100;
 
+/**
+ * Memory + disk coordination for the event queue.
+ *
+ * Single disk file (queue.v1.json) backs both crash-safety (background flush)
+ * and offline overflow. All writes go through {@link flushEventsToDisk} which
+ * reads existing disk contents, merges the new events, enforces the disk cap,
+ * and atomically writes back.
+ */
 export class PersistentEventQueue {
   private readonly dispatcher: Dispatcher;
-  private flushInFlight: Promise<void> | null = null;
+  private readonly maxDiskEvents: number;
   private _rehydratedEvents: number = 0;
-  private readonly maxOfflineDiskEvents: number;
-  private overflowFlushInFlight: Promise<void> | null = null;
+
+  /** Serializes all disk writes (flushEventsToDisk, flushToDisk). */
+  private diskWriteInFlight: Promise<void> | null = null;
+  /** Guards drainDiskToNetwork (read-then-delete semantics). */
   private drainInFlight: Promise<void> | null = null;
 
-  constructor(
-    dispatcher: Dispatcher,
-    opts?: { maxOfflineDiskEvents?: number }
-  ) {
+  constructor(dispatcher: Dispatcher, opts?: { maxDiskEvents?: number }) {
     this.dispatcher = dispatcher;
-    this.maxOfflineDiskEvents =
-      opts?.maxOfflineDiskEvents ?? DEFAULT_MAX_OFFLINE_DISK_EVENTS;
+    this.maxDiskEvents = opts?.maxDiskEvents ?? DEFAULT_MAX_DISK_EVENTS;
   }
 
   get rehydratedEvents(): number {
@@ -59,6 +62,9 @@ export class PersistentEventQueue {
   /**
    * Rehydrate events from disk into the in-memory queue.
    * Only runs once per process lifetime.
+   *
+   * (NOTE: C3 will replace this with a cheap exists() check + hasDiskData flag
+   * so disk events drain directly to network instead of being loaded into memory.)
    */
   async rehydrate(): Promise<void> {
     if (hasRehydrated) {
@@ -97,16 +103,7 @@ export class PersistentEventQueue {
         return;
       }
 
-      // Filter out events older than TTL
-      const now = Date.now();
-      const cutoff = now - DEFAULT_EVENT_TTL_MS;
-      const fresh = snapshot.events.filter((e) => {
-        const ts = (e as any).timestamp;
-        if (!ts) return true; // keep events without timestamp
-        const eventTime = new Date(ts).getTime();
-        return !isNaN(eventTime) && eventTime > cutoff;
-      });
-
+      const fresh = filterExpired(snapshot.events);
       const expired = snapshot.events.length - fresh.length;
       if (expired > 0) {
         warn(`Dropped ${expired} expired events (older than 7 days)`);
@@ -122,7 +119,6 @@ export class PersistentEventQueue {
       this._rehydratedEvents = fresh.length;
       log(`Rehydrated ${fresh.length} events from disk`);
 
-      // Clean up disk after successful rehydration
       await nativeDeleteSnapshot();
     } catch (err) {
       warn('Failed to rehydrate queue from disk:', err);
@@ -130,37 +126,67 @@ export class PersistentEventQueue {
   }
 
   /**
-   * Flush current in-memory queue state to disk.
-   * Serialized: concurrent calls coalesce into one write.
+   * Flush the in-memory queue to disk (append + cap).
+   * Called on app background and when the flush-to-disk threshold is hit.
+   * Serialized against other disk writes.
    */
   async flushToDisk(): Promise<void> {
-    if (this.flushInFlight) return this.flushInFlight;
-
-    this.flushInFlight = this._doFlushToDisk().finally(() => {
-      this.flushInFlight = null;
-    });
-    return this.flushInFlight;
+    const queue = this.dispatcher.getQueueRef();
+    if (queue.length === 0) {
+      // Nothing in memory to persist. Leave any existing disk state alone.
+      return;
+    }
+    const events = this.dispatcher.drainQueue();
+    return this.flushEventsToDisk(events);
   }
 
-  private async _doFlushToDisk(): Promise<void> {
+  /**
+   * Append explicit events to the disk store (read-merge-cap-write).
+   * Called by dispatcher onCapacityOverflow / onFlushToDisk callbacks.
+   * Serialized against other disk writes.
+   */
+  async flushEventsToDisk(events: EventPayload[]): Promise<void> {
+    if (events.length === 0) return;
+
+    // Chain onto any in-flight write so writes are ordered.
+    const prev = this.diskWriteInFlight;
+    const next = (async () => {
+      if (prev) await prev;
+      await this._doFlushEventsToDisk(events);
+    })();
+    this.diskWriteInFlight = next.finally(() => {
+      if (this.diskWriteInFlight === next) this.diskWriteInFlight = null;
+    });
+    return this.diskWriteInFlight;
+  }
+
+  private async _doFlushEventsToDisk(events: EventPayload[]): Promise<void> {
     try {
-      const queue = this.dispatcher.getQueueRef();
+      const existing = await this._readExistingEvents();
+      let combined = existing.concat(events);
 
-      if (queue.length === 0) {
-        log('Queue empty — deleting snapshot');
-        await nativeDeleteSnapshot();
-      } else {
-        const snapshot: QueueSnapshot = {
-          version: SNAPSHOT_VERSION,
-          events: [...queue], // shallow copy to avoid mutation during async write
-        };
-
-        const data = JSON.stringify(snapshot);
-        await writeSnapshot(data);
-        log(`Queue snapshot written to disk (${queue.length} events)`);
+      // Enforce disk cap by dropping oldest
+      if (combined.length > this.maxDiskEvents) {
+        const dropCount = combined.length - this.maxDiskEvents;
+        combined = combined.slice(dropCount);
+        warn(`Disk store cap reached — dropped ${dropCount} oldest events`);
       }
+
+      if (combined.length === 0) {
+        await nativeDeleteSnapshot();
+        return;
+      }
+
+      const snapshot: QueueSnapshot = {
+        version: SNAPSHOT_VERSION,
+        events: combined,
+      };
+      await writeSnapshot(JSON.stringify(snapshot));
+      log(
+        `Memory queue flushed to disk: ${events.length} events, ${combined.length} total on disk`
+      );
     } catch (err) {
-      warn('Failed to flush queue to disk:', err);
+      warn('Failed to flush events to disk:', err);
     }
   }
 
@@ -175,87 +201,16 @@ export class PersistentEventQueue {
   }
 
   /**
-   * Flush events to the overflow disk store.
-   * Called when the memory queue hits capacity (onCapacityOverflow) or
-   * when a flush triggers while offline (onFlushToOfflineStorage).
-   * The entire queue is drained and appended to the overflow disk file.
-   * Singleflight: concurrent calls coalesce into one write.
-   */
-  flushEventsToOverflowDisk(events: EventPayload[]): void {
-    if (events.length === 0) return;
-    void this._flushEventsToOverflowDisk(events);
-  }
-
-  private async _flushEventsToOverflowDisk(
-    events: EventPayload[]
-  ): Promise<void> {
-    // Singleflight: if a write is already in flight, queue up after it
-    if (this.overflowFlushInFlight) {
-      await this.overflowFlushInFlight;
-    }
-
-    this.overflowFlushInFlight = this._doWriteToOverflowDisk(events).finally(
-      () => {
-        this.overflowFlushInFlight = null;
-      }
-    );
-    return this.overflowFlushInFlight;
-  }
-
-  private async _doWriteToOverflowDisk(events: EventPayload[]): Promise<void> {
-    try {
-      // Read existing overflow on disk
-      const raw = await readOverflowSnapshot();
-      let existing: EventPayload[] = [];
-      if (raw) {
-        try {
-          const snapshot: QueueSnapshot = JSON.parse(raw);
-          if (
-            snapshot.version === SNAPSHOT_VERSION &&
-            Array.isArray(snapshot.events)
-          ) {
-            existing = snapshot.events;
-          }
-        } catch {
-          warn('Overflow snapshot is corrupt JSON — overwriting');
-        }
-      }
-
-      let combined = existing.concat(events);
-
-      // Enforce disk cap
-      if (combined.length > this.maxOfflineDiskEvents) {
-        const dropCount = combined.length - this.maxOfflineDiskEvents;
-        combined = combined.slice(dropCount);
-        warn(
-          `Offline overflow disk cap enforced — dropped ${dropCount} oldest events`
-        );
-      }
-
-      const snapshot: QueueSnapshot = {
-        version: SNAPSHOT_VERSION,
-        events: combined,
-      };
-      await writeOverflowSnapshot(JSON.stringify(snapshot));
-      log(
-        `Flushed ${events.length} events to overflow disk (${combined.length} total on disk)`
-      );
-    } catch (err) {
-      warn('Failed to flush events to overflow disk:', err);
-    }
-  }
-
-  /**
-   * Drain overflow events directly from disk to network in batches.
+   * Drain disk events directly to network in batches.
    * Does NOT load events into the memory queue.
    * Called on offline→online transition and after successful online flushes.
    *
    * Response handling:
+   * - 200-299: advances and deletes sent events; restores batch size after 413
    * - 413: halves batch size, retries. Drops at batchSize=1
-   * - 5xx/408/429: stops, retries on next online transition
-   * - 401/403/404: fatal, deletes overflow store
+   * - 5xx/408/429: stops, writes remainder back, retries on next online transition
+   * - 401/403/404: fatal, deletes disk store
    * - Other 4xx: drops batch, continues
-   * - Batch size restores after success
    */
   async drainDiskToNetwork(dispatcher: Dispatcher): Promise<void> {
     if (this.drainInFlight) return this.drainInFlight;
@@ -271,36 +226,34 @@ export class PersistentEventQueue {
 
     try {
       while (true) {
-        const raw = await readOverflowSnapshot();
+        const raw = await readSnapshot();
         if (!raw) return;
 
         let snapshot: QueueSnapshot;
         try {
           snapshot = JSON.parse(raw);
         } catch {
-          warn('Overflow snapshot is corrupt during drain — deleting');
-          await nativeDeleteOverflowSnapshot();
+          warn('Queue snapshot is corrupt during drain — deleting');
+          await nativeDeleteSnapshot();
           return;
         }
 
         if (!Array.isArray(snapshot.events) || snapshot.events.length === 0) {
-          await nativeDeleteOverflowSnapshot();
+          await nativeDeleteSnapshot();
           return;
         }
 
-        // Filter expired events
-        const now = Date.now();
-        const cutoff = now - DEFAULT_EVENT_TTL_MS;
-        const events = snapshot.events.filter((e) => {
-          const ts = (e as any).timestamp;
-          if (!ts) return true;
-          const eventTime = new Date(ts).getTime();
-          return !isNaN(eventTime) && eventTime > cutoff;
-        });
+        const events = filterExpired(snapshot.events);
+        const droppedExpired = snapshot.events.length - events.length;
+        if (droppedExpired > 0) {
+          log(
+            `Drain TTL filter dropped ${droppedExpired} event(s) older than 7 days`
+          );
+        }
 
         if (events.length === 0) {
-          log('All overflow events expired — deleting');
-          await nativeDeleteOverflowSnapshot();
+          log('All disk events expired — deleting');
+          await nativeDeleteSnapshot();
           return;
         }
 
@@ -314,11 +267,10 @@ export class PersistentEventQueue {
         // Network/transport error — stop, retry on next online transition
         if (!response) {
           log(
-            `Overflow drain paused — network error, ${events.length} events remain on disk`
+            `Disk drain paused — network error, ${events.length} event(s) remain on disk`
           );
-          // Write back with expired events filtered
-          if (events.length !== snapshot.events.length) {
-            await writeOverflowSnapshot(
+          if (droppedExpired > 0) {
+            await writeSnapshot(
               JSON.stringify({ version: SNAPSHOT_VERSION, events })
             );
           }
@@ -329,22 +281,22 @@ export class PersistentEventQueue {
 
         switch (category) {
           case ResponseCategory.SUCCESS: {
-            // Restore batch size after success
             if (batchSize < DRAIN_BATCH_SIZE) {
               batchSize = Math.min(batchSize * 2, DRAIN_BATCH_SIZE);
             }
 
             if (remaining.length === 0) {
-              await nativeDeleteOverflowSnapshot();
-              log('Overflow disk drain complete');
+              await nativeDeleteSnapshot();
+              log('Disk store drain complete');
             } else {
-              const updated: QueueSnapshot = {
-                version: SNAPSHOT_VERSION,
-                events: remaining,
-              };
-              await writeOverflowSnapshot(JSON.stringify(updated));
+              await writeSnapshot(
+                JSON.stringify({
+                  version: SNAPSHOT_VERSION,
+                  events: remaining,
+                })
+              );
               log(
-                `Overflow drain batch sent (${batch.length}), ${remaining.length} remaining on disk`
+                `Disk drain batch sent (${batch.length}), ${remaining.length} remaining on disk`
               );
             }
             break;
@@ -353,26 +305,24 @@ export class PersistentEventQueue {
           case ResponseCategory.PAYLOAD_TOO_LARGE: {
             if (batchSize > 1) {
               batchSize = Math.max(1, Math.floor(batchSize / 2));
-              warn(`Overflow drain: 413 — halving batch size to ${batchSize}`);
-              // Write back filtered events before retrying with smaller batch
-              if (events.length !== snapshot.events.length) {
-                await writeOverflowSnapshot(
+              warn(`Disk drain: 413 — halving batch size to ${batchSize}`);
+              if (droppedExpired > 0) {
+                await writeSnapshot(
                   JSON.stringify({ version: SNAPSHOT_VERSION, events })
                 );
               }
               // Continue loop with smaller batch
             } else {
-              // batchSize=1, drop the offending event
               const ids = (batch as any[])
                 .map((e) => (e as any).messageId)
                 .join(',');
               warn(
-                `Overflow drain: dropping oversize event(s) at batchSize=1; messageIds=${ids}`
+                `Disk drain: dropping oversize event(s) at batchSize=1; messageIds=${ids}`
               );
               if (remaining.length === 0) {
-                await nativeDeleteOverflowSnapshot();
+                await nativeDeleteSnapshot();
               } else {
-                await writeOverflowSnapshot(
+                await writeSnapshot(
                   JSON.stringify({
                     version: SNAPSHOT_VERSION,
                     events: remaining,
@@ -386,11 +336,10 @@ export class PersistentEventQueue {
           case ResponseCategory.SERVER_ERROR:
           case ResponseCategory.RATE_LIMITED: {
             warn(
-              `Overflow drain paused — ${response.statusCode}, ${events.length} events remain on disk`
+              `Disk drain paused — ${response.statusCode}, ${events.length} event(s) remain on disk`
             );
-            // Write back with expired events filtered
-            if (events.length !== snapshot.events.length) {
-              await writeOverflowSnapshot(
+            if (droppedExpired > 0) {
+              await writeSnapshot(
                 JSON.stringify({ version: SNAPSHOT_VERSION, events })
               );
             }
@@ -399,43 +348,69 @@ export class PersistentEventQueue {
 
           case ResponseCategory.FATAL_CONFIG: {
             warn(
-              `Overflow drain: fatal config error ${response.statusCode} — deleting overflow store`
+              `Disk drain: fatal config error ${response.statusCode} — deleting disk store`
             );
-            await nativeDeleteOverflowSnapshot();
+            await nativeDeleteSnapshot();
             return;
           }
 
           case ResponseCategory.CLIENT_ERROR: {
             warn(
-              `Overflow drain: dropping batch due to client error ${response.statusCode}`
+              `Disk drain: dropping batch due to client error ${response.statusCode}`
             );
             if (remaining.length === 0) {
-              await nativeDeleteOverflowSnapshot();
+              await nativeDeleteSnapshot();
             } else {
-              await writeOverflowSnapshot(
+              await writeSnapshot(
                 JSON.stringify({
                   version: SNAPSHOT_VERSION,
                   events: remaining,
                 })
               );
             }
-            // Continue draining next batch
             break;
           }
         }
       }
     } catch (err) {
-      warn('Failed to drain overflow from disk:', err);
+      warn('Failed to drain disk to network:', err);
     }
   }
 
   /**
-   * Delete the disk snapshot (used during reset).
+   * Delete the disk store (used during reset).
    */
   async deleteSnapshot(): Promise<void> {
     await nativeDeleteSnapshot();
-    await nativeDeleteOverflowSnapshot();
   }
+
+  private async _readExistingEvents(): Promise<EventPayload[]> {
+    const raw = await readSnapshot();
+    if (!raw) return [];
+    try {
+      const snapshot: QueueSnapshot = JSON.parse(raw);
+      if (
+        snapshot.version === SNAPSHOT_VERSION &&
+        Array.isArray(snapshot.events)
+      ) {
+        return snapshot.events;
+      }
+      return [];
+    } catch {
+      warn('Existing disk snapshot is corrupt JSON — overwriting');
+      return [];
+    }
+  }
+}
+
+function filterExpired(events: EventPayload[]): EventPayload[] {
+  const cutoff = Date.now() - DEFAULT_EVENT_TTL_MS;
+  return events.filter((e) => {
+    const ts = (e as any).timestamp;
+    if (!ts) return true;
+    const eventTime = new Date(ts).getTime();
+    return !isNaN(eventTime) && eventTime > cutoff;
+  });
 }
 
 /**

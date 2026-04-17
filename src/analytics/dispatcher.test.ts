@@ -418,10 +418,10 @@ describe('Dispatcher', () => {
       expect(d.getDebugInfo().isNetworkAvailable).toBe(false);
     });
 
-    it('offline log warns with flushed event count when onFlushToOfflineStorage is set', async () => {
+    it('offline log warns with flushed event count when onFlushToDisk is set', async () => {
       const opts = baseOpts();
       opts.isNetworkAvailable = () => false;
-      opts.onFlushToOfflineStorage = jest.fn();
+      opts.onFlushToDisk = jest.fn();
       const d = new Dispatcher(opts);
 
       d.enqueue({ type: 'track', event: 'e1' } as any);
@@ -438,7 +438,7 @@ describe('Dispatcher', () => {
       ).toBe(true);
     });
 
-    it('offline log warns with queue count when no onFlushToOfflineStorage', async () => {
+    it('offline log warns with queue count when no onFlushToDisk', async () => {
       const opts = baseOpts();
       opts.isNetworkAvailable = () => false;
       const d = new Dispatcher(opts);
@@ -517,11 +517,11 @@ describe('Dispatcher', () => {
     });
   });
 
-  describe('onFlushToOfflineStorage callback', () => {
+  describe('onFlushToDisk callback', () => {
     it('fires when flush is called while offline', async () => {
       const opts = baseOpts();
       opts.isNetworkAvailable = () => false;
-      opts.onFlushToOfflineStorage = jest.fn();
+      opts.onFlushToDisk = jest.fn();
       opts.autoFlushThreshold = 9999;
 
       const d = new Dispatcher(opts);
@@ -530,20 +530,20 @@ describe('Dispatcher', () => {
 
       await d.flush();
 
-      expect(opts.onFlushToOfflineStorage).toHaveBeenCalledTimes(1);
-      expect(opts.onFlushToOfflineStorage).toHaveBeenCalledWith(
+      expect(opts.onFlushToDisk).toHaveBeenCalledTimes(1);
+      expect(opts.onFlushToDisk).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({ event: 'a' }),
           expect.objectContaining({ event: 'b' }),
         ])
       );
-      // Queue should be empty after flushing to offline storage
+      // Queue should be empty after flushing to disk
       expect(d.getQueueRef().length).toBe(0);
     });
 
     it('does not fire when online', async () => {
       const opts = baseOpts();
-      opts.onFlushToOfflineStorage = jest.fn();
+      opts.onFlushToDisk = jest.fn();
 
       const d = new Dispatcher(opts);
       d.enqueue({ type: 'track', event: 'a' } as any);
@@ -551,7 +551,7 @@ describe('Dispatcher', () => {
 
       await d.flush();
 
-      expect(opts.onFlushToOfflineStorage).not.toHaveBeenCalled();
+      expect(opts.onFlushToDisk).not.toHaveBeenCalled();
     });
   });
 
