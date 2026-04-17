@@ -500,6 +500,48 @@ describe('Dispatcher', () => {
       expect(opts.onCapacityOverflow).not.toHaveBeenCalled();
     });
 
+    it('fires when the event-count cap is hit (even when well under byte cap)', () => {
+      const opts = baseOpts();
+      const overflowEvents: any[][] = [];
+      opts.onCapacityOverflow = jest.fn((events: any[]) => {
+        overflowEvents.push(events);
+      });
+      opts.maxEventCount = 3;
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      for (let i = 0; i < 3; i++) {
+        d.enqueue({ type: 'track', event: `e${i}` } as any);
+      }
+      // 4th event would exceed count cap — the existing 3 are spliced out.
+      d.enqueue({ type: 'track', event: 'e3' } as any);
+
+      expect(opts.onCapacityOverflow).toHaveBeenCalledTimes(1);
+      expect(overflowEvents[0].length).toBe(3);
+      expect(d.getQueueRef().length).toBe(1);
+      expect((d.getQueueRef()[0] as any).event).toBe('e3');
+    });
+
+    it('drops oldest (ring buffer) when persistence is disabled', () => {
+      const opts = baseOpts();
+      opts.onCapacityOverflow = jest.fn();
+      opts.isPersistenceEnabled = () => false;
+      opts.maxEventCount = 3;
+      opts.autoFlushThreshold = 9999;
+
+      const d = new Dispatcher(opts);
+      for (let i = 0; i < 5; i++) {
+        d.enqueue({ type: 'track', event: `e${i}` } as any);
+      }
+
+      // Queue still size 3 (ring buffer); the 2 oldest were dropped one by one.
+      expect(d.getQueueRef().length).toBe(3);
+      const events = d.getQueueRef().map((e: any) => e.event);
+      expect(events).toEqual(['e2', 'e3', 'e4']);
+      // No disk splice happened.
+      expect(opts.onCapacityOverflow).not.toHaveBeenCalled();
+    });
+
     it('resets queue bytes to 0 after overflow', () => {
       const opts = baseOpts();
       opts.onCapacityOverflow = jest.fn();

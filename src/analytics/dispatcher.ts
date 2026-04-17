@@ -387,11 +387,7 @@ export default class Dispatcher {
             }
 
             if (s === 401 || s === 403 || s === 404) {
-              this.opts.error(`Fatal config error ${s}. Disabling client.`);
-              this.queue.length = 0;
-              this.queueSizeBytes = 0;
-              this.stop();
-              this.opts.onFatalConfig?.();
+              this.handleFatalConfig(s);
               return;
             }
 
@@ -472,6 +468,19 @@ export default class Dispatcher {
   resetCircuitBreaker(): void {
     this.circuit.reset();
     this.consecutiveRetries = 0;
+  }
+
+  /**
+   * Coordinate shutdown on a fatal config error (401/403/404).
+   * Called by the main flush path and by the disk drain so both paths
+   * converge to the same "disable client" signal.
+   */
+  handleFatalConfig(statusCode: number): void {
+    this.opts.error(`Fatal config error ${statusCode}. Disabling client.`);
+    this.queue.length = 0;
+    this.queueSizeBytes = 0;
+    this.stop();
+    this.opts.onFatalConfig?.();
   }
 
   /**

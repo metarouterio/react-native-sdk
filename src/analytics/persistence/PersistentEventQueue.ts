@@ -318,6 +318,10 @@ export class PersistentEventQueue {
             );
             await nativeDeleteSnapshot();
             this._hasDiskData = false;
+            // Coordinate shutdown with the main dispatcher. Previously the
+            // drain path silently swallowed 401/403/404 while the main flush
+            // path disabled the client — inconsistent behavior.
+            dispatcher.handleFatalConfig(response.statusCode);
             return;
           }
 

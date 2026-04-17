@@ -515,6 +515,30 @@ describe('PersistentEventQueue', () => {
       expect(store.data).toBeNull();
     });
 
+    it('fires onFatalConfig handler on 401/403/404 during drain', async () => {
+      const { store } = mockNativeStorage();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'e1' }],
+      });
+
+      const onFatalConfig = jest.fn();
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: jest.fn(async () => ({
+          ok: false,
+          status: 401,
+        })),
+        onFatalConfig,
+      });
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect(onFatalConfig).toHaveBeenCalledTimes(1);
+    });
+
     it('drops batch on other 4xx and continues draining', async () => {
       const { store } = mockNativeStorage();
 
