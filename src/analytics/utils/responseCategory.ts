@@ -1,6 +1,6 @@
 /**
  * Shared classification of HTTP status codes used by both
- * the dispatcher and the overflow disk drain.
+ * the dispatcher and the disk drain.
  */
 export enum ResponseCategory {
   SUCCESS = 'SUCCESS',

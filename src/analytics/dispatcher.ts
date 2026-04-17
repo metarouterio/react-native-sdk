@@ -281,6 +281,10 @@ export default class Dispatcher {
   async flush(): Promise<void> {
     if (!this.queue.length) return;
     if (this.flushInFlight) return this.flushInFlight;
+    // A retry is armed — let it fire on its own schedule instead of
+    // launching immediately and bypassing the backoff window. The scheduled
+    // callback nils nextTimer before calling flush(), so it passes through.
+    if (this.nextTimer) return;
     if (!this.opts.canSend()) return;
 
     const doFlush = async () => {
@@ -485,7 +489,7 @@ export default class Dispatcher {
 
   /**
    * Send a batch directly to network, bypassing the memory queue.
-   * Used by disk drain to flush overflow without loading into queue.
+   * Used by the disk drain to send events without loading them into the queue.
    * Returns { statusCode } on HTTP response, null on network/transport error.
    */
   async sendBatchDirect(

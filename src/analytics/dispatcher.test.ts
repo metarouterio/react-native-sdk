@@ -187,31 +187,42 @@ describe('Dispatcher', () => {
   });
 
   it('gradually recovers maxBatchSize after 413-induced reduction on subsequent successes', async () => {
-    const opts = baseOpts();
-    opts.maxBatchSize = 100;
-    opts.autoFlushThreshold = 9999;
-    let callCount = 0;
-    opts.fetchWithTimeout = jest.fn(async (_url?: string, _init?: any) => {
-      callCount++;
-      // First call: 413 to trigger halving
-      if (callCount === 1)
-        return { ok: false, status: 413, headers: { get: () => null } } as any;
-      return { ok: true, status: 200 } as any;
-    });
+    jest.useFakeTimers();
+    try {
+      const opts = baseOpts();
+      opts.maxBatchSize = 100;
+      opts.autoFlushThreshold = 9999;
+      let callCount = 0;
+      opts.fetchWithTimeout = jest.fn(async (_url?: string, _init?: any) => {
+        callCount++;
+        // First call: 413 to trigger halving
+        if (callCount === 1)
+          return {
+            ok: false,
+            status: 413,
+            headers: { get: () => null },
+          } as any;
+        return { ok: true, status: 200 } as any;
+      });
 
-    const d = new Dispatcher(opts);
+      const d = new Dispatcher(opts);
 
-    // Enqueue enough events and flush to trigger the 413
-    for (let i = 0; i < 5; i++)
-      d.enqueue({ type: 'track', event: `e${i}` } as any);
-    await d.flush();
+      // Enqueue enough events and flush to trigger the 413
+      for (let i = 0; i < 5; i++)
+        d.enqueue({ type: 'track', event: `e${i}` } as any);
+      await d.flush();
 
-    // After 413, maxBatchSize should have been halved to 50
-    expect(d.getDebugInfo().maxBatchSize).toBe(50);
+      // After 413, maxBatchSize should have been halved to 50
+      expect(d.getDebugInfo().maxBatchSize).toBe(50);
 
-    // Flush again — events succeed, so batch size should recover: min(50*2, 100) = 100
-    await d.flush();
-    expect(d.getDebugInfo().maxBatchSize).toBe(100);
+      // Advance past the scheduled retry (500ms) — the internal retry fires
+      // success, which recovers batch size: min(50*2, 100) = 100.
+      await jest.advanceTimersByTimeAsync(500);
+
+      expect(d.getDebugInfo().maxBatchSize).toBe(100);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not recover maxBatchSize beyond initialMaxBatchSize', async () => {
@@ -397,6 +408,9 @@ describe('Dispatcher', () => {
 
     it('circuit breaker does NOT reset while still connected but failing', async () => {
       const opts = baseOpts();
+      // Drop chunks on failure (don't schedule retry) so each manual flush
+      // can run and the circuit sees all three failures.
+      opts.isOperational = () => false;
       opts.fetchWithTimeout = jest.fn(
         async () =>
           ({ ok: false, status: 500, headers: { get: () => null } }) as any
@@ -629,6 +643,52 @@ describe('Dispatcher', () => {
       await d.flush();
 
       expect(opts.onFlushComplete).not.toHaveBeenCalled();
+    });
+
+    it('does not fire when all batches are dropped as 4xx (no 2xx observed)', async () => {
+      const opts = baseOpts();
+      opts.onFlushComplete = jest.fn();
+      opts.autoFlushThreshold = 9999;
+      opts.fetchWithTimeout = jest.fn(
+        async () =>
+          ({ ok: false, status: 400, headers: { get: () => null } }) as any
+      );
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      d.enqueue({ type: 'track', event: 'b' } as any);
+
+      await d.flush();
+
+      expect(opts.onFlushComplete).not.toHaveBeenCalled();
+      expect(d.getQueueRef().length).toBe(0);
+    });
+  });
+
+  describe('retry-backoff churn guard', () => {
+    it('short-circuits flush while a retry timer is armed', async () => {
+      const opts = baseOpts();
+      opts.autoFlushThreshold = 9999;
+      opts.fetchWithTimeout = jest.fn(
+        async () =>
+          ({ ok: false, status: 500, headers: { get: () => null } }) as any
+      );
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+      await d.flush();
+
+      const fetchSpy = opts.fetchWithTimeout as jest.Mock;
+      const callsAfterRetryArmed = fetchSpy.mock.calls.length;
+      expect(opts.onScheduleFlushIn).toHaveBeenCalled();
+
+      // External callers (periodic timer, enqueue auto-flush, onFlushComplete)
+      // must not bypass the backoff window.
+      await d.flush();
+      await d.flush();
+      await d.flush();
+
+      expect(fetchSpy.mock.calls.length).toBe(callsAfterRetryArmed);
     });
   });
 
