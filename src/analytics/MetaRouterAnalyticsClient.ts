@@ -18,6 +18,7 @@ import {
   type NetworkReachability,
   type NetworkStatus,
 } from './utils/networkMonitor';
+import { DebouncedNetworkMonitor } from './utils/debouncedNetworkMonitor';
 
 /**
  * Analytics client for MetaRouter.
@@ -84,7 +85,12 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.identityManager = new IdentityManager();
-    this.networkMonitor = deps?.networkMonitor ?? new NetworkMonitor();
+    // Default: wrap the raw native monitor with the asymmetric debounce
+    // (immediate offline, 2s stable-online). If a caller injects their own
+    // monitor (e.g. in tests), use it as-is so they control the debounce
+    // behavior explicitly.
+    this.networkMonitor =
+      deps?.networkMonitor ?? new DebouncedNetworkMonitor(new NetworkMonitor());
     this.maxQueueBytes = options.maxQueueBytes ?? this.maxQueueBytes;
     this.dispatcher = new Dispatcher({
       maxQueueBytes: this.maxQueueBytes,
