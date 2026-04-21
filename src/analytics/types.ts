@@ -51,6 +51,7 @@ export interface AnalyticsInterface {
   reset: () => Promise<void>;
   enableDebugLogging: () => void;
   getDebugInfo: () => Promise<Record<string, any>>;
+  getAnonymousId: () => Promise<string>;
 }
 
 export interface EventContext {

@@ -1,4 +1,4 @@
-import type { AnalyticsInterface } from "../types";
+import type { AnalyticsInterface } from '../types';
 
 type PendingItem = {
   fn: () => void | Promise<void>;
@@ -11,10 +11,16 @@ const MAX_PENDING_CALLS = 20;
 let realClient: AnalyticsInterface | null = null;
 
 // Async-returning methods
-type AsyncMethod = "flush" | "getDebugInfo" | "setAdvertisingId" | "clearAdvertisingId";
+type AsyncMethod =
+  | 'flush'
+  | 'getDebugInfo'
+  | 'getAnonymousId'
+  | 'setAdvertisingId'
+  | 'clearAdvertisingId';
 const ASYNC_METHODS: Record<AsyncMethod, true> = {
   flush: true,
   getDebugInfo: true,
+  getAnonymousId: true,
   setAdvertisingId: true,
   clearAdvertisingId: true,
 };
@@ -53,7 +59,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
 ): ReturnType<AnalyticsInterface[T]> {
   // Real client bound
   if (realClient) {
-    if (methodName === "flush") {
+    if (methodName === 'flush') {
       if (flushInFlight)
         return flushInFlight as ReturnType<AnalyticsInterface[T]>;
       const p = Promise.resolve((realClient.flush as any)(...args)).then(
@@ -81,7 +87,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   }
 
   // Special-cases while unbound:
-  if (methodName === "reset") {
+  if (methodName === 'reset') {
     // Nothing to reset pre-bind; resolve immediately
     return Promise.resolve() as ReturnType<AnalyticsInterface[T]>;
   }
@@ -95,11 +101,11 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
           try {
             if (!realClient) {
               return reject(
-                new Error("Proxy detached before real client was bound")
+                new Error('Proxy detached before real client was bound')
               );
             }
 
-            if (methodName === "flush") {
+            if (methodName === 'flush') {
               if (!flushInFlight) {
                 const p = Promise.resolve(
                   (realClient.flush as any)(...args)
@@ -132,20 +138,23 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
 }
 
 export const proxyClient: AnalyticsInterface = {
-  track: (event, props) => handleMethodCall("track", event, props),
-  identify: (userId, traits) => handleMethodCall("identify", userId, traits),
-  group: (groupId, traits) => handleMethodCall("group", groupId, traits),
-  screen: (name, props) => handleMethodCall("screen", name, props),
-  page: (name, props) => handleMethodCall("page", name, props),
-  alias: (newUserId) => handleMethodCall("alias", newUserId),
-  setAdvertisingId: (advertisingId) => handleMethodCall("setAdvertisingId", advertisingId) as Promise<void>,
-  clearAdvertisingId: () => handleMethodCall("clearAdvertisingId") as Promise<void>,
-  setTracing: (enabled) => handleMethodCall("setTracing", enabled),
+  track: (event, props) => handleMethodCall('track', event, props),
+  identify: (userId, traits) => handleMethodCall('identify', userId, traits),
+  group: (groupId, traits) => handleMethodCall('group', groupId, traits),
+  screen: (name, props) => handleMethodCall('screen', name, props),
+  page: (name, props) => handleMethodCall('page', name, props),
+  alias: (newUserId) => handleMethodCall('alias', newUserId),
+  setAdvertisingId: (advertisingId) =>
+    handleMethodCall('setAdvertisingId', advertisingId) as Promise<void>,
+  clearAdvertisingId: () =>
+    handleMethodCall('clearAdvertisingId') as Promise<void>,
+  setTracing: (enabled) => handleMethodCall('setTracing', enabled),
 
-  flush: () => handleMethodCall("flush"),
-  reset: () => handleMethodCall("reset"),
-  enableDebugLogging: () => handleMethodCall("enableDebugLogging"),
-  getDebugInfo: () => handleMethodCall("getDebugInfo"),
+  flush: () => handleMethodCall('flush'),
+  reset: () => handleMethodCall('reset'),
+  enableDebugLogging: () => handleMethodCall('enableDebugLogging'),
+  getDebugInfo: () => handleMethodCall('getDebugInfo'),
+  getAnonymousId: () => handleMethodCall('getAnonymousId'),
 };
 
 /**
@@ -187,13 +196,13 @@ export function setRealClient(
       try {
         Promise.resolve(fn()).catch(() => {});
       } catch (err) {
-        console.warn("[MetaRouter] replay error:", err);
+        console.warn('[MetaRouter] replay error:', err);
       }
     }
   } else {
     if (opts?.dropPending) {
       for (const it of pendingCalls)
-        it.reject?.(new Error("[MetaRouter] Proxy dropped before bind"));
+        it.reject?.(new Error('[MetaRouter] Proxy dropped before bind'));
       pendingCalls.length = 0;
     }
     flushInFlight = null; // reset coalescer
