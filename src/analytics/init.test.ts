@@ -51,6 +51,7 @@ describe('createAnalyticsClient', () => {
     expect(typeof client.reset).toBe('function');
     expect(typeof client.enableDebugLogging).toBe('function');
     expect(typeof client.getDebugInfo).toBe('function');
+    expect(typeof client.getAnonymousId).toBe('function');
   });
 
   it('returns the same proxy (rebound under the hood)', async () => {

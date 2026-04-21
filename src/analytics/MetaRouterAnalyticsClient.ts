@@ -531,6 +531,24 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
+   * Returns the current anonymous ID managed by the JS identity layer.
+   * Awaits init() if it is still in-flight. Throws only if the client was
+   * never initialized or a reset() races with this call.
+   */
+  async getAnonymousId(): Promise<string> {
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+    const id = this.identityManager.getAnonymousId();
+    if (!id) {
+      throw new Error(
+        'getAnonymousId: no anonymous ID available (client was reset or never initialized)'
+      );
+    }
+    return id;
+  }
+
+  /**
    * Get current state for debugging
    */
   async getDebugInfo() {

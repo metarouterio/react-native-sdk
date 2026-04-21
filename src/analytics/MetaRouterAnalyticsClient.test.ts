@@ -596,6 +596,55 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(client.queue[0].context.device.advertisingId).toBeUndefined();
   });
 
+  describe('getAnonymousId', () => {
+    it('returns the JS IdentityManager anonymous ID', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      const result = await client.getAnonymousId();
+      expect(result).toBe('anon-123');
+    });
+
+    it('is async and returns a string (never null)', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      const promise = client.getAnonymousId();
+      expect(promise).toBeInstanceOf(Promise);
+
+      const result = await promise;
+      expect(typeof result).toBe('string');
+      expect(result).toBeTruthy();
+    });
+
+    it('awaits init() when called while initialization is in-flight', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      const initPromise = client.init();
+      const idPromise = client.getAnonymousId();
+
+      await initPromise;
+      const result = await idPromise;
+      expect(result).toBe('anon-123');
+    });
+
+    it('throws when called before init() has ever been called', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await expect(client.getAnonymousId()).rejects.toThrow(
+        /no anonymous ID available/
+      );
+    });
+
+    it('throws after reset() clears identity', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+      await client.reset();
+
+      await expect(client.getAnonymousId()).rejects.toThrow(
+        /no anonymous ID available/
+      );
+    });
+  });
+
   describe('network awareness', () => {
     it('getDebugInfo includes networkStatus', async () => {
       const monitor = new StubNetworkMonitor('connected');
