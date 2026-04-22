@@ -40,6 +40,20 @@ class MetaRouterQueueStorageModule(
         }
     }
 
+    /**
+     * Cheap existence check — does not read the file contents.
+     * Used on boot so a large snapshot doesn't get fully parsed just to
+     * discover whether there's anything to drain.
+     */
+    @ReactMethod
+    fun exists(promise: Promise) {
+        try {
+            promise.resolve(snapshotFile().exists())
+        } catch (e: Exception) {
+            promise.reject("EXISTS_ERROR", "Failed to check snapshot existence", e)
+        }
+    }
+
     @ReactMethod
     fun readSnapshot(promise: Promise) {
         try {

@@ -148,7 +148,7 @@ describe('createAnalyticsClient', () => {
     });
   });
 
-  it('supports reconfiguration after reset with new maxQueueBytes', async () => {
+  it('supports reconfiguration after reset with new maxQueueEvents', async () => {
     // Note: This test documents the proper pattern:
     // 1. await reset() before reconfiguring
     // 2. The warning added in createAnalyticsClient catches forgotten awaits
@@ -168,42 +168,42 @@ describe('createAnalyticsClient', () => {
 
     const { createAnalyticsClient } = require('./init');
 
-    // First client with maxQueueBytes: 3MB
+    // First client with maxQueueEvents: 1000
     const client1 = createAnalyticsClient({
       ...opts,
-      maxQueueBytes: 3 * 1024 * 1024,
+      maxQueueEvents: 1000,
     });
 
     // Wait for init to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     let debug1 = await client1.getDebugInfo();
-    expect(debug1?.maxQueueBytes).toBe(3 * 1024 * 1024);
+    expect(debug1?.maxQueueEvents).toBe(1000);
 
     // Properly await reset before reconfiguring
     await client1.reset();
 
-    // Create new client with maxQueueBytes: 5MB
+    // Create new client with maxQueueEvents: 3000
     const client2 = createAnalyticsClient({
       ...opts,
-      maxQueueBytes: 5 * 1024 * 1024,
+      maxQueueEvents: 3000,
     });
 
     // Wait for new init to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const debug2 = await client2.getDebugInfo();
-    expect(debug2?.maxQueueBytes).toBe(5 * 1024 * 1024);
+    expect(debug2?.maxQueueEvents).toBe(3000);
   });
 
   it('warns if reconfiguration attempted without awaiting reset', async () => {
     const { createAnalyticsClient } = require('./init');
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // First client with maxQueueBytes: 3MB
+    // First client with maxQueueEvents: 1000
     const client1 = createAnalyticsClient({
       ...opts,
-      maxQueueBytes: 3 * 1024 * 1024,
+      maxQueueEvents: 1000,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -214,7 +214,7 @@ describe('createAnalyticsClient', () => {
     // Immediately try to create with new config
     const client2 = createAnalyticsClient({
       ...opts,
-      maxQueueBytes: 5 * 1024 * 1024,
+      maxQueueEvents: 3000,
     });
 
     // Should warn about config change

@@ -20,3 +20,6 @@ export const FLUSH_THRESHOLD_BYTES = 2 * 1024 * 1024;
 
 /** Flush-to-disk threshold: event count */
 export const FLUSH_THRESHOLD_COUNT = 500;
+
+/** Default max events stored on disk (crash safety + extended offline overflow) */
+export const DEFAULT_MAX_DISK_EVENTS = 10_000;

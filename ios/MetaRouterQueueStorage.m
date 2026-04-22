@@ -48,6 +48,19 @@ RCT_EXPORT_MODULE()
                             error:error];
 }
 
+/**
+ * Cheap existence check — does not read the file contents.
+ * Used on boot so a large snapshot doesn't get fully parsed just to
+ * discover whether there's anything to drain.
+ */
+RCT_EXPORT_METHOD(exists:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSString *path = [self snapshotPath];
+  NSFileManager *fm = [NSFileManager defaultManager];
+  resolve(@([fm fileExistsAtPath:path]));
+}
+
 RCT_EXPORT_METHOD(readSnapshot:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {

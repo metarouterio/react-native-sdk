@@ -3,14 +3,25 @@ import type CircuitBreaker from './utils/circuitBreaker';
 
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
+export interface NetworkResponse {
+  statusCode: number;
+}
+
 export interface DispatcherOptions {
-  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default)
+  maxEventCount: number; // event-count cap on memory queue (default 2000)
+  maxQueueBytes: number; // byte-based cap on memory queue (~5MB default, internal)
   autoFlushThreshold: number; // e.g., 20
   maxBatchSize: number; // initial max; may shrink on 413
   flushIntervalSeconds: number;
   baseRetryDelayMs: number; // retry floor base delay (default 1000)
   maxRetryDelayMs: number; // retry floor cap (default 8000)
 
+  /**
+   * Whether disk persistence is enabled. When false, capacity overflow drops
+   * the oldest event (ring buffer) instead of splicing the whole queue to
+   * the onCapacityOverflow handler, since there is no disk to spill to.
+   */
+  isPersistenceEnabled: () => boolean;
   isNetworkAvailable: () => boolean; // returns false when offline
 
   endpoint: (path: string) => string;
@@ -28,6 +39,9 @@ export interface DispatcherOptions {
   warn: (...args: any[]) => void;
   error: (...args: any[]) => void;
 
+  onCapacityOverflow?: (events: EventPayload[]) => void | Promise<void>; // called with entire queue when cap is hit
+  onFlushToDisk?: (events: EventPayload[]) => void | Promise<void>; // called when flush triggers while offline — persists queue to disk
+  onFlushComplete?: () => void; // fires after successful online flush to trigger disk drain
   onScheduleFlushIn?: (ms: number) => void; // optional notification for tests/metrics
   onFatalConfig?: () => void; // 401/403/404 handler
 }
@@ -54,6 +68,25 @@ export default class Dispatcher {
 
   getQueueRef(): EventPayload[] {
     return this.queue;
+  }
+
+  /**
+   * Drain the in-memory queue entirely. Returns all events and resets the
+   * byte counter. Used by PersistentEventQueue to persist memory to disk
+   * without leaving duplicates behind.
+   */
+  drainQueue(): EventPayload[] {
+    const events = this.queue.splice(0);
+    this.queueSizeBytes = 0;
+    return events;
+  }
+
+  /**
+   * Restore events to the front without applying capacity overflow policy.
+   * Used only after a failed durability handoff so events are not lost.
+   */
+  restoreQueueFront(events: EventPayload[]): void {
+    this.requeueChunk(events);
   }
 
   start(): void {
@@ -126,17 +159,73 @@ export default class Dispatcher {
     return Dispatcher.encoder.encode(JSON.stringify(event)).byteLength;
   }
 
+  private handleCapacityOverflow(triggerDesc: string): void {
+    // Persistence disabled (maxDiskEvents === 0): ring-buffer — drop oldest
+    // event one at a time instead of draining the whole queue, since there
+    // is no disk to spill to.
+    if (!this.opts.isPersistenceEnabled()) {
+      const dropped = this.queue.shift();
+      if (dropped !== undefined) {
+        this.queueSizeBytes -= this.estimateEventSize(dropped);
+        if (this.queueSizeBytes < 0) this.queueSizeBytes = 0;
+        this.opts.warn(
+          `Queue cap reached (${triggerDesc}) — dropped oldest event`
+        );
+      }
+      return;
+    }
+
+    // Persistence enabled: splice the whole queue to the disk handler.
+    if (this.opts.onCapacityOverflow) {
+      const flushed = this.queue.splice(0);
+      this.queueSizeBytes = 0;
+      try {
+        const result = this.opts.onCapacityOverflow(flushed);
+        void Promise.resolve(result).catch((err) => {
+          this.requeueChunk(flushed);
+          this.opts.warn(
+            'Capacity overflow persistence failed — restored events to memory',
+            err
+          );
+        });
+      } catch (err) {
+        this.requeueChunk(flushed);
+        this.opts.warn(
+          'Capacity overflow persistence failed — restored events to memory',
+          err
+        );
+      }
+    } else {
+      this.opts.warn(
+        `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
+      );
+      this.queue.length = 0;
+      this.queueSizeBytes = 0;
+    }
+  }
+
+  private isOverCap(extraBytes: number = 0, extraCount: number = 0): boolean {
+    return (
+      this.queue.length + extraCount > this.opts.maxEventCount ||
+      this.queueSizeBytes + extraBytes > this.opts.maxQueueBytes
+    );
+  }
+
   enqueue(event: EventPayload): void {
     const eventSize = this.estimateEventSize(event);
 
-    // Hard cap: drop oldest until there's room (byte limit)
-    while (
-      this.queue.length > 0 &&
-      this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
-    ) {
-      const dropped = this.queue.shift();
-      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
-      this.opts.warn('Queue cap reached — dropped oldest event');
+    // Enforce cap: if adding this event would exceed count OR byte limit,
+    // flush/evict first so the new event still fits.
+    while (this.queue.length > 0 && this.isOverCap(eventSize, 1)) {
+      this.handleCapacityOverflow(
+        this.queueSizeBytes + eventSize > this.opts.maxQueueBytes
+          ? 'bytes'
+          : 'count'
+      );
+      if (!this.opts.isPersistenceEnabled() && this.queue.length === 0) break;
+      // When persistence IS enabled, handleCapacityOverflow drains the whole
+      // queue so the loop exits naturally.
+      if (this.opts.isPersistenceEnabled()) break;
     }
 
     this.opts.log(
@@ -162,14 +251,14 @@ export default class Dispatcher {
       this.queueSizeBytes += this.estimateEventSize(e);
     }
 
-    // Enforce cap: drop oldest (from front) until within byte limit
-    while (
-      this.queue.length > 0 &&
-      this.queueSizeBytes > this.opts.maxQueueBytes
-    ) {
-      const dropped = this.queue.shift();
-      if (dropped) this.queueSizeBytes -= this.estimateEventSize(dropped);
-      this.opts.warn('Queue cap reached — dropped oldest event');
+    // Enforce cap: drain to disk (or ring-buffer drop-oldest in 0-mode).
+    while (this.isOverCap()) {
+      const before = this.queue.length;
+      this.handleCapacityOverflow(
+        this.queueSizeBytes > this.opts.maxQueueBytes ? 'bytes' : 'count'
+      );
+      if (this.queue.length === before) break; // safety: avoid infinite loop
+      if (this.opts.isPersistenceEnabled()) break; // drained entire queue
     }
 
     if (this.queue.length >= this.opts.autoFlushThreshold) {
@@ -215,14 +304,34 @@ export default class Dispatcher {
   async flush(): Promise<void> {
     if (!this.queue.length) return;
     if (this.flushInFlight) return this.flushInFlight;
+    // A retry is armed — let it fire on its own schedule instead of
+    // launching immediately and bypassing the backoff window. The scheduled
+    // callback nils nextTimer before calling flush(), so it passes through.
+    if (this.nextTimer) return;
     if (!this.opts.canSend()) return;
 
     const doFlush = async () => {
       while (this.queue.length) {
         if (!this.opts.isNetworkAvailable()) {
-          this.opts.warn(
-            `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`
-          );
+          if (this.opts.onFlushToDisk && this.opts.isPersistenceEnabled()) {
+            const flushed = this.drainQueue();
+            try {
+              await this.opts.onFlushToDisk(flushed);
+              this.opts.warn(
+                `Offline — flushed ${flushed.length} event(s) to disk`
+              );
+            } catch (err) {
+              this.requeueChunk(flushed);
+              this.opts.warn(
+                `Offline — failed to flush ${flushed.length} event(s) to disk; restored to memory`,
+                err
+              );
+            }
+          } else {
+            this.opts.warn(
+              `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`
+            );
+          }
           return;
         }
 
@@ -312,11 +421,7 @@ export default class Dispatcher {
             }
 
             if (s === 401 || s === 403 || s === 404) {
-              this.opts.error(`Fatal config error ${s}. Disabling client.`);
-              this.queue.length = 0;
-              this.queueSizeBytes = 0;
-              this.stop();
-              this.opts.onFatalConfig?.();
+              this.handleFatalConfig(s);
               return;
             }
 
@@ -359,6 +464,11 @@ export default class Dispatcher {
             );
           }
           this.opts.log('API call successful');
+
+          // If queue is now empty after this successful batch, fire onFlushComplete
+          if (this.queue.length === 0 && this.opts.isNetworkAvailable()) {
+            this.opts.onFlushComplete?.();
+          }
         } catch (err) {
           this.circuit.onFailure();
           this.consecutiveRetries += 1;
@@ -394,6 +504,61 @@ export default class Dispatcher {
     this.consecutiveRetries = 0;
   }
 
+  /**
+   * Coordinate shutdown on a fatal config error (401/403/404).
+   * Called by the main flush path and by the disk drain so both paths
+   * converge to the same "disable client" signal.
+   */
+  handleFatalConfig(statusCode: number): void {
+    this.opts.error(`Fatal config error ${statusCode}. Disabling client.`);
+    this.queue.length = 0;
+    this.queueSizeBytes = 0;
+    this.stop();
+    this.opts.onFatalConfig?.();
+  }
+
+  /**
+   * Send a batch directly to network, bypassing the memory queue.
+   * Used by the disk drain to send events without loading them into the queue.
+   * Returns { statusCode } on HTTP response, null on network/transport error.
+   */
+  async sendBatchDirect(
+    events: EventPayload[]
+  ): Promise<NetworkResponse | null> {
+    try {
+      const nowIso = new Date().toISOString();
+      const batch = events.map((e) => ({ ...(e as any), sentAt: nowIso }));
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (this.opts.isTracingEnabled()) {
+        headers.Trace = 'true';
+      }
+
+      const res = await this.opts.fetchWithTimeout(
+        this.opts.endpoint('/v1/batch'),
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ batch }),
+        },
+        8000
+      );
+
+      if (res.ok) {
+        this.opts.log(`Direct batch send successful (${events.length} events)`);
+      } else {
+        this.opts.warn(`Direct batch send failed with status ${res.status}`);
+      }
+
+      return { statusCode: res.status };
+    } catch (err) {
+      this.opts.warn(`Direct batch send failed: ${(err as any)?.message}`);
+      return null;
+    }
+  }
+
   getDebugInfo() {
     return {
       queueLength: this.queue.length,
@@ -402,7 +567,7 @@ export default class Dispatcher {
       flushInFlight: !!this.flushInFlight,
       circuitState: this.circuit.getState(),
       circuitRemainingMs: this.circuit.remainingCooldownMs(),
-      maxQueueBytes: this.opts.maxQueueBytes,
+      maxQueueEvents: this.opts.maxEventCount,
       maxBatchSize: this.maxBatchSize,
       consecutiveRetries: this.consecutiveRetries,
       isNetworkAvailable: this.opts.isNetworkAvailable(),
