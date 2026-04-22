@@ -8,6 +8,7 @@ import { warn } from '../utils/logger';
  * - readSnapshot(): Promise<string | null>   — full contents, or null if no file
  * - writeSnapshot(data: string): Promise<void> — atomic overwrite
  * - deleteSnapshot(): Promise<void>            — delete if present
+ * - exists(): Promise<boolean>                 — cheap existence check
  *
  * Append / merge / cap logic lives in JS (PersistentEventQueue) rather than
  * native so the policy stays in one place and is easy to test.
@@ -50,17 +51,22 @@ export async function readSnapshot(): Promise<string | null> {
     return await mod.readSnapshot();
   } catch (err) {
     warn('Failed to read queue snapshot from disk:', err);
-    return null;
+    throw err;
   }
 }
 
 export async function writeSnapshot(data: string): Promise<void> {
   const mod = getModule();
-  if (!mod) return;
+  if (!mod) {
+    throw new Error(
+      'MetaRouterQueueStorage native module is not available; cannot write queue snapshot.'
+    );
+  }
   try {
     await mod.writeSnapshot(data);
   } catch (err) {
     warn('Failed to write queue snapshot to disk:', err);
+    throw err;
   }
 }
 
@@ -71,5 +77,6 @@ export async function deleteSnapshot(): Promise<void> {
     await mod.deleteSnapshot();
   } catch (err) {
     warn('Failed to delete queue snapshot from disk:', err);
+    throw err;
   }
 }

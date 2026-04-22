@@ -13,6 +13,7 @@ jest.mock('react-native', () => ({
   },
   NativeModules: {
     MetaRouterQueueStorage: {
+      exists: jest.fn(() => Promise.resolve(false)),
       readSnapshot: jest.fn(() => Promise.resolve(null)),
       writeSnapshot: jest.fn(() => Promise.resolve()),
       deleteSnapshot: jest.fn(() => Promise.resolve()),

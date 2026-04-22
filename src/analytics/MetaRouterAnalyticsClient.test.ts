@@ -266,10 +266,10 @@ describe('MetaRouterAnalyticsClient', () => {
     (client as any).dispatcher &&
       ((client as any).dispatcher.opts.autoFlushThreshold = 9999);
 
-    // Spy on overflow to verify events get flushed
+    // Spy on overflow to verify events are handed to the disk buffer
     const flushSpy = jest.spyOn(
       (client as any).persistentQueue,
-      'flushEventsToDisk'
+      'bufferEventsForDisk'
     );
 
     // Track one event to measure enriched size, then set byte cap for 10 events
@@ -745,7 +745,7 @@ describe('MetaRouterAnalyticsClient', () => {
 
       const flushSpy = jest.spyOn(
         (client as any).persistentQueue,
-        'flushEventsToDisk'
+        'bufferEventsForDisk'
       );
 
       // Prevent auto-flush from interfering with the capacity check.

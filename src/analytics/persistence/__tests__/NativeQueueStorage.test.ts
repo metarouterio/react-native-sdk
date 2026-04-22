@@ -1,5 +1,6 @@
 import { NativeModules } from 'react-native';
 import {
+  exists,
   readSnapshot,
   writeSnapshot,
   deleteSnapshot,
@@ -7,6 +8,7 @@ import {
 
 function mockNativeStorage() {
   NativeModules.MetaRouterQueueStorage = {
+    exists: jest.fn().mockResolvedValue(false),
     readSnapshot: jest.fn().mockResolvedValue(null),
     writeSnapshot: jest.fn().mockResolvedValue(undefined),
     deleteSnapshot: jest.fn().mockResolvedValue(undefined),
@@ -22,6 +24,14 @@ describe('NativeQueueStorage', () => {
   afterEach(() => {
     // Restore to empty so other test suites aren't affected
     NativeModules.MetaRouterQueueStorage = undefined as any;
+  });
+
+  it('exists delegates to native module', async () => {
+    const mock = mockNativeStorage();
+    mock.exists.mockResolvedValue(true);
+    const result = await exists();
+    expect(result).toBe(true);
+    expect(mock.exists).toHaveBeenCalled();
   });
 
   it('readSnapshot returns null when native module returns null', async () => {
@@ -60,10 +70,11 @@ describe('NativeQueueStorage', () => {
     expect(result).toBeNull();
   });
 
-  it('writeSnapshot is a no-op if native module is missing', async () => {
+  it('writeSnapshot rejects if native module is missing', async () => {
     NativeModules.MetaRouterQueueStorage = undefined as any;
-    // Should not throw
-    await writeSnapshot('data');
+    await expect(writeSnapshot('data')).rejects.toThrow(
+      /native module is not available/
+    );
   });
 
   it('deleteSnapshot is a no-op if native module is missing', async () => {
@@ -72,17 +83,21 @@ describe('NativeQueueStorage', () => {
     await deleteSnapshot();
   });
 
-  it('readSnapshot returns null on native module error', async () => {
+  it('readSnapshot rejects on native module error', async () => {
     const mock = mockNativeStorage();
     mock.readSnapshot.mockRejectedValue(new Error('disk error'));
-    const result = await readSnapshot();
-    expect(result).toBeNull();
+    await expect(readSnapshot()).rejects.toThrow('disk error');
   });
 
-  it('writeSnapshot swallows native module error', async () => {
+  it('writeSnapshot rejects on native module error', async () => {
     const mock = mockNativeStorage();
     mock.writeSnapshot.mockRejectedValue(new Error('disk error'));
-    // Should not throw
-    await writeSnapshot('data');
+    await expect(writeSnapshot('data')).rejects.toThrow('disk error');
+  });
+
+  it('deleteSnapshot rejects on native module error', async () => {
+    const mock = mockNativeStorage();
+    mock.deleteSnapshot.mockRejectedValue(new Error('disk error'));
+    await expect(deleteSnapshot()).rejects.toThrow('disk error');
   });
 });

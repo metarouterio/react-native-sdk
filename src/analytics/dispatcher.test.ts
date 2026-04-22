@@ -454,6 +454,27 @@ describe('Dispatcher', () => {
       ).toBe(true);
     });
 
+    it('restores events to memory if offline disk flush fails', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      opts.onFlushToDisk = jest.fn(async () => {
+        throw new Error('disk full');
+      });
+      opts.autoFlushThreshold = 9999;
+      const d = new Dispatcher(opts);
+
+      d.enqueue({ type: 'track', event: 'e1' } as any);
+      d.enqueue({ type: 'track', event: 'e2' } as any);
+      await d.flush();
+
+      expect(d.getQueueRef().map((e: any) => e.event)).toEqual(['e1', 'e2']);
+      expect(
+        (opts.warn as jest.Mock).mock.calls.some((c) =>
+          String(c[0]).includes('restored to memory')
+        )
+      ).toBe(true);
+    });
+
     it('offline log warns with queue count when no onFlushToDisk', async () => {
       const opts = baseOpts();
       opts.isNetworkAvailable = () => false;
@@ -610,6 +631,25 @@ describe('Dispatcher', () => {
       await d.flush();
 
       expect(opts.onFlushToDisk).not.toHaveBeenCalled();
+    });
+
+    it('awaits onFlushToDisk before resolving offline flush', async () => {
+      const opts = baseOpts();
+      opts.isNetworkAvailable = () => false;
+      opts.autoFlushThreshold = 9999;
+      let persisted = false;
+      opts.onFlushToDisk = jest.fn(async () => {
+        await Promise.resolve();
+        persisted = true;
+      });
+
+      const d = new Dispatcher(opts);
+      d.enqueue({ type: 'track', event: 'a' } as any);
+
+      await d.flush();
+
+      expect(persisted).toBe(true);
+      expect(d.getQueueRef().length).toBe(0);
     });
   });
 

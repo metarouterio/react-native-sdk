@@ -39,8 +39,8 @@ export interface DispatcherOptions {
   warn: (...args: any[]) => void;
   error: (...args: any[]) => void;
 
-  onCapacityOverflow?: (events: EventPayload[]) => void; // called with entire queue when byte cap is hit — flushes to disk
-  onFlushToDisk?: (events: EventPayload[]) => void; // called when flush triggers while offline — persists queue to disk
+  onCapacityOverflow?: (events: EventPayload[]) => void | Promise<void>; // called with entire queue when cap is hit
+  onFlushToDisk?: (events: EventPayload[]) => void | Promise<void>; // called when flush triggers while offline — persists queue to disk
   onFlushComplete?: () => void; // fires after successful online flush to trigger disk drain
   onScheduleFlushIn?: (ms: number) => void; // optional notification for tests/metrics
   onFatalConfig?: () => void; // 401/403/404 handler
@@ -79,6 +79,14 @@ export default class Dispatcher {
     const events = this.queue.splice(0);
     this.queueSizeBytes = 0;
     return events;
+  }
+
+  /**
+   * Restore events to the front without applying capacity overflow policy.
+   * Used only after a failed durability handoff so events are not lost.
+   */
+  restoreQueueFront(events: EventPayload[]): void {
+    this.requeueChunk(events);
   }
 
   start(): void {
@@ -171,7 +179,22 @@ export default class Dispatcher {
     if (this.opts.onCapacityOverflow) {
       const flushed = this.queue.splice(0);
       this.queueSizeBytes = 0;
-      this.opts.onCapacityOverflow(flushed);
+      try {
+        const result = this.opts.onCapacityOverflow(flushed);
+        void Promise.resolve(result).catch((err) => {
+          this.requeueChunk(flushed);
+          this.opts.warn(
+            'Capacity overflow persistence failed — restored events to memory',
+            err
+          );
+        });
+      } catch (err) {
+        this.requeueChunk(flushed);
+        this.opts.warn(
+          'Capacity overflow persistence failed — restored events to memory',
+          err
+        );
+      }
     } else {
       this.opts.warn(
         `Queue cap reached — dropping ${this.queue.length} event(s) (no overflow handler)`
@@ -291,12 +314,19 @@ export default class Dispatcher {
       while (this.queue.length) {
         if (!this.opts.isNetworkAvailable()) {
           if (this.opts.onFlushToDisk && this.opts.isPersistenceEnabled()) {
-            const flushed = this.queue.splice(0);
-            this.queueSizeBytes = 0;
-            this.opts.onFlushToDisk(flushed);
-            this.opts.warn(
-              `Offline — flushed ${flushed.length} event(s) to disk`
-            );
+            const flushed = this.drainQueue();
+            try {
+              await this.opts.onFlushToDisk(flushed);
+              this.opts.warn(
+                `Offline — flushed ${flushed.length} event(s) to disk`
+              );
+            } catch (err) {
+              this.requeueChunk(flushed);
+              this.opts.warn(
+                `Offline — failed to flush ${flushed.length} event(s) to disk; restored to memory`,
+                err
+              );
+            }
           } else {
             this.opts.warn(
               `Offline — pausing HTTP attempts, ${this.queue.length} event(s) queued`

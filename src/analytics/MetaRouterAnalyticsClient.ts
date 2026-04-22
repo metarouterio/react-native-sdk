@@ -157,9 +157,8 @@ export class MetaRouterAnalyticsClient {
       warn,
       error,
       onCapacityOverflow: (events) =>
-        void this.persistentQueue.flushEventsToDisk(events),
-      onFlushToDisk: (events) =>
-        void this.persistentQueue.flushEventsToDisk(events),
+        this.persistentQueue.bufferEventsForDisk(events),
+      onFlushToDisk: (events) => this.persistentQueue.flushEventsToDisk(events),
       onFlushComplete: () => {
         if (this.networkStatus === 'connected') {
           void this.persistentQueue.drainDiskToNetwork(this.dispatcher);
@@ -332,7 +331,9 @@ export class MetaRouterAnalyticsClient {
 
     // Check if we should flush to disk based on thresholds
     if (this.persistentQueue.shouldFlushToDisk()) {
-      void this.persistentQueue.flushToDisk();
+      void this.persistentQueue.flushToDisk().catch((err) => {
+        warn('Failed to flush queue to disk after threshold:', err);
+      });
     }
   }
 
@@ -368,8 +369,13 @@ export class MetaRouterAnalyticsClient {
       log('App moved to background');
       this.stopFlushLoop();
       this.clearNextTimer();
-      await this.flush();
-      await this.persistentQueue.flushToDisk();
+      try {
+        await this.flush();
+        await this.persistentQueue.flushToDisk();
+        await this.persistentQueue.flushPendingDiskWrites();
+      } catch (err) {
+        warn('Failed to persist queue while moving to background:', err);
+      }
     }
     if (nextState === 'active' && this.lifecycle === 'ready') {
       log('App moved to foreground');

@@ -185,6 +185,25 @@ describe('PersistentEventQueue', () => {
       expect(written.events[0].event).toBe('disk1');
       expect(written.events[1].event).toBe('mem1');
     });
+
+    it('restores memory events and rejects when native write fails', async () => {
+      const { mock } = mockNativeStorage();
+      mock.writeSnapshot.mockRejectedValueOnce(new Error('disk full'));
+
+      const dispatcher = createDispatcher();
+      dispatcher.enqueue({ type: 'track', event: 'mem1' } as any);
+      dispatcher.enqueue({ type: 'track', event: 'mem2' } as any);
+
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await expect(pq.flushToDisk()).rejects.toThrow('disk full');
+      expect(dispatcher.getQueueRef().map((e: any) => e.event)).toEqual([
+        'mem1',
+        'mem2',
+      ]);
+      expect(pq.hasDiskData).toBe(false);
+    });
   });
 
   describe('shouldFlushToDisk', () => {
@@ -325,7 +344,7 @@ describe('PersistentEventQueue', () => {
     });
 
     it('serializes concurrent writes (no races)', async () => {
-      const { mock } = mockNativeStorage();
+      const { mock, store } = mockNativeStorage();
 
       const dispatcher = createDispatcher();
       const { PersistentEventQueue } = require('../PersistentEventQueue');
@@ -337,6 +356,44 @@ describe('PersistentEventQueue', () => {
       await Promise.all([p1, p2]);
 
       expect(mock.writeSnapshot).toHaveBeenCalledTimes(2);
+      const written = JSON.parse(store.data!);
+      expect(written.events.map((e: any) => e.event)).toEqual(['a', 'b']);
+    });
+
+    it('rejects when native write fails', async () => {
+      const { mock } = mockNativeStorage();
+      mock.writeSnapshot.mockRejectedValueOnce(new Error('disk full'));
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      await expect(
+        pq.flushEventsToDisk([{ type: 'track', event: 'a' }])
+      ).rejects.toThrow('disk full');
+      expect(pq.hasDiskData).toBe(false);
+    });
+
+    it('keeps buffered overflow events pending when write fails and retries later', async () => {
+      const { mock, store } = mockNativeStorage();
+      mock.writeSnapshot
+        .mockRejectedValueOnce(new Error('disk full'))
+        .mockImplementation(async (data: string) => {
+          store.data = data;
+        });
+
+      const dispatcher = createDispatcher();
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.bufferEventsForDisk([{ type: 'track', event: 'overflowed' }]);
+
+      await expect(pq.flushPendingDiskWrites()).rejects.toThrow('disk full');
+      expect(store.data).toBeNull();
+
+      await pq.flushPendingDiskWrites();
+      const written = JSON.parse(store.data!);
+      expect(written.events.map((e: any) => e.event)).toEqual(['overflowed']);
     });
   });
 
@@ -360,6 +417,32 @@ describe('PersistentEventQueue', () => {
 
       expect(dispatcher.getQueueRef().length).toBe(0);
       expect((dispatcher as any).opts.fetchWithTimeout).toHaveBeenCalled();
+    });
+
+    it('flushes pending overflow writes before draining disk to network', async () => {
+      const { store } = mockNativeStorage();
+
+      store.data = JSON.stringify({
+        version: 1,
+        events: [{ type: 'track', event: 'disk1' }],
+      });
+
+      const sentEvents: string[] = [];
+      const dispatcher = createDispatcher({
+        fetchWithTimeout: jest.fn(async (_url?: string, init?: any) => {
+          const body = JSON.parse(init.body);
+          sentEvents.push(...body.batch.map((e: any) => e.event));
+          return { ok: true, status: 200 } as any;
+        }),
+      });
+      const { PersistentEventQueue } = require('../PersistentEventQueue');
+      const pq = new PersistentEventQueue(dispatcher);
+
+      pq.bufferEventsForDisk([{ type: 'track', event: 'overflow1' }]);
+      await pq.drainDiskToNetwork(dispatcher);
+
+      expect(sentEvents).toEqual(['disk1', 'overflow1']);
+      expect(store.data).toBeNull();
     });
 
     it('deletes disk file after drain and clears hasDiskData', async () => {

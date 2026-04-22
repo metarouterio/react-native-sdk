@@ -30,9 +30,8 @@ const DRAIN_BATCH_SIZE = 100;
  * Memory + disk coordination for the event queue.
  *
  * Single disk file (queue.v1.json) backs both crash-safety (background flush)
- * and offline overflow. All writes go through {@link flushEventsToDisk} which
- * reads existing disk contents, merges the new events, enforces the disk cap,
- * and atomically writes back.
+ * and offline overflow. All native file mutations run through one serialized
+ * lane so append, drain, and delete operations cannot interleave.
  *
  * On boot, {@link checkForPersistedEvents} does a cheap existence check and
  * sets {@link hasDiskData}. The in-memory queue starts empty; when online,
@@ -44,14 +43,34 @@ export class PersistentEventQueue {
   private readonly maxDiskEvents: number;
   private _hasDiskData: boolean = false;
 
-  /** Serializes all disk writes (flushEventsToDisk, flushToDisk). */
-  private diskWriteInFlight: Promise<void> | null = null;
+  /** Serializes every native file mutation: append, drain rewrite/delete, reset delete. */
+  private diskMutation: Promise<void> = Promise.resolve();
+  /**
+   * Capacity overflow happens from a synchronous enqueue path. These events
+   * are owned here until a native write succeeds, so a failed write does not
+   * silently discard them from JS memory.
+   */
+  private pendingDiskEvents: EventPayload[] = [];
+  private pendingFlushInFlight: Promise<void> | null = null;
   /** Guards drainDiskToNetwork (read-then-delete semantics). */
   private drainInFlight: Promise<void> | null = null;
 
   constructor(dispatcher: Dispatcher, opts?: { maxDiskEvents?: number }) {
     this.dispatcher = dispatcher;
     this.maxDiskEvents = opts?.maxDiskEvents ?? DEFAULT_MAX_DISK_EVENTS;
+  }
+
+  private enqueueDiskMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.diskMutation.then(fn, fn);
+    this.diskMutation = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private waitForDiskIdle(): Promise<void> {
+    return this.diskMutation;
   }
 
   /** True when a disk snapshot existed at boot or was written since. */
@@ -93,31 +112,78 @@ export class PersistentEventQueue {
     const queue = this.dispatcher.getQueueRef();
     if (queue.length === 0) return;
     const events = this.dispatcher.drainQueue();
-    return this.flushEventsToDisk(events);
+    try {
+      await this.flushEventsToDisk(events);
+    } catch (err) {
+      this.dispatcher.restoreQueueFront(events);
+      warn('Failed to flush queue to disk — restored events to memory:', err);
+      throw err;
+    }
   }
 
   /**
    * Append explicit events to the disk store (read-merge-cap-write).
-   * Called by dispatcher onCapacityOverflow / onFlushToDisk callbacks.
-   * Serialized against other disk writes.
+   * Called by lifecycle/offline paths that can await disk durability.
+   * Serialized against every other disk mutation.
    *
-   * No-op when persistence is disabled (maxDiskEvents === 0) — events
-   * passed here have already been spliced out of the memory queue by the
-   * dispatcher, so in 0-mode they are lost.
+   * No-op when persistence is disabled (maxDiskEvents === 0).
    */
   async flushEventsToDisk(events: EventPayload[]): Promise<void> {
     if (events.length === 0) return;
     if (this.maxDiskEvents === 0) return;
 
-    const prev = this.diskWriteInFlight;
-    const next = (async () => {
-      if (prev) await prev;
-      await this._doFlushEventsToDisk(events);
-    })();
-    this.diskWriteInFlight = next.finally(() => {
-      if (this.diskWriteInFlight === next) this.diskWriteInFlight = null;
+    await this.flushPendingDiskWrites();
+    return this.enqueueDiskMutation(() => this._doFlushEventsToDisk(events));
+  }
+
+  /**
+   * Own events from synchronous overflow paths until they are durable.
+   * The write is started immediately but errors are retained in the pending
+   * buffer for a later retry instead of being dropped.
+   */
+  bufferEventsForDisk(events: EventPayload[]): void {
+    if (events.length === 0 || this.maxDiskEvents === 0) return;
+    this.appendPendingDiskEvents(events);
+    void this.flushPendingDiskWrites().catch((err) => {
+      warn('Failed to flush pending disk events:', err);
     });
-    return this.diskWriteInFlight;
+  }
+
+  async flushPendingDiskWrites(): Promise<void> {
+    if (this.maxDiskEvents === 0) {
+      this.pendingDiskEvents = [];
+      return;
+    }
+    if (this.pendingFlushInFlight) return this.pendingFlushInFlight;
+
+    this.pendingFlushInFlight = this._flushPendingDiskWrites().finally(() => {
+      this.pendingFlushInFlight = null;
+    });
+    return this.pendingFlushInFlight;
+  }
+
+  private async _flushPendingDiskWrites(): Promise<void> {
+    while (this.pendingDiskEvents.length > 0) {
+      const events = this.pendingDiskEvents;
+      this.pendingDiskEvents = [];
+      try {
+        await this.enqueueDiskMutation(() => this._doFlushEventsToDisk(events));
+      } catch (err) {
+        this.pendingDiskEvents = events.concat(this.pendingDiskEvents);
+        throw err;
+      }
+    }
+  }
+
+  private appendPendingDiskEvents(events: EventPayload[]): void {
+    this.pendingDiskEvents.push(...events);
+    if (this.pendingDiskEvents.length > this.maxDiskEvents) {
+      const dropCount = this.pendingDiskEvents.length - this.maxDiskEvents;
+      this.pendingDiskEvents = this.pendingDiskEvents.slice(dropCount);
+      warn(
+        `Pending disk buffer cap reached — dropped ${dropCount} oldest events`
+      );
+    }
   }
 
   private async _doFlushEventsToDisk(events: EventPayload[]): Promise<void> {
@@ -148,6 +214,7 @@ export class PersistentEventQueue {
       );
     } catch (err) {
       warn('Failed to flush events to disk:', err);
+      throw err;
     }
   }
 
@@ -176,7 +243,16 @@ export class PersistentEventQueue {
   async drainDiskToNetwork(dispatcher: Dispatcher): Promise<void> {
     if (this.drainInFlight) return this.drainInFlight;
 
-    this.drainInFlight = this._doDrainDiskToNetwork(dispatcher).finally(() => {
+    this.drainInFlight = (async () => {
+      try {
+        await this.flushPendingDiskWrites();
+      } catch (err) {
+        warn('Disk drain continuing after pending write failure:', err);
+      }
+      await this.enqueueDiskMutation(() =>
+        this._doDrainDiskToNetwork(dispatcher)
+      );
+    })().finally(() => {
       this.drainInFlight = null;
     });
     return this.drainInFlight;
@@ -353,8 +429,19 @@ export class PersistentEventQueue {
    * Delete the disk store (used during reset).
    */
   async deleteSnapshot(): Promise<void> {
-    await nativeDeleteSnapshot();
-    this._hasDiskData = false;
+    if (this.pendingFlushInFlight) {
+      try {
+        await this.pendingFlushInFlight;
+      } catch (err) {
+        warn('Reset continuing after pending disk write failure:', err);
+      }
+    }
+    await this.waitForDiskIdle();
+    this.pendingDiskEvents = [];
+    await this.enqueueDiskMutation(async () => {
+      await nativeDeleteSnapshot();
+      this._hasDiskData = false;
+    });
   }
 
   private async _readExistingEvents(): Promise<EventPayload[]> {
