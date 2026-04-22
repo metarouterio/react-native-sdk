@@ -70,6 +70,41 @@ describe('MetaRouterAnalyticsClient', () => {
     );
   });
 
+  describe('flushIntervalSeconds clamping', () => {
+    it('clamps 0 to 1 for parity with native SDKs', async () => {
+      const client = new MetaRouterAnalyticsClient({
+        writeKey: 'test_write_key',
+        ingestionHost: 'https://example.com',
+        flushIntervalSeconds: 0,
+      });
+      await client.init();
+      const info = await client.getDebugInfo();
+      expect(info.flushIntervalSeconds).toBe(1);
+    });
+
+    it('clamps negative values to 1', async () => {
+      const client = new MetaRouterAnalyticsClient({
+        writeKey: 'test_write_key',
+        ingestionHost: 'https://example.com',
+        flushIntervalSeconds: -30,
+      });
+      await client.init();
+      const info = await client.getDebugInfo();
+      expect(info.flushIntervalSeconds).toBe(1);
+    });
+
+    it('passes positive values through unchanged', async () => {
+      const client = new MetaRouterAnalyticsClient({
+        writeKey: 'test_write_key',
+        ingestionHost: 'https://example.com',
+        flushIntervalSeconds: 30,
+      });
+      await client.init();
+      const info = await client.getDebugInfo();
+      expect(info.flushIntervalSeconds).toBe(30);
+    });
+  });
+
   it('adds a track event to the queue', async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
