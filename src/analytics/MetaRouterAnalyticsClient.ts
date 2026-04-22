@@ -87,7 +87,7 @@ export class MetaRouterAnalyticsClient {
 
     this.ingestionHost = ingestionHost;
     this.writeKey = writeKey;
-    this.flushIntervalSeconds = flushIntervalSeconds ?? 10;
+    this.flushIntervalSeconds = Math.max(1, flushIntervalSeconds ?? 10);
 
     // Validate + normalize persistence caps.
     const rawMaxDisk =

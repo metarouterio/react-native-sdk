@@ -189,11 +189,12 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 
 **Options:**
 
-- `writeKey` (string, required): Your write key
-- `ingestionHost` (string, required): Your MetaRouter ingestor host
-- `debug` (boolean, optional): Enable debug mode
-- `flushIntervalSeconds` (number, optional): Interval in seconds to flush events
-- `maxQueueBytes` (number, optional): max bytes (UTF-8) held in memory queue (default: 5MB)
+- `writeKey` (string, required): Your MetaRouter write key. Must not be empty.
+- `ingestionHost` (string, required): Your MetaRouter ingestion endpoint. Must be a valid http/https URL with no trailing slash.
+- `flushIntervalSeconds` (number, optional, default: `10`): How often the SDK attempts to send queued events. Values below 1 are clamped to 1.
+- `debug` (boolean, optional, default: `false`): Enables verbose SDK logging. Can also be toggled at runtime via `analytics.enableDebugLogging()`.
+- `maxQueueEvents` (number, optional, default: `2000`): Maximum events held in the in-memory queue. Values below 1 are clamped to 1. The queue is also bounded by a 5 MB byte cap — whichever limit is reached first triggers drop-oldest eviction.
+- `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Must be ≥ 0. Set to `0` to disable disk persistence (events are lost on app kill).
 
 **Proxy behavior (quick notes):**
 
@@ -302,7 +303,7 @@ await analytics.flush();
 
 ### Delivery & Backoff (How events flow under failures)
 
-Queue capacity: The SDK caps the in-memory queue at 5MB by default. When the cap is reached, the oldest events are dropped first (drop-oldest). You can change this via maxQueueBytes in createAnalyticsClient(options)
+Queue capacity: The SDK caps the in-memory queue at 5 MB (hardcoded). When either the 5 MB byte cap or the `maxQueueEvents` count cap is reached, the oldest events are dropped first (drop-oldest). Tune the event count via `maxQueueEvents` in `createAnalyticsClient(options)`.
 
 This SDK uses a circuit breaker around network I/O. It keeps ordering stable, avoids tight retry loops, and backs off cleanly when your cluster is unhealthy or throttling.
 
