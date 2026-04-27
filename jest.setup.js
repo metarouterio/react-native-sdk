@@ -11,6 +11,10 @@ jest.mock('react-native', () => ({
     OS: 'ios',
     select: jest.fn((obj) => obj.ios || obj.default),
   },
+  Linking: {
+    getInitialURL: jest.fn(() => Promise.resolve(null)),
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
   NativeModules: {
     MetaRouterQueueStorage: {
       exists: jest.fn(() => Promise.resolve(false)),

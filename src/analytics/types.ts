@@ -40,6 +40,13 @@ export interface InitOptions {
    * on app kill — documented tradeoff).
    */
   maxDiskEvents?: number;
+  /**
+   * Emit Application Opened/Backgrounded/Installed/Updated events.
+   * Defaults to false (opt-in). Matches iOS/Android parity — existing
+   * customers upgrading the SDK do not begin emitting lifecycle events
+   * until they explicitly set this to true.
+   */
+  trackLifecycleEvents?: boolean;
 }
 
 export interface AnalyticsInterface {
@@ -49,6 +56,15 @@ export interface AnalyticsInterface {
   screen: (name: string, props?: Record<string, any>) => void;
   page: (name: string, props?: Record<string, any>) => void;
   alias: (newUserId: string) => void;
+  /**
+   * Forward a URL the host received from `Linking` (or platform-specific
+   * URL handlers) so it is attached to the next `Application Opened`
+   * event. One-shot — buffer is cleared on emit; last-write-wins if
+   * called multiple times before the next Opened.
+   *
+   * No-op with a debug warning when `trackLifecycleEvents` is disabled.
+   */
+  openURL: (url: string, sourceApplication?: string) => void;
   setAdvertisingId: (advertisingId: string) => Promise<void>;
   clearAdvertisingId: () => Promise<void>;
   setTracing: (enabled: boolean) => void;
