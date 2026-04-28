@@ -3,6 +3,7 @@ import { Dimensions, PixelRatio, Platform } from 'react-native';
 import { getTimeZone } from './timezone';
 import pkg from '../../../package.json';
 import { EventContext } from '../types';
+import { AppContext } from './appContext';
 
 let cachedContext: EventContext | null = null;
 let cachedAdvertisingId: string | undefined;
@@ -25,15 +26,19 @@ export function clearContextCache(): void {
 /**
  * Gathers and caches device, app, and environment context information for analytics events.
  *
- * - Collects details such as app name/version, device model/type, OS, screen size, locale, timezone, and network status.
- * - Uses `react-native-device-info` and the current environment to populate fields.
+ * - Collects details such as device model/type, OS, screen size, locale, timezone, and network status.
+ * - Uses `react-native-device-info` and the current environment to populate device/os fields.
+ * - Reuses the caller-provided AppContext for the `app:` block so version/build
+ *   are sourced from the same snapshot used by lifecycle events.
  * - Caches the result for the lifetime of the app to avoid redundant async calls.
  * - Returns a context object suitable for event enrichment.
  *
+ * @param appContext - The host app identity snapshot (name, version, build, namespace).
  * @param advertisingId - Optional advertising identifier (IDFA on iOS, GAID on Android) for ad tracking and attribution.
  * @returns {Promise<EventContext>} A promise that resolves to the context information object.
  */
 export async function getContextInfo(
+  appContext: AppContext,
   advertisingId?: string
 ): Promise<EventContext> {
   // Return cached context only if it exists AND the advertising ID hasn't changed
@@ -76,10 +81,10 @@ export async function getContextInfo(
       version: DeviceInfo?.getSystemVersion?.() ?? 'unknown',
     },
     app: {
-      name: DeviceInfo?.getApplicationName?.() ?? 'unknown',
-      version: DeviceInfo?.getVersion?.() ?? pkg.version ?? 'unknown',
-      build: DeviceInfo?.getBuildNumber?.() ?? 'unknown',
-      namespace: DeviceInfo?.getBundleId?.() ?? 'unknown',
+      name: appContext.name,
+      version: appContext.version,
+      build: appContext.build,
+      namespace: appContext.namespace,
     },
     screen: {
       width: Math.round(width),

@@ -6,6 +6,14 @@ jest.mock('../../../package.json', () => ({
   version: '1.2.3',
 }));
 
+const buildAppContext = (overrides: Partial<Record<string, string>> = {}) => ({
+  name: 'unknown',
+  version: '2.3.4',
+  build: '567',
+  namespace: 'unknown',
+  ...overrides,
+});
+
 describe('getContextInfo', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -23,16 +31,13 @@ describe('getContextInfo', () => {
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      getVersion: () => '2.3.4',
-      getBuildNumber: () => '567',
-
       isWifiEnabled: () => Promise.resolve(true),
     }));
 
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = await getContextInfoMocked();
+    const context = await getContextInfoMocked(buildAppContext());
 
     expect(context).toEqual({
       app: {
@@ -73,11 +78,13 @@ describe('getContextInfo', () => {
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = await getContextInfoMocked();
+    const context = await getContextInfoMocked(
+      buildAppContext({ version: '1.2.3' })
+    );
 
     expect(context.device.manufacturer).toBe('unknown');
     expect(context.device.model).toBe('unknown');
-    expect(context.app.version).toBe('1.2.3'); // fallback to pkg.version
+    expect(context.app.version).toBe('1.2.3');
   });
 
   it('includes advertisingId in device context when provided', async () => {
@@ -87,9 +94,6 @@ describe('getContextInfo', () => {
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      getVersion: () => '2.3.4',
-      getBuildNumber: () => '567',
-
       isWifiEnabled: () => Promise.resolve(true),
     }));
 
@@ -97,7 +101,10 @@ describe('getContextInfo', () => {
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
     const advertisingId = 'IDFA-12345-67890-ABCDEF';
-    const context = await getContextInfoMocked(advertisingId);
+    const context = await getContextInfoMocked(
+      buildAppContext(),
+      advertisingId
+    );
 
     expect(context.device.advertisingId).toBe(advertisingId);
   });
@@ -109,16 +116,13 @@ describe('getContextInfo', () => {
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      getVersion: () => '2.3.4',
-      getBuildNumber: () => '567',
-
       isWifiEnabled: () => Promise.resolve(true),
     }));
 
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = await getContextInfoMocked();
+    const context = await getContextInfoMocked(buildAppContext());
 
     expect(context.device.advertisingId).toBeUndefined();
   });
@@ -145,15 +149,18 @@ describe('getContextInfo', () => {
         getDeviceId: () => 'o1s',
         getSystemName: () => 'Android',
         getSystemVersion: () => '14',
-        getVersion: () => '1.5.0',
-        getBuildNumber: () => '127',
-        getApplicationName: () => 'TestApp',
-        getBundleId: () => 'com.example.testapp',
         isWifiEnabled: () => Promise.resolve(true),
       }));
 
       const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
-      const context = await getContextInfoMocked();
+      const context = await getContextInfoMocked(
+        buildAppContext({
+          name: 'TestApp',
+          version: '1.5.0',
+          build: '127',
+          namespace: 'com.example.testapp',
+        })
+      );
 
       expect(context.device).toEqual({
         manufacturer: 'Samsung',
@@ -173,13 +180,11 @@ describe('getContextInfo', () => {
       getDevice: () => Promise.resolve('iPhone17,2'),
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      getVersion: () => '2.3.4',
-      getBuildNumber: () => '567',
       isWifiEnabled: () => Promise.resolve(true),
     }));
 
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
-    const context = await getContextInfoMocked();
+    const context = await getContextInfoMocked(buildAppContext());
 
     expect(context.device).toEqual({
       manufacturer: 'Apple',
@@ -196,16 +201,13 @@ describe('getContextInfo', () => {
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      getVersion: () => '2.3.4',
-      getBuildNumber: () => '567',
-
       isWifiEnabled: () => Promise.resolve(true),
     }));
 
     // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
-    const context = await getContextInfoMocked(undefined);
+    const context = await getContextInfoMocked(buildAppContext(), undefined);
 
     expect(context.device.advertisingId).toBeUndefined();
   });
