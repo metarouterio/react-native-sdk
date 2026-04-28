@@ -6,29 +6,63 @@ import {
   APPLICATION_BACKGROUNDED,
   UNKNOWN_PREVIOUS,
 } from './lifecycleEvents';
+import type { AppContext } from '../utils/appContext';
+import type Dispatcher from '../dispatcher';
+import type { EnrichedEventPayload } from '../types';
 
 describe('LifecycleEmitter', () => {
-  const versionInfo = { version: '1.4.0', build: '42' };
+  const appContext: AppContext = {
+    name: 'TestApp',
+    version: '1.4.0',
+    build: '42',
+    namespace: 'com.metarouter.test',
+  };
 
-  it('emits Application Installed with version + build', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+  const setup = () => {
+    const dispatcherEnqueue = jest.fn<void, [EnrichedEventPayload]>();
+    const dispatcher = { enqueue: dispatcherEnqueue } as unknown as Dispatcher;
+    const createTrackEvent = jest.fn(
+      (event: string, properties?: Record<string, any>): EnrichedEventPayload =>
+        ({
+          type: 'track',
+          event,
+          properties,
+          timestamp: '2026-04-28T00:00:00.000Z',
+          anonymousId: 'anon-test',
+          messageId: 'msg-test',
+          writeKey: 'wk-test',
+          context: { app: appContext } as any,
+        }) as EnrichedEventPayload
+    );
+    const emitter = new LifecycleEmitter(
+      dispatcher,
+      createTrackEvent,
+      appContext
+    );
+    return { emitter, dispatcherEnqueue, createTrackEvent };
+  };
 
-    emitter.emitInstalled(versionInfo);
+  it('emits Application Installed with version + build from appContext', () => {
+    const { emitter, dispatcherEnqueue, createTrackEvent } = setup();
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_INSTALLED, {
+    emitter.emitInstalled();
+
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_INSTALLED, {
       version: '1.4.0',
       build: '42',
     });
+    expect(dispatcherEnqueue).toHaveBeenCalledTimes(1);
+    expect(dispatcherEnqueue.mock.calls[0][0].event).toBe(
+      APPLICATION_INSTALLED
+    );
   });
 
   it('emits Application Updated with previous version + build', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitUpdated(versionInfo, { version: '1.3.0', build: '40' });
+    emitter.emitUpdated({ version: '1.3.0', build: '40' });
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_UPDATED, {
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_UPDATED, {
       version: '1.4.0',
       build: '42',
       previous_version: '1.3.0',
@@ -37,15 +71,14 @@ describe('LifecycleEmitter', () => {
   });
 
   it('emits Application Updated with unknown sentinel for SDK-upgrade case', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitUpdated(versionInfo, {
+    emitter.emitUpdated({
       version: UNKNOWN_PREVIOUS,
       build: UNKNOWN_PREVIOUS,
     });
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_UPDATED, {
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_UPDATED, {
       version: '1.4.0',
       build: '42',
       previous_version: 'unknown',
@@ -54,12 +87,11 @@ describe('LifecycleEmitter', () => {
   });
 
   it('emits Application Opened with from_background false on cold launch', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitOpened(versionInfo, false);
+    emitter.emitOpened(false);
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_OPENED, {
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_OPENED, {
       from_background: false,
       version: '1.4.0',
       build: '42',
@@ -67,12 +99,11 @@ describe('LifecycleEmitter', () => {
   });
 
   it('emits Application Opened with from_background true on resume', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitOpened(versionInfo, true);
+    emitter.emitOpened(true);
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_OPENED, {
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_OPENED, {
       from_background: true,
       version: '1.4.0',
       build: '42',
@@ -80,15 +111,14 @@ describe('LifecycleEmitter', () => {
   });
 
   it('includes url + referring_application when deep link is provided', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitOpened(versionInfo, false, {
+    emitter.emitOpened(false, {
       url: 'myapp://product/123',
       referringApplication: 'com.example.referrer',
     });
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_OPENED, {
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_OPENED, {
       from_background: false,
       version: '1.4.0',
       build: '42',
@@ -98,42 +128,21 @@ describe('LifecycleEmitter', () => {
   });
 
   it('omits url + referring_application when not provided', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent } = setup();
 
-    emitter.emitOpened(versionInfo, true, {});
+    emitter.emitOpened(true, {});
 
-    const props = track.mock.calls[0][1];
+    const props = createTrackEvent.mock.calls[0][1] as Record<string, any>;
     expect(props).not.toHaveProperty('url');
     expect(props).not.toHaveProperty('referring_application');
   });
 
   it('emits Application Backgrounded with empty properties', () => {
-    const track = jest.fn();
-    const emitter = new LifecycleEmitter(track, true);
+    const { emitter, createTrackEvent, dispatcherEnqueue } = setup();
 
     emitter.emitBackgrounded();
 
-    expect(track).toHaveBeenCalledWith(APPLICATION_BACKGROUNDED, {});
-  });
-
-  describe('disabled emitter', () => {
-    it('does not call track for any event when disabled', () => {
-      const track = jest.fn();
-      const emitter = new LifecycleEmitter(track, false);
-
-      emitter.emitInstalled(versionInfo);
-      emitter.emitUpdated(versionInfo, { version: '1.0.0', build: '1' });
-      emitter.emitOpened(versionInfo, false);
-      emitter.emitOpened(versionInfo, true);
-      emitter.emitBackgrounded();
-
-      expect(track).not.toHaveBeenCalled();
-    });
-
-    it('isEnabled reflects the constructor flag', () => {
-      expect(new LifecycleEmitter(jest.fn(), true).isEnabled()).toBe(true);
-      expect(new LifecycleEmitter(jest.fn(), false).isEnabled()).toBe(false);
-    });
+    expect(createTrackEvent).toHaveBeenCalledWith(APPLICATION_BACKGROUNDED, {});
+    expect(dispatcherEnqueue).toHaveBeenCalledTimes(1);
   });
 });
