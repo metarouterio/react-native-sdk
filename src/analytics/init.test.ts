@@ -38,6 +38,34 @@ describe('createAnalyticsClient', () => {
       undefined
     );
   });
+  it('routes recordOpenedURL to the initializing client instead of queueing it for replay', async () => {
+    // The proxy binds only after init() resolves, but the cold-launch
+    // Application Opened is emitted inside init(). A URL queued for replay
+    // would miss that Opened and attach to the next resume instead.
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    const spy = jest.spyOn(
+      MetaRouterAnalyticsClient.prototype,
+      'recordOpenedURL'
+    );
+    const { createAnalyticsClient } = require('./init');
+    const client = createAnalyticsClient({
+      ...opts,
+      trackLifecycleEvents: true,
+    });
+
+    client.recordOpenedURL('myapp://cold', 'com.example.referrer');
+
+    // Reached synchronously, while init() is still running.
+    expect(spy).toHaveBeenCalledWith('myapp://cold', 'com.example.referrer');
+
+    // Let init finish and tear the client down so its flush loop does not
+    // keep the worker alive.
+    await client.getAnonymousId();
+    await client.reset();
+  });
+
   it('creates a client with all analytics methods', async () => {
     const { createAnalyticsClient } = require('./init');
     const client = await createAnalyticsClient(opts);
@@ -67,6 +95,7 @@ describe('createAnalyticsClient', () => {
       const setRealClientSpy = jest.fn();
       jest.doMock('./proxy/proxyClient', () => ({
         setRealClient: setRealClientSpy,
+        setInitializingClient: jest.fn(),
         proxyClient: {},
       }));
       const { createAnalyticsClient } = require('./init');

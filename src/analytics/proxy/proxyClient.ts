@@ -10,6 +10,14 @@ const MAX_PENDING_CALLS = 20;
 
 let realClient: AnalyticsInterface | null = null;
 
+// The client whose init() is still running. recordOpenedURL only fills a
+// one-slot buffer that the cold-launch Application Opened reads during
+// init(), and the proxy binds only after init() resolves — so a cold-launch
+// URL queued for replay would always miss its own Opened and ride on the
+// next resume instead. Routing it here lets it land before that emit.
+let initializingClient: Pick<AnalyticsInterface, 'recordOpenedURL'> | null =
+  null;
+
 // Async-returning methods
 type AsyncMethod =
   | 'flush'
@@ -74,6 +82,13 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   }
 
   // No real client bound yet
+  if (methodName === 'recordOpenedURL' && initializingClient) {
+    initializingClient.recordOpenedURL(
+      ...(args as Parameters<AnalyticsInterface['recordOpenedURL']>)
+    );
+    return undefined as ReturnType<AnalyticsInterface[T]>;
+  }
+
   if (pendingCalls.length >= MAX_PENDING_CALLS) {
     const dropped = pendingCalls.shift();
     dropped?.reject?.(
@@ -144,8 +159,8 @@ export const proxyClient: AnalyticsInterface = {
   screen: (name, props) => handleMethodCall('screen', name, props),
   page: (name, props) => handleMethodCall('page', name, props),
   alias: (newUserId) => handleMethodCall('alias', newUserId),
-  openURL: (url, sourceApplication) =>
-    handleMethodCall('openURL', url, sourceApplication),
+  recordOpenedURL: (url, sourceApplication) =>
+    handleMethodCall('recordOpenedURL', url, sourceApplication),
   setAdvertisingId: (advertisingId) =>
     handleMethodCall('setAdvertisingId', advertisingId) as Promise<void>,
   clearAdvertisingId: () =>
@@ -158,6 +173,17 @@ export const proxyClient: AnalyticsInterface = {
   getDebugInfo: () => handleMethodCall('getDebugInfo'),
   getAnonymousId: () => handleMethodCall('getAnonymousId'),
 };
+
+/**
+ * Sets (or clears, with `null`) the client whose init() is in flight, so
+ * recordOpenedURL reaches it before the cold-launch Opened is emitted.
+ * Cleared as soon as init() settles, before binding.
+ */
+export function setInitializingClient(
+  client: Pick<AnalyticsInterface, 'recordOpenedURL'> | null
+) {
+  initializingClient = client;
+}
 
 /**
  * Binds or unbinds the real analytics client to the proxy and manages queued calls.

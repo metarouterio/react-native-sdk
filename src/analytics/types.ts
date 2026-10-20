@@ -59,12 +59,16 @@ export interface AnalyticsInterface {
   /**
    * Forward a URL the host received from `Linking` (or platform-specific
    * URL handlers) so it is attached to the next `Application Opened`
-   * event. One-shot — buffer is cleared on emit; last-write-wins if
-   * called multiple times before the next Opened.
+   * event. The SDK does not read `Linking` itself, so only URLs passed
+   * here are recorded — sanitize before forwarding. One-shot — buffer is
+   * cleared on emit; last-write-wins if called multiple times before the
+   * next Opened. Safe to call right after createAnalyticsClient(): a URL
+   * forwarded while initialization is running still reaches the
+   * cold-launch Opened.
    *
    * No-op with a debug warning when `trackLifecycleEvents` is disabled.
    */
-  openURL: (url: string, sourceApplication?: string) => void;
+  recordOpenedURL: (url: string, sourceApplication?: string) => void;
   setAdvertisingId: (advertisingId: string) => Promise<void>;
   clearAdvertisingId: () => Promise<void>;
   setTracing: (enabled: boolean) => void;

@@ -5,12 +5,7 @@ import {
   InitOptions,
   Lifecycle,
 } from './types';
-import {
-  AppState,
-  AppStateStatus,
-  Linking,
-  type EmitterSubscription,
-} from 'react-native';
+import { AppState, AppStateStatus } from 'react-native';
 import { log, setDebugLogging, warn, error } from './utils/logger';
 import { IdentityManager } from './IdentityManager';
 import { enrichEvent } from './utils/enrichEvent';
@@ -84,16 +79,18 @@ export class MetaRouterAnalyticsClient {
   // Opt-in by default. Existing customers upgrading the SDK do not begin
   // emitting lifecycle events without explicitly setting this to true.
   private trackLifecycleEvents: boolean = false;
-  // Buffers a deep-link captured by Linking.addEventListener('url') so the
-  // next Application Opened can carry it. One-shot — cleared on emit.
+  // Buffers a URL forwarded through recordOpenedURL() so the next
+  // Application Opened can carry it. One-shot — cleared on emit.
   private pendingDeepLink: DeepLinkInfo | null = null;
-  private linkingSubscription:
-    | EmitterSubscription
-    | { remove?: () => void }
-    | null = null;
   // Suppressed cold-launch Application Opened (process woke in background).
   // The next background→active transition emits an Opened with from_background:false.
   private coldLaunchOpenDeferred: boolean = false;
+  // Set when the app leaves the foreground for background, cleared on the
+  // next return to active. The resume Opened keys on this rather than on the
+  // last reported state: a return can pass through `inactive` (a FaceID or
+  // passcode prompt on resume), and comparing only the previous state would
+  // mistake it for a Control Center blip and drop the Opened.
+  private wasBackgrounded: boolean = false;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -451,8 +448,6 @@ export class MetaRouterAnalyticsClient {
   ): Promise<void> {
     const emitter = this.lifecycleEmitter;
     if (!emitter) {
-      // Without lifecycle events there is no consumer for deep links either,
-      // so skip the Linking listener too and stay completely silent.
       return;
     }
 
@@ -485,19 +480,6 @@ export class MetaRouterAnalyticsClient {
       warn('Lifecycle install/update detection failed:', err);
     }
 
-    // Capture any deep link that launched the app.
-    try {
-      const initialUrl = await Linking.getInitialURL();
-      if (initialUrl) {
-        this.pendingDeepLink = { url: initialUrl };
-      }
-    } catch {
-      // Linking unavailable in this environment — proceed without deep link.
-    }
-
-    // Register runtime URL listener for future deep links.
-    this.setupLinkingListener();
-
     // Cold-launch Opened only fires when the process is in foreground.
     // Background-launched processes (push, headless JS) defer to the next
     // background→active transition.
@@ -526,21 +508,6 @@ export class MetaRouterAnalyticsClient {
     }
   }
 
-  private setupLinkingListener() {
-    try {
-      const sub = Linking.addEventListener('url', (event: { url: string }) => {
-        if (event?.url) {
-          this.pendingDeepLink = { url: event.url };
-        }
-      });
-      this.linkingSubscription = sub as
-        | EmitterSubscription
-        | { remove?: () => void };
-    } catch {
-      // Linking unavailable in test/non-RN environments — silently skip.
-    }
-  }
-
   private consumePendingDeepLink(): DeepLinkInfo | undefined {
     if (!this.pendingDeepLink) return undefined;
     const dl = this.pendingDeepLink;
@@ -559,21 +526,28 @@ export class MetaRouterAnalyticsClient {
     const leavingForeground =
       previousState === 'active' &&
       (nextState === 'inactive' || nextState === 'background');
-    // Keyed on the state being entered, not the one being left: on iOS, RN
+    // Accepts inactive as well as active as the previous state: on iOS, RN
     // always reports active → inactive → background (RCTAppState emits
     // `inactive` on WillResignActive first), so requiring active → background
     // would mean Backgrounded never fires on iOS. Android has no `inactive`
-    // and goes straight to background.
+    // and goes straight to background. Other previous states (`unknown` or
+    // `extension` while a headless or push-woken process settles) never
+    // reached the foreground, so they must not emit a Backgrounded without
+    // an Opened before it.
     const enteringBackground =
-      nextState === 'background' && previousState !== 'background';
+      nextState === 'background' &&
+      (previousState === 'active' || previousState === 'inactive');
 
     if (leavingForeground || enteringBackground) {
       log('App moved to background');
       // Enqueued synchronously before the flush below so the event is part
       // of the same drain. On iOS the inactive step already flushed, so the
       // background step flushes again just to carry this one event out.
-      if (enteringBackground && this.lifecycle === 'ready') {
-        this.lifecycleEmitter?.emitBackgrounded();
+      if (enteringBackground) {
+        this.wasBackgrounded = true;
+        if (this.lifecycle === 'ready') {
+          this.lifecycleEmitter?.emitBackgrounded();
+        }
       }
       this.stopFlushLoop();
       this.clearNextTimer();
@@ -588,16 +562,19 @@ export class MetaRouterAnalyticsClient {
     if (nextState === 'active' && this.lifecycle === 'ready') {
       log('App moved to foreground');
       // Application Opened semantics:
-      //   - background→active: emit with from_background=true
-      //   - inactive→active (Control Center, FaceID, system alert): suppressed
+      //   - return after a background entry (directly or via inactive): emit
+      //     with from_background=true
+      //   - active→inactive→active (Control Center, FaceID, system alert):
+      //     suppressed
       //   - first foreground after a background-launched cold start: emit
       //     with from_background=false (deferred cold-launch Opened)
       if (this.coldLaunchOpenDeferred) {
         this.lifecycleEmitter?.emitOpened(false, this.consumePendingDeepLink());
         this.coldLaunchOpenDeferred = false;
-      } else if (previousState === 'background') {
+      } else if (this.wasBackgrounded) {
         this.lifecycleEmitter?.emitOpened(true, this.consumePendingDeepLink());
       }
+      this.wasBackgrounded = false;
       this.startFlushLoop();
       this.flush();
     }
@@ -611,22 +588,28 @@ export class MetaRouterAnalyticsClient {
    * is provided). One-shot — the buffer is cleared on the next Opened
    * emit. Last-write-wins if called multiple times before the next Opened.
    *
+   * The SDK never reads `Linking` itself: deep links routinely carry auth
+   * tokens and OTPs, and an automatic capture would race the host's own
+   * sanitized forward for the same one-slot buffer. Only what the host
+   * passes here reaches the event (parity with iOS recordOpenedURL and
+   * Android recordOpenedUrl).
+   *
    * No-op with a debug warning when `trackLifecycleEvents` is disabled —
    * silent no-ops are bad DX, hosts wiring this up should know they have
    * the feature flag off.
    */
-  openURL(url: string, sourceApplication?: string): void {
+  recordOpenedURL(url: string, sourceApplication?: string): void {
     // Gated on the option, not the emitter: the emitter is null until init()
     // builds it and again after reset(), and in those windows the
     // "disabled" warning would be wrong.
     if (!this.trackLifecycleEvents) {
       warn(
-        'openURL called but trackLifecycleEvents is disabled — buffered URL ignored. Set trackLifecycleEvents: true in InitOptions to enable.'
+        'recordOpenedURL called but trackLifecycleEvents is disabled — buffered URL ignored. Set trackLifecycleEvents: true in InitOptions to enable.'
       );
       return;
     }
     if (!url || typeof url !== 'string') {
-      warn('openURL called with invalid url — ignored');
+      warn('recordOpenedURL called with invalid url — ignored');
       return;
     }
     this.pendingDeepLink = sourceApplication
@@ -855,10 +838,9 @@ export class MetaRouterAnalyticsClient {
     this.dispatcher.stop();
     this.appStateSubscription?.remove?.();
     this.appStateSubscription = null;
-    this.linkingSubscription?.remove?.();
-    this.linkingSubscription = null;
     this.pendingDeepLink = null;
     this.coldLaunchOpenDeferred = false;
+    this.wasBackgrounded = false;
     this.lifecycleEmitter = null;
 
     this.dispatcher.reset();

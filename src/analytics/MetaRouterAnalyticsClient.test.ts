@@ -1274,6 +1274,7 @@ describe('MetaRouterAnalyticsClient', () => {
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
       // Seed appState to 'background' so the transition is recognized.
       (client as any).appState = 'background';
+      (client as any).wasBackgrounded = true;
       RN.AppState.currentState = 'active';
       handler('active');
 
@@ -1351,6 +1352,53 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(flushSpy).toHaveBeenCalledTimes(2);
     });
 
+    it('emits the resume Opened when the return passes through inactive', async () => {
+      // e.g. a FaceID or passcode prompt on resume: background → inactive →
+      // active. Must not be treated as a Control Center blip.
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'active';
+      await handler('inactive');
+      await handler('background');
+      await handler('inactive');
+      await handler('active');
+
+      const names = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event?.startsWith('Application '))
+        .map((e: any) => [e.event, e.properties?.from_background]);
+      expect(names).toEqual([
+        ['Application Backgrounded', undefined],
+        ['Application Opened', true],
+      ]);
+    });
+
+    it('does not emit Backgrounded for a process that never reached the foreground', async () => {
+      // Headless JS / push wake: AppState settles from `unknown` straight to
+      // background. A Backgrounded here would have no Opened before it.
+      const RN = require('react-native');
+      RN.AppState.currentState = 'unknown';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'unknown';
+      await handler('background');
+
+      const backgrounded = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event === 'Application Backgrounded');
+      expect(backgrounded).toHaveLength(0);
+    });
+
     it('emits Application Opened with from_background=true on background→active', async () => {
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
       await client.init();
@@ -1360,6 +1408,8 @@ describe('MetaRouterAnalyticsClient', () => {
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
 
       (client as any).appState = 'background';
+
+      (client as any).wasBackgrounded = true;
       handler('active');
 
       const opened = client.queue
@@ -1385,59 +1435,42 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(opened).toBeUndefined();
     });
 
-    it('attaches the cold-launch URL from Linking.getInitialURL to Application Opened', async () => {
+    it('never reads Linking: URLs reach Opened only through recordOpenedURL', async () => {
+      // Deep links carry auth tokens and OTPs. If the SDK captured Linking
+      // itself, the raw URL would race the host's sanitized forward for the
+      // same one-slot buffer and could win.
       const RN = require('react-native');
       (RN.Linking.getInitialURL as jest.Mock).mockResolvedValue(
-        'myapp://path/to/resource'
+        'myapp://reset?token=secret'
       );
 
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
       await client.init();
 
+      expect(RN.Linking.getInitialURL).not.toHaveBeenCalled();
+      expect(RN.Linking.addEventListener).not.toHaveBeenCalled();
       const opened = client.queue.find(
         (e) => e.type === 'track' && e.event === 'Application Opened'
       );
       expect(opened).toBeDefined();
-      expect(opened!.properties?.url).toBe('myapp://path/to/resource');
+      expect(opened!.properties?.url).toBeUndefined();
     });
 
-    it('attaches a runtime URL event to the next Application Opened (one-shot)', async () => {
-      const RN = require('react-native');
-      let urlListener: ((event: { url: string }) => void) | null = null;
-      (RN.Linking.addEventListener as jest.Mock).mockImplementation(
-        (_evt: string, cb: any) => {
-          urlListener = cb;
-          return { remove: jest.fn() };
-        }
-      );
-
+    it('attaches a URL forwarded during init() to the cold-launch Application Opened', async () => {
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
-      await client.init();
-      disableDispatcherFlush(client);
+      const initDone = client.init();
+      client.recordOpenedURL('myapp://cold', 'com.example.referrer');
+      await initDone;
 
-      // Simulate a runtime URL arriving while the app is active.
-      urlListener!({ url: 'myapp://from-runtime' });
-
-      const startIndex = client.queue.length;
-      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
-      (client as any).appState = 'background';
-      handler('active');
-
-      const opened = client.queue
-        .slice(startIndex)
-        .find((e) => e.type === 'track' && e.event === 'Application Opened');
-      expect(opened).toBeDefined();
-      expect(opened!.properties?.url).toBe('myapp://from-runtime');
-
-      // Buffer should be cleared after emit; second foreground does not carry the same URL.
-      const startIndex2 = client.queue.length;
-      (client as any).appState = 'background';
-      handler('active');
-      const opened2 = client.queue
-        .slice(startIndex2)
-        .find((e) => e.type === 'track' && e.event === 'Application Opened');
-      expect(opened2).toBeDefined();
-      expect(opened2!.properties?.url).toBeUndefined();
+      const opened = client.queue.filter(
+        (e) => e.type === 'track' && e.event === 'Application Opened'
+      );
+      expect(opened).toHaveLength(1);
+      expect(opened[0].properties).toMatchObject({
+        from_background: false,
+        url: 'myapp://cold',
+        referring_application: 'com.example.referrer',
+      });
     });
 
     it('emits no lifecycle events when trackLifecycleEvents is false', async () => {
@@ -1454,6 +1487,7 @@ describe('MetaRouterAnalyticsClient', () => {
       (client as any).appState = 'active';
       handler('background');
       (client as any).appState = 'background';
+      (client as any).wasBackgrounded = true;
       handler('active');
 
       const newEvents = client.queue.slice(startIndex);
@@ -1480,18 +1514,19 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(removedKeys).not.toContain('metarouter:lifecycle:build');
     });
 
-    describe('openURL public API', () => {
+    describe('recordOpenedURL public API', () => {
       it('attaches the buffered URL to the next Application Opened', async () => {
         const client = new MetaRouterAnalyticsClient(lifecycleOpts);
         await client.init();
         disableDispatcherFlush(client);
 
-        client.openURL('myapp://from-host');
+        client.recordOpenedURL('myapp://from-host');
 
         const startIndex = client.queue.length;
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened = client.queue
@@ -1506,12 +1541,13 @@ describe('MetaRouterAnalyticsClient', () => {
         await client.init();
         disableDispatcherFlush(client);
 
-        client.openURL('myapp://from-host', 'com.example.referrer');
+        client.recordOpenedURL('myapp://from-host', 'com.example.referrer');
 
         const startIndex = client.queue.length;
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened = client.queue
@@ -1528,14 +1564,15 @@ describe('MetaRouterAnalyticsClient', () => {
         await client.init();
         disableDispatcherFlush(client);
 
-        client.openURL('myapp://first');
-        client.openURL('myapp://second');
-        client.openURL('myapp://third');
+        client.recordOpenedURL('myapp://first');
+        client.recordOpenedURL('myapp://second');
+        client.recordOpenedURL('myapp://third');
 
         const startIndex = client.queue.length;
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened = client.queue
@@ -1549,15 +1586,17 @@ describe('MetaRouterAnalyticsClient', () => {
         await client.init();
         disableDispatcherFlush(client);
 
-        client.openURL('myapp://once');
+        client.recordOpenedURL('myapp://once');
 
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const startIndex2 = client.queue.length;
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened2 = client.queue
@@ -1577,12 +1616,13 @@ describe('MetaRouterAnalyticsClient', () => {
         });
         await client.init();
 
-        client.openURL('myapp://ignored');
+        client.recordOpenedURL('myapp://ignored');
 
         const startIndex = client.queue.length;
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened = client.queue
@@ -1603,13 +1643,14 @@ describe('MetaRouterAnalyticsClient', () => {
         await client.init();
         disableDispatcherFlush(client);
 
-        client.openURL('');
-        client.openURL(undefined as unknown as string);
+        client.recordOpenedURL('');
+        client.recordOpenedURL(undefined as unknown as string);
 
         const startIndex = client.queue.length;
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
         handler('active');
 
         const opened = client.queue
