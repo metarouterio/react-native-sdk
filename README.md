@@ -215,7 +215,7 @@ The analytics client provides the following methods:
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `page(name: string, properties?: Record<string, any>)`: Track page views
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
-- `openURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a debug warning) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
+- `recordOpenedURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. The SDK does not read `Linking` itself, so only URLs passed here are recorded. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a debug warning) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
@@ -262,15 +262,15 @@ Opt-in. When enabled, the SDK emits four lifecycle events that mirror the iOS an
 | --------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `Application Installed`     | First launch with no prior version stored and no prior identity state. | `version`, `build`                                                                                        |
 | `Application Updated`       | First launch where the stored version/build differs from the current. | `version`, `build`, `previous_version`, `previous_build`                                                  |
-| `Application Opened`        | Cold launch (foreground) and `background → active` resume transitions. | `from_background` (false on cold launch, true on resume), `version`, `build`, optional `url`, optional `referring_application` |
-| `Application Backgrounded`  | App enters background.                                                 | _(none)_                                                                                                  |
+| `Application Opened`        | Cold launch (foreground) and every return to the foreground after a background entry. | `from_background` (false on cold launch, true on resume), `version`, `build`, optional `url`, optional `referring_application` |
+| `Application Backgrounded`  | App enters background from the foreground.                             | _(none)_                                                                                                  |
 
 ### Enabling lifecycle events
 
 Lifecycle events are **opt-in** — existing customers upgrading the SDK do not begin emitting these events without explicitly setting the flag. To enable:
 
 ```js
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
   trackLifecycleEvents: true, // default: false
@@ -279,7 +279,8 @@ const analytics = await createAnalyticsClient({
 
 ### Notes
 
-- `inactive → active` transitions (Control Center, FaceID prompt, system alerts) are **suppressed**. Only `background → active` emits `Application Opened`.
+- `active → inactive → active` blips (Control Center, a FaceID prompt, system alerts) are **suppressed**. `Application Opened` with `from_background: true` needs a real background entry first; a return that passes through `inactive` (e.g. a passcode prompt on resume) still counts.
+- On iOS, React Native reports `active → inactive → background` when the app is left; `Application Backgrounded` fires on the `background` step. A process that never reached the foreground (headless task, push wake) does not emit `Application Backgrounded`.
 - Cold launches in a background process state (silent push, headless task) suppress the cold-launch `Application Opened`; the next `background → active` transition emits with `from_background: false` as the cold-launch bridge.
 - Existing users upgrading from a pre-lifecycle SDK build receive `Application Updated` with `previous_version="unknown"` and `previous_build="unknown"` (instead of a spurious `Application Installed`).
 - Lifecycle storage (`metarouter:lifecycle:version`, `metarouter:lifecycle:build`) is **not** cleared by `reset()` — install/update history survives logout.
@@ -287,33 +288,40 @@ const analytics = await createAnalyticsClient({
 
 ### Deep-link wiring
 
-The SDK captures the cold-launch URL via `Linking.getInitialURL()` and runtime URL events via `Linking.addEventListener('url', ...)` automatically. The next `Application Opened` carries `url` (and optional `referring_application`).
-
-If your host receives URLs from a non-`Linking` source (a UIScene URL handler on iOS, an Android `Intent.ACTION_VIEW`, or any custom intent surface), forward them through the public `openURL` API so they participate in the same one-shot buffer:
+The SDK does **not** read `Linking` itself, the same as the iOS and Android SDKs: only URLs your app forwards through `recordOpenedURL` are attached to `Application Opened` (as `url`, plus `referring_application` when you pass one). Forward the cold-launch URL and runtime URL events:
 
 ```js
 import { Linking } from "react-native";
 
-// Auto-capture covers most apps. The example below is for hosts that need
-// to forward URLs from outside Linking (custom native modules, deep-link
-// libraries that bypass Linking, etc.).
+const analytics = createAnalyticsClient({ /* ... */ trackLifecycleEvents: true });
+
+// Cold launch: safe to call right after createAnalyticsClient(). A URL
+// forwarded while initialization is still running reaches the cold-launch
+// Application Opened.
+Linking.getInitialURL().then((url) => {
+  if (url) analytics.recordOpenedURL(url);
+});
+
+// Resume: attached to the next Application Opened.
 Linking.addEventListener("url", ({ url }) => {
-  analytics.openURL(url);
+  analytics.recordOpenedURL(url);
 });
 
 // With a referring application (typically forwarded from native):
-analytics.openURL("myapp://product/123", "com.example.referrer");
+analytics.recordOpenedURL("myapp://product/123", "com.example.referrer");
 ```
+
+URLs from outside `Linking` (a UIScene URL handler on iOS, an Android `Intent.ACTION_VIEW`, a deep-link library such as Branch) are forwarded the same way.
 
 **Buffer semantics:**
 
 - One-shot — the buffer is cleared after the next `Application Opened` emits.
-- Last-write-wins — multiple `openURL` calls before the next Opened keep only the most recent URL.
+- Last-write-wins — multiple `recordOpenedURL` calls before the next Opened keep only the most recent URL.
 - No-op with a debug warning when `trackLifecycleEvents` is disabled, so misconfigurations surface in logs instead of failing silently.
 
 ### Privacy & sanitization
 
-URLs can contain sensitive material (auth tokens, OTPs, magic-link secrets, PII in query strings). The SDK forwards the URL verbatim — sanitization is the host's responsibility:
+URLs can contain sensitive material (auth tokens, OTPs, magic-link secrets, PII in query strings). The SDK records the URL verbatim, and because it only records what you forward, sanitizing before the call is enough:
 
 ```js
 function sanitize(url) {
@@ -324,17 +332,15 @@ function sanitize(url) {
 }
 
 Linking.addEventListener("url", ({ url }) => {
-  analytics.openURL(sanitize(url));
+  analytics.recordOpenedURL(sanitize(url));
 });
 ```
 
 ### Why the SDK does not auto-instrument deep links
 
-The SDK uses `Linking` directly because it is the canonical RN deep-link surface. Beyond that, it does not swizzle, proxy, or auto-attach to host-defined deep-link handlers. Reasons:
-
-- **No swizzling.** Method swizzling on the iOS native side conflicts with hosts that already swizzle (Firebase, Branch, etc.).
-- **Privacy footgun.** Hosts often receive URLs that contain credentials. Forcing capture without an explicit forwarding step would log secrets unintentionally.
-- **Host control.** Apps with custom URL routers or deep-link libraries (react-navigation linking, react-native-firebase dynamic links, Branch) need to decide *if* and *which* URLs reach analytics — `openURL` is the explicit hand-off point.
+- **Privacy.** Hosts often receive URLs that contain credentials. Capturing them automatically would record secrets before the app has a chance to strip them.
+- **Host control.** Apps with custom URL routers or deep-link libraries (react-navigation linking, react-native-firebase dynamic links, Branch) need to decide *if* and *which* URLs reach analytics — `recordOpenedURL` is the explicit hand-off point.
+- **Parity.** The iOS (`recordOpenedURL`) and Android (`recordOpenedUrl`) SDKs work the same way, so the same app behaves the same on every platform.
 
 ## ✅ Compatibility
 
