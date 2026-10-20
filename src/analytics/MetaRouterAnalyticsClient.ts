@@ -1,4 +1,10 @@
-import { EventContext, EventPayload, InitOptions, Lifecycle } from './types';
+import {
+  EnrichedEventPayload,
+  EventContext,
+  EventPayload,
+  InitOptions,
+  Lifecycle,
+} from './types';
 import {
   AppState,
   AppStateStatus,
@@ -27,7 +33,6 @@ import {
 import {
   LifecycleEmitter,
   type DeepLinkInfo,
-  type VersionInfo,
   UNKNOWN_PREVIOUS,
 } from './lifecycle/lifecycleEvents';
 import CircuitBreaker from './utils/circuitBreaker';
@@ -73,21 +78,12 @@ export class MetaRouterAnalyticsClient {
   private networkMonitor: NetworkReachability;
   private networkStatus: NetworkStatus = 'connected';
   private unsubscribeNetwork: (() => void) | null = null;
-  private lifecycleEmitter!: LifecycleEmitter;
+  // Only constructed when trackLifecycleEvents is true, so every emit site
+  // is a null-safe call and a disabled client never builds lifecycle payloads.
+  private lifecycleEmitter: LifecycleEmitter | null = null;
   // Opt-in by default. Existing customers upgrading the SDK do not begin
   // emitting lifecycle events without explicitly setting this to true.
   private trackLifecycleEvents: boolean = false;
-  // Snapshot of the bundle-derived app metadata. Populated once during init
-  // (from this.context.app) and reused everywhere lifecycle needs version /
-  // build, so the cold-launch / resume / background paths do not re-derive
-  // the same fields independently.
-  private appContext!: {
-    name: string;
-    version: string;
-    build: string;
-    namespace: string;
-  };
-  private lastAppState: AppStateStatus = AppState.currentState;
   // Buffers a deep-link captured by Linking.addEventListener('url') so the
   // next Application Opened can carry it. One-shot — cleared on emit.
   private pendingDeepLink: DeepLinkInfo | null = null;
@@ -223,10 +219,6 @@ export class MetaRouterAnalyticsClient {
     this.persistentQueue = new PersistentEventQueue(this.dispatcher, {
       maxDiskEvents: this.maxDiskEvents,
     });
-    this.lifecycleEmitter = new LifecycleEmitter(
-      (name, properties) => this.track(name, properties),
-      this.trackLifecycleEvents
-    );
   }
 
   /**
@@ -252,6 +244,13 @@ export class MetaRouterAnalyticsClient {
 
     this.initPromise = (async () => {
       try {
+        // Must be read before identityManager.init(): init() generates and
+        // persists an anonymousId on first launch, so checking afterwards
+        // would make every fresh install look like an upgrade from a
+        // pre-lifecycle build and emit Updated(unknown) instead of Installed.
+        const hadIdentityBeforeInit = this.trackLifecycleEvents
+          ? await this.hasIdentityState()
+          : false;
         await this.identityManager.init();
 
         // Cheap existence check — memory queue starts empty. Any on-disk
@@ -272,15 +271,28 @@ export class MetaRouterAnalyticsClient {
           this.appContext,
           persistedAdvertisingId || undefined
         );
-        this.appContext = this.context.app;
+
+        if (this.trackLifecycleEvents) {
+          this.lifecycleEmitter = new LifecycleEmitter(
+            this.dispatcher,
+            (event, properties) =>
+              this.buildEnrichedEvent({
+                type: 'track',
+                event,
+                properties,
+                timestamp: this.now(),
+              }),
+            this.appContext
+          );
+        }
 
         this.lifecycle = 'ready';
 
         // Lifecycle: detect install/update + capture deep link, then emit
-        // the cold-launch sequence. Runs after `ready` so track() accepts
-        // the events, and before the network/disk drain block below so
-        // these events join the first flush batch.
-        await this.runColdLaunchLifecycle();
+        // the cold-launch sequence. Runs after `ready` so the events carry
+        // the final identity/context, and before the network/disk drain
+        // block below so they join the first flush batch.
+        await this.runColdLaunchLifecycle(hadIdentityBeforeInit);
 
         // Set initial network state and subscribe to changes
         this.networkStatus = this.networkMonitor.currentStatus;
@@ -371,6 +383,16 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
+   * Adds identity, writeKey, context and messageId to a raw event. Shared by
+   * enqueue() and the lifecycle emitter so both paths produce identical
+   * payloads.
+   */
+  private buildEnrichedEvent(event: EventPayload): EnrichedEventPayload {
+    const eventWithIdentity = this.identityManager.addIdentityInfo(event);
+    return enrichEvent(eventWithIdentity, this.writeKey, this.context);
+  }
+
+  /**
    * Enqueues an event for processing.
    * @param event - The event to enqueue.
    */
@@ -380,14 +402,7 @@ export class MetaRouterAnalyticsClient {
       return;
     }
 
-    const eventWithIdentity = this.identityManager.addIdentityInfo(event);
-    const enrichedEvent = enrichEvent(
-      eventWithIdentity,
-      this.writeKey,
-      this.context
-    );
-
-    this.dispatcher.enqueue(enrichedEvent);
+    this.dispatcher.enqueue(this.buildEnrichedEvent(event));
 
     // Check if we should flush to disk based on thresholds
     if (this.persistentQueue.shouldFlushToDisk()) {
@@ -414,22 +429,10 @@ export class MetaRouterAnalyticsClient {
    * Sets up the app state listener.
    */
   private setupAppStateListener() {
-    this.lastAppState = AppState.currentState;
     this.appStateSubscription = AppState.addEventListener(
       'change',
       this.handleAppStateChange
     );
-  }
-
-  /**
-   * Snapshot of the cached app version + build, used by every lifecycle
-   * emit path so they all observe the same single source of truth.
-   */
-  private versionInfo(): VersionInfo {
-    return {
-      version: this.appContext?.version ?? 'unknown',
-      build: this.appContext?.build ?? 'unknown',
-    };
   }
 
   /**
@@ -439,15 +442,21 @@ export class MetaRouterAnalyticsClient {
    * Opened with from_background=false.
    *
    * No-ops when trackLifecycleEvents is false.
+   *
+   * @param hadIdentityBeforeInit - Whether identity existed in storage before
+   *   IdentityManager.init() ran on this launch (see init()).
    */
-  private async runColdLaunchLifecycle(): Promise<void> {
-    if (!this.lifecycleEmitter.isEnabled()) {
-      // Still register the deep-link listener? No — without lifecycle events
-      // there is no consumer for it. Stay completely silent.
+  private async runColdLaunchLifecycle(
+    hadIdentityBeforeInit: boolean
+  ): Promise<void> {
+    const emitter = this.lifecycleEmitter;
+    if (!emitter) {
+      // Without lifecycle events there is no consumer for deep links either,
+      // so skip the Linking listener too and stay completely silent.
       return;
     }
 
-    const versionInfo = this.versionInfo();
+    const { version, build } = this.appContext;
 
     try {
       const [storedVersion, storedBuild] = await Promise.all([
@@ -456,26 +465,22 @@ export class MetaRouterAnalyticsClient {
       ]);
 
       if (storedVersion == null && storedBuild == null) {
-        const upgradedFromPreLifecycle = await this.hasIdentityState();
-        if (upgradedFromPreLifecycle) {
-          this.lifecycleEmitter.emitUpdated(versionInfo, {
+        if (hadIdentityBeforeInit) {
+          emitter.emitUpdated({
             version: UNKNOWN_PREVIOUS,
             build: UNKNOWN_PREVIOUS,
           });
         } else {
-          this.lifecycleEmitter.emitInstalled(versionInfo);
+          emitter.emitInstalled();
         }
-      } else if (
-        storedVersion !== versionInfo.version ||
-        storedBuild !== versionInfo.build
-      ) {
-        this.lifecycleEmitter.emitUpdated(versionInfo, {
+      } else if (storedVersion !== version || storedBuild !== build) {
+        emitter.emitUpdated({
           version: storedVersion ?? UNKNOWN_PREVIOUS,
           build: storedBuild ?? UNKNOWN_PREVIOUS,
         });
       }
 
-      await setLifecycleVersionBuild(versionInfo.version, versionInfo.build);
+      await setLifecycleVersionBuild(version, build);
     } catch (err) {
       warn('Lifecycle install/update detection failed:', err);
     }
@@ -497,8 +502,7 @@ export class MetaRouterAnalyticsClient {
     // Background-launched processes (push, headless JS) defer to the next
     // background→active transition.
     if (AppState.currentState === 'active') {
-      const deepLink = this.consumePendingDeepLink();
-      this.lifecycleEmitter.emitOpened(versionInfo, false, deepLink);
+      emitter.emitOpened(false, this.consumePendingDeepLink());
     } else {
       this.coldLaunchOpenDeferred = true;
     }
@@ -549,19 +553,27 @@ export class MetaRouterAnalyticsClient {
    * @param nextState - The new app state.
    */
   private handleAppStateChange = async (nextState: AppStateStatus) => {
-    const isBackgroundEntry =
-      this.appState === 'active' && nextState === 'background';
-    const isInactiveEntry =
-      this.appState === 'active' && nextState === 'inactive';
+    const previousState = this.appState;
+    this.appState = nextState;
 
-    if (isBackgroundEntry || isInactiveEntry) {
+    const leavingForeground =
+      previousState === 'active' &&
+      (nextState === 'inactive' || nextState === 'background');
+    // Keyed on the state being entered, not the one being left: on iOS, RN
+    // always reports active → inactive → background (RCTAppState emits
+    // `inactive` on WillResignActive first), so requiring active → background
+    // would mean Backgrounded never fires on iOS. Android has no `inactive`
+    // and goes straight to background.
+    const enteringBackground =
+      nextState === 'background' && previousState !== 'background';
+
+    if (leavingForeground || enteringBackground) {
       log('App moved to background');
-      // Emit Application Backgrounded only on a true background entry
-      // (matches iOS/Android semantics: inactive transitions are suppressed).
-      // The track() enqueue runs synchronously before the flush below so the
-      // event is part of the same drain.
-      if (isBackgroundEntry && this.lifecycle === 'ready') {
-        this.lifecycleEmitter.emitBackgrounded();
+      // Enqueued synchronously before the flush below so the event is part
+      // of the same drain. On iOS the inactive step already flushed, so the
+      // background step flushes again just to carry this one event out.
+      if (enteringBackground && this.lifecycle === 'ready') {
+        this.lifecycleEmitter?.emitBackgrounded();
       }
       this.stopFlushLoop();
       this.clearNextTimer();
@@ -581,24 +593,14 @@ export class MetaRouterAnalyticsClient {
       //   - first foreground after a background-launched cold start: emit
       //     with from_background=false (deferred cold-launch Opened)
       if (this.coldLaunchOpenDeferred) {
-        this.lifecycleEmitter.emitOpened(
-          this.versionInfo(),
-          false,
-          this.consumePendingDeepLink()
-        );
+        this.lifecycleEmitter?.emitOpened(false, this.consumePendingDeepLink());
         this.coldLaunchOpenDeferred = false;
-      } else if (this.lastAppState === 'background') {
-        this.lifecycleEmitter.emitOpened(
-          this.versionInfo(),
-          true,
-          this.consumePendingDeepLink()
-        );
+      } else if (previousState === 'background') {
+        this.lifecycleEmitter?.emitOpened(true, this.consumePendingDeepLink());
       }
       this.startFlushLoop();
       this.flush();
     }
-    this.appState = nextState;
-    this.lastAppState = nextState;
   };
 
   /**
@@ -614,7 +616,10 @@ export class MetaRouterAnalyticsClient {
    * the feature flag off.
    */
   openURL(url: string, sourceApplication?: string): void {
-    if (!this.lifecycleEmitter || !this.lifecycleEmitter.isEnabled()) {
+    // Gated on the option, not the emitter: the emitter is null until init()
+    // builds it and again after reset(), and in those windows the
+    // "disabled" warning would be wrong.
+    if (!this.trackLifecycleEvents) {
       warn(
         'openURL called but trackLifecycleEvents is disabled — buffered URL ignored. Set trackLifecycleEvents: true in InitOptions to enable.'
       );
@@ -854,6 +859,7 @@ export class MetaRouterAnalyticsClient {
     this.linkingSubscription = null;
     this.pendingDeepLink = null;
     this.coldLaunchOpenDeferred = false;
+    this.lifecycleEmitter = null;
 
     this.dispatcher.reset();
     await this.persistentQueue.deleteSnapshot();

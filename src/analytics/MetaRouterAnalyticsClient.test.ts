@@ -1161,14 +1161,24 @@ describe('MetaRouterAnalyticsClient', () => {
 
     it('emits Application Installed then Opened on a fresh install', async () => {
       const identityStorage = require('./utils/identityStorage');
-      // No identity storage — true fresh install.
+      // Empty storage that keeps what is written to it, like AsyncStorage.
+      // IdentityManager.init() persists a fresh anonymousId on first launch;
+      // a mock that always reads back null hides whether the install check
+      // runs before or after that write.
+      const store = new Map<string, string>();
       (identityStorage.getIdentityField as jest.Mock).mockImplementation(
-        async () => null
+        async (key: string) => store.get(key) ?? null
+      );
+      (identityStorage.setIdentityField as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          store.set(key, value);
+        }
       );
 
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
       await client.init();
 
+      expect(store.get(identityStorage.ANONYMOUS_ID_KEY)).toBeDefined();
       const events = getLifecycleEvents(client);
       expect(events.map((e) => e.event)).toEqual([
         'Application Installed',
@@ -1262,9 +1272,8 @@ describe('MetaRouterAnalyticsClient', () => {
 
       // Clear queue, then simulate background→active transition.
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
-      // Seed lastAppState to 'background' so the transition is recognized.
+      // Seed appState to 'background' so the transition is recognized.
       (client as any).appState = 'background';
-      (client as any).lastAppState = 'background';
       RN.AppState.currentState = 'active';
       handler('active');
 
@@ -1312,6 +1321,36 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(bgEvent).toBeUndefined();
     });
 
+    it('emits Application Backgrounded once on the iOS active→inactive→background sequence', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      // Spy on enqueue rather than reading client.queue: each step also moves
+      // the memory queue to disk, so the queue is empty once the handler
+      // resolves.
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      const flushSpy = jest.spyOn(client, 'flush');
+
+      (client as any).appState = 'active';
+      await handler('inactive');
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      await handler('background');
+
+      const backgrounded = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter(
+          (e: any) =>
+            e.type === 'track' && e.event === 'Application Backgrounded'
+        );
+      expect(backgrounded).toHaveLength(1);
+      // The inactive step already flushed before Backgrounded existed, so the
+      // background step must flush again or the event waits for the next
+      // foreground.
+      expect(flushSpy).toHaveBeenCalledTimes(2);
+    });
+
     it('emits Application Opened with from_background=true on background→active', async () => {
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
       await client.init();
@@ -1321,7 +1360,6 @@ describe('MetaRouterAnalyticsClient', () => {
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
 
       (client as any).appState = 'background';
-      (client as any).lastAppState = 'background';
       handler('active');
 
       const opened = client.queue
@@ -1339,7 +1377,6 @@ describe('MetaRouterAnalyticsClient', () => {
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
 
       (client as any).appState = 'inactive';
-      (client as any).lastAppState = 'inactive';
       handler('active');
 
       const opened = client.queue
@@ -1384,7 +1421,6 @@ describe('MetaRouterAnalyticsClient', () => {
       const startIndex = client.queue.length;
       const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
       (client as any).appState = 'background';
-      (client as any).lastAppState = 'background';
       handler('active');
 
       const opened = client.queue
@@ -1396,7 +1432,6 @@ describe('MetaRouterAnalyticsClient', () => {
       // Buffer should be cleared after emit; second foreground does not carry the same URL.
       const startIndex2 = client.queue.length;
       (client as any).appState = 'background';
-      (client as any).lastAppState = 'background';
       handler('active');
       const opened2 = client.queue
         .slice(startIndex2)
@@ -1419,7 +1454,6 @@ describe('MetaRouterAnalyticsClient', () => {
       (client as any).appState = 'active';
       handler('background');
       (client as any).appState = 'background';
-      (client as any).lastAppState = 'background';
       handler('active');
 
       const newEvents = client.queue.slice(startIndex);
@@ -1458,7 +1492,6 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened = client.queue
@@ -1479,7 +1512,6 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened = client.queue
@@ -1504,7 +1536,6 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened = client.queue
@@ -1523,12 +1554,10 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const startIndex2 = client.queue.length;
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened2 = client.queue
@@ -1554,7 +1583,6 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened = client.queue
@@ -1582,7 +1610,6 @@ describe('MetaRouterAnalyticsClient', () => {
         const handler = (AppState.addEventListener as jest.Mock).mock
           .calls[0][1];
         (client as any).appState = 'background';
-        (client as any).lastAppState = 'background';
         handler('active');
 
         const opened = client.queue
