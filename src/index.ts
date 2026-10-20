@@ -1,5 +1,9 @@
-export { createAnalyticsClient } from "./analytics/init";
+export { createAnalyticsClient } from './analytics/init';
 
-export { MetaRouterProvider } from "./react/context";
-export { useMetaRouter } from "./react/useMetaRouter";
-export type { InitOptions, AnalyticsInterface } from "./analytics/types";
+export { MetaRouterProvider } from './react/context';
+export { useMetaRouter } from './react/useMetaRouter';
+export type {
+  InitOptions,
+  AnalyticsInterface,
+  ConfigError,
+} from './analytics/types';

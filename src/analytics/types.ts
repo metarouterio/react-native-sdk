@@ -26,16 +26,31 @@ export interface EnrichedEventPayload extends EventWithIdentity {
   writeKey: string;
 }
 
+/**
+ * Why `createAnalyticsClient` refused its options. In development builds the
+ * call throws instead; in release the SDK stays inert for the session and
+ * reports this through `onConfigError` and `getDebugInfo().configError`.
+ */
+export type ConfigError =
+  | { type: 'emptyWriteKey' }
+  | { type: 'invalidIngestionHost'; raw: string };
+
 export interface InitOptions {
+  /** Required. Trimmed; empty or whitespace-only is a config error. */
   writeKey: string;
+  /**
+   * Required. An http(s) URL with a host. Trimmed, and trailing slashes are
+   * removed. Cleartext http logs a warning unless the host is loopback.
+   */
   ingestionHost: string;
+  /** Seconds between automatic flushes (default: 10). Clamped to >= 1. */
   flushIntervalSeconds?: number;
   debug?: boolean;
   /** Max events held in the in-memory queue (default: 2000). Clamped to >= 1. */
   maxQueueEvents?: number;
   /**
    * Max events stored on disk for crash-safety + extended offline periods
-   * (default: 10000). Must be >= 0. When set to 0, disk persistence is
+   * (default: 10000). Negative values are clamped to 0. When set to 0, disk persistence is
    * disabled and the SDK runs as a pure in-memory pipeline (events are lost
    * on app kill — documented tradeoff).
    */
@@ -47,6 +62,15 @@ export interface InitOptions {
    * until they explicitly set this to true.
    */
   trackLifecycleEvents?: boolean;
+  /**
+   * Called synchronously by `createAnalyticsClient` when the options are
+   * invalid in a release build, after the error is logged. The SDK is inert
+   * for the session; a later `createAnalyticsClient` with valid options, or
+   * `reset()`, recovers it. Development builds throw from
+   * `createAnalyticsClient` instead and never call this. Not called for
+   * 401/403/404 responses from the ingestion host.
+   */
+  onConfigError?: (error: ConfigError) => void;
 }
 
 export interface AnalyticsInterface {

@@ -38,11 +38,11 @@ After installing or upgrading, run `cd ios && pod install` and rebuild the nativ
 ```js
 import { createAnalyticsClient } from "@metarouter/react-native-sdk";
 
-// Initialize the analytics client
-const analytics = await createAnalyticsClient({
+// Returns the client right away; initialization finishes in the background
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
-  debug: true, // Optional: enable debug mode
+  debug: __DEV__, // Optional: verbose logs, never in a store release
   flushIntervalSeconds: 30, // Optional: flush events every 30 seconds
 });
 ```
@@ -50,43 +50,25 @@ const analytics = await createAnalyticsClient({
 ### React Context Usage
 
 ```jsx
-import React, { useEffect, useState } from "react";
+import React from "react";
 import {
   createAnalyticsClient,
   MetaRouterProvider,
   useMetaRouter,
 } from "@metarouter/react-native-sdk";
 
-const App = () => {
-  const [analyticsClient, setAnalyticsClient] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+// Create the client once, outside any component. It is usable immediately;
+// there is no promise to await and nothing to catch.
+const analytics = createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+});
 
-  useEffect(() => {
-    const initializeAnalytics = async () => {
-      try {
-        // Initialize the analytics client
-        const client = await createAnalyticsClient({
-          writeKey: "your-write-key",
-          ingestionHost: "https://your-ingestion-endpoint.com",
-        });
-        setAnalyticsClient(client);
-      } catch (error) {
-        console.error("Failed to initialize analytics:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    initializeAnalytics();
-  }, []);
-
-  if (isLoading) return null; // or a loading spinner
-
-  return (
-    <MetaRouterProvider analyticsClient={analyticsClient}>
-      <YourApp />
-    </MetaRouterProvider>
-  );
-};
+const App = () => (
+  <MetaRouterProvider analyticsClient={analytics}>
+    <YourApp />
+  </MetaRouterProvider>
+);
 
 // Use analytics in any component
 const MyComponent = () => {
@@ -108,9 +90,9 @@ const MyComponent = () => {
 ```js
 import { createAnalyticsClient } from "@metarouter/react-native-sdk";
 
-// Initialize the client (optionally await it), but you can use it at any time
-// with events transmitted when the client is ready.
-const analytics = await createAnalyticsClient({
+// Usable immediately: calls made before initialization finishes are
+// buffered and sent once the client is ready.
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
 });
@@ -157,7 +139,7 @@ await analytics.reset();
 
 ```js
 // Initial configuration
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "key-1",
   ingestionHost: "https://endpoint-1.com",
 });
@@ -165,8 +147,9 @@ const analytics = await createAnalyticsClient({
 // Later, if you need to change configuration:
 await analytics.reset(); // Must reset first!
 
-// Now reconfigure with new options
-const analytics = await createAnalyticsClient({
+// Now reconfigure with new options. The same client object is returned, so
+// existing references (and MetaRouterProvider) keep working.
+createAnalyticsClient({
   writeKey: "key-2",
   ingestionHost: "https://endpoint-2.com",
 });
@@ -182,28 +165,57 @@ If you call `createAnalyticsClient()` with different options without resetting f
 
 ### createAnalyticsClient(options)
 
-Initializes the analytics client and returns a **live proxy** to the client instance.
-
-⚠️ `createAnalyticsClient()` is asynchronous, but you **do not** need to `await` it before using analytics methods.
+Starts initialization and returns a **live proxy** to the client instance, synchronously. It does not return a Promise: there is nothing to `await` or `catch`. Invalid options never throw in a release build — see [Invalid configuration](#invalid-configuration).
 
 Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and replayed **in order** once the client is fully initialized.
 
 **Options:**
 
-- `writeKey` (string, required): Your MetaRouter write key. Must not be empty.
-- `ingestionHost` (string, required): Your MetaRouter ingestion endpoint. Must be a valid http/https URL with no trailing slash.
+- `writeKey` (string, required): Your MetaRouter write key. Trimmed; empty or whitespace-only is a config error.
+- `ingestionHost` (string, required): Your MetaRouter ingestion endpoint: an `http`/`https` URL with a host. Trimmed, and trailing slashes are removed. Cleartext `http` logs a warning unless the host is `localhost`, `127.0.0.1` or `::1`.
 - `flushIntervalSeconds` (number, optional, default: `10`): How often the SDK attempts to send queued events. Values below 1 are clamped to 1.
 - `debug` (boolean, optional, default: `false`): Enables verbose SDK logging. Can also be toggled at runtime via `analytics.enableDebugLogging()`.
 - `maxQueueEvents` (number, optional, default: `2000`): Maximum events held in the in-memory queue. Values below 1 are clamped to 1. The queue is also bounded by a 5 MB byte cap — whichever limit is reached first triggers drop-oldest eviction.
-- `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Must be ≥ 0. Set to `0` to disable disk persistence (events are lost on app kill).
+- `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Negative values are clamped to `0` with a warning. Set to `0` to disable disk persistence (events are lost on app kill).
 - `trackLifecycleEvents` (boolean, optional, default: `false`): Opt-in. Set to `true` to emit `Application Installed`, `Application Updated`, `Application Opened`, and `Application Backgrounded` events automatically. See [Application Lifecycle Events](#application-lifecycle-events).
+- `onConfigError` (function, optional): Called with a `ConfigError` when the options are invalid in a release build. See [Invalid configuration](#invalid-configuration).
+
+Out-of-range numbers are clamped and logged as a warning; they never fail initialization.
 
 **Proxy behavior (quick notes):**
 
 - Buffer is **in-memory only** (not persisted). Calls made before ready are lost if the process exits.
 - Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
-- On fatal config errors (`401/403/404`), the client enters **disabled** state and drops subsequent calls.
+- On fatal config errors from the ingestion host (`401/403/404`), the client enters **disabled** state and drops subsequent calls. This is separate from [invalid options](#invalid-configuration) and does not call `onConfigError`.
 - `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
+
+### Invalid configuration
+
+Invalid options (an empty `writeKey`, or an `ingestionHost` that is not an `http`/`https` URL with a host) never crash a release build. The same rules apply on iOS and Android.
+
+| Build | What happens |
+| ----- | ------------ |
+| Development (`__DEV__`) | `createAnalyticsClient` throws `Invalid InitOptions: <reason>`, so the mistake shows up immediately at the call site. |
+| Release | An always-on error is logged (`[MetaRouter] MetaRouter disabled for this session — <reason>`), `onConfigError` is called once, synchronously, and the SDK stays inert for the session: calls are accepted and nothing is sent. |
+
+While the session is disabled:
+
+- `getAnonymousId()` resolves `""` instead of waiting, and `flush()` resolves immediately.
+- `getDebugInfo()` returns `lifecycle: "disabled"` and the reason as `configError`.
+- Calls made while disabled are kept (up to the usual 20) and sent if the session recovers.
+
+A later `createAnalyticsClient` with valid options recovers the session, and so does `reset()`. An invalid call made while a valid session is running disables that session too, rather than leaving the old configuration running unnoticed.
+
+```js
+const analytics = createAnalyticsClient({
+  writeKey: remoteConfig.writeKey,
+  ingestionHost: remoteConfig.ingestionHost,
+  onConfigError: (error) => {
+    // error.type is "emptyWriteKey" or "invalidIngestionHost" (with error.raw)
+    reportToYourDiagnostics("MetaRouter config", error);
+  },
+});
+```
 
 ### Analytics Interface
 
@@ -361,7 +373,7 @@ If you're not seeing API calls being made, here are some steps to troubleshoot:
 
 ```js
 // Initialize with debug enabled
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
   debug: true, // This enables detailed logging
@@ -607,7 +619,7 @@ await analytics.reset();
 
 ```js
 // App starts - SDK initializes
-const analytics = await createAnalyticsClient({...});
+const analytics = createAnalyticsClient({...});
 // anonymousId: "abc-123" (auto-generated and persisted)
 
 // User browses before login
@@ -667,7 +679,7 @@ This does two things:
 
 ```js
 // App starts - user is anonymous
-const analytics = await createAnalyticsClient({...});
+const analytics = createAnalyticsClient({...});
 // anonymousId: "abc-123" (auto-generated)
 
 // User browses anonymously
@@ -739,7 +751,7 @@ The SDK supports including advertising identifiers (IDFA on iOS, GAID on Android
 Use the `setAdvertisingId()` method to set the advertising identifier after initializing the analytics client:
 
 ```js
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
 });
@@ -782,7 +794,7 @@ import { AppTrackingTransparency } from "react-native-tracking-transparency";
 import { getAdvertisingId } from "@react-native-community/google-advertiser-id"; // or similar library
 
 // Initialize analytics first
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
 });
@@ -804,7 +816,7 @@ if (trackingStatus === "authorized") {
 import { getAdvertisingId } from "@react-native-community/google-advertiser-id"; // or similar library
 
 // Initialize analytics first
-const analytics = await createAnalyticsClient({
+const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
 });
