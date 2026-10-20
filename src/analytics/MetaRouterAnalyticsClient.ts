@@ -4,6 +4,7 @@ import { log, setDebugLogging, warn, error } from './utils/logger';
 import { IdentityManager } from './IdentityManager';
 import { enrichEvent } from './utils/enrichEvent';
 import { getContextInfo, clearContextCache } from './utils/contextInfo';
+import { AppContext, loadAppContext } from './utils/appContext';
 import {
   getIdentityField,
   setIdentityField,
@@ -35,6 +36,7 @@ export class MetaRouterAnalyticsClient {
   private ingestionHost: string;
   private writeKey: string;
   private context!: EventContext;
+  private appContext!: AppContext;
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
@@ -216,7 +218,9 @@ export class MetaRouterAnalyticsClient {
         const persistedAdvertisingId =
           await getIdentityField(ADVERTISING_ID_KEY);
 
+        this.appContext = loadAppContext();
         this.context = await getContextInfo(
+          this.appContext,
           persistedAdvertisingId || undefined
         );
 
@@ -482,7 +486,7 @@ export class MetaRouterAnalyticsClient {
     log('Setting advertising ID');
     await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
     clearContextCache();
-    this.context = await getContextInfo(advertisingId);
+    this.context = await getContextInfo(this.appContext, advertisingId);
     log('Advertising ID updated, persisted, and context refreshed');
   }
 
@@ -504,7 +508,7 @@ export class MetaRouterAnalyticsClient {
     log('Clearing advertising ID');
     await removeIdentityField(ADVERTISING_ID_KEY);
     clearContextCache();
-    this.context = await getContextInfo();
+    this.context = await getContextInfo(this.appContext);
     log('Advertising ID cleared from storage and context');
   }
 
