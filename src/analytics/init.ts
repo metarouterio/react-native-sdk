@@ -1,5 +1,9 @@
 import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
-import { proxyClient, setRealClient } from './proxy/proxyClient';
+import {
+  proxyClient,
+  setInitializingClient,
+  setRealClient,
+} from './proxy/proxyClient';
 import type { InitOptions, AnalyticsInterface } from './types';
 
 // Only one initialization in flight
@@ -24,7 +28,12 @@ export function createAnalyticsClient(
     currentOptions = options;
     initPromise = (async () => {
       const instance = new MetaRouterAnalyticsClient(options);
-      await instance.init();
+      setInitializingClient(instance);
+      try {
+        await instance.init();
+      } finally {
+        setInitializingClient(null);
+      }
       const boundClient: AnalyticsInterface = {
         track: (event, props) => instance.track(event, props),
         identify: (userId, traits) => instance.identify(userId, traits),
@@ -32,8 +41,8 @@ export function createAnalyticsClient(
         screen: (name, props) => instance.screen(name, props),
         page: (name, props) => instance.page(name, props),
         alias: (newUserId) => instance.alias(newUserId),
-        openURL: (url, sourceApplication) =>
-          instance.openURL(url, sourceApplication),
+        recordOpenedURL: (url, sourceApplication) =>
+          instance.recordOpenedURL(url, sourceApplication),
         setAdvertisingId: (advertisingId) =>
           instance.setAdvertisingId(advertisingId),
         clearAdvertisingId: () => instance.clearAdvertisingId(),
