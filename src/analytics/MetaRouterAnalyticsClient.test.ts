@@ -1355,6 +1355,106 @@ describe('MetaRouterAnalyticsClient', () => {
       expect(backgrounded).toHaveLength(0);
     });
 
+    // Opened / Backgrounded only: the spy is attached before init(), so it
+    // also sees the cold-launch Updated(unknown) from the mocked storage.
+    const foregroundCalls = (enqueueSpy: jest.SpyInstance) =>
+      enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter(
+          (e: any) =>
+            e.event === 'Application Opened' ||
+            e.event === 'Application Backgrounded'
+        )
+        .map((e: any) => [e.event, e.properties?.from_background]);
+
+    it('does not report a Control Center blip as a resume after a background cycle during init()', async () => {
+      // Hold init() between the AppState listener attaching and `ready`
+      // (the advertising-id read sits in that window) and complete a
+      // background → active cycle there.
+      const identityStorage = require('./utils/identityStorage');
+      let releaseInit!: () => void;
+      const held = new Promise<undefined>((resolve) => {
+        releaseInit = () => resolve(undefined);
+      });
+      (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+        async (key: string) => {
+          if (key === identityStorage.ADVERTISING_ID_KEY) return held;
+          if (key === identityStorage.ANONYMOUS_ID_KEY) return 'anon-123';
+          return undefined;
+        }
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const initDone = client.init();
+      while ((AppState.addEventListener as jest.Mock).mock.calls.length === 0) {
+        await Promise.resolve();
+      }
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      (client as any).appState = 'active';
+      await handler('inactive');
+      await handler('background');
+      await handler('active');
+
+      releaseInit();
+      await initDone;
+      disableDispatcherFlush(client);
+
+      await handler('inactive');
+      await handler('active');
+
+      // Only the cold-launch Opened: no Backgrounded before ready, and the
+      // blip after it is not a resume.
+      expect(foregroundCalls(enqueueSpy)).toEqual([
+        ['Application Opened', false],
+      ]);
+    });
+
+    it('emits a Backgrounded with no Opened when the app is locked before first activation (iOS inactive launch)', async () => {
+      // On iOS the initial AppState is `inactive` during launch. Same as the
+      // native SDK: inactive → background counts as leaving the foreground.
+      const RN = require('react-native');
+      RN.AppState.currentState = 'inactive';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      await client.init();
+      disableDispatcherFlush(client);
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      await handler('background');
+      await handler('active');
+
+      // The cold-launch Opened was deferred (not active at launch) and is
+      // emitted on the first activation.
+      expect(foregroundCalls(enqueueSpy)).toEqual([
+        ['Application Backgrounded', undefined],
+        ['Application Opened', false],
+      ]);
+    });
+
+    it('attaches a URL forwarded before the first activation to the deferred cold-launch Opened (unknown → active)', async () => {
+      const RN = require('react-native');
+      RN.AppState.currentState = 'unknown';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      await client.init();
+      disableDispatcherFlush(client);
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      client.recordOpenedURL('myapp://push', 'com.example.referrer');
+      await handler('active');
+
+      const opened = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event === 'Application Opened');
+      expect(opened).toHaveLength(1);
+      expect(opened[0].properties).toMatchObject({
+        from_background: false,
+        url: 'myapp://push',
+        referring_application: 'com.example.referrer',
+      });
+    });
+
     it('emits Application Opened with from_background=true on background→active', async () => {
       const client = new MetaRouterAnalyticsClient(lifecycleOpts);
       await client.init();

@@ -534,6 +534,15 @@ export class MetaRouterAnalyticsClient {
         warn('Failed to persist queue while moving to background:', err);
       }
     }
+    // Cleared on any arrival in the foreground, ready or not: a
+    // background → active cycle completed while init() is in flight is
+    // covered by the cold-launch Opened, and must not leave the flag set
+    // for the next active → inactive → active blip to report as a resume.
+    const returningFromBackground =
+      nextState === 'active' && this.wasBackgrounded;
+    if (nextState === 'active') {
+      this.wasBackgrounded = false;
+    }
     if (nextState === 'active' && this.lifecycle === 'ready') {
       log('App moved to foreground');
       // Application Opened semantics:
@@ -546,10 +555,9 @@ export class MetaRouterAnalyticsClient {
       if (this.coldLaunchOpenDeferred) {
         this.lifecycleEmitter?.emitOpened(false, this.consumePendingDeepLink());
         this.coldLaunchOpenDeferred = false;
-      } else if (this.wasBackgrounded) {
+      } else if (returningFromBackground) {
         this.lifecycleEmitter?.emitOpened(true, this.consumePendingDeepLink());
       }
-      this.wasBackgrounded = false;
       this.startFlushLoop();
       this.flush();
     }
@@ -569,9 +577,9 @@ export class MetaRouterAnalyticsClient {
    * passes here reaches the event (parity with iOS recordOpenedURL and
    * Android recordOpenedUrl).
    *
-   * No-op with a debug warning when `trackLifecycleEvents` is disabled —
-   * silent no-ops are bad DX, hosts wiring this up should know they have
-   * the feature flag off.
+   * No-op with an always-on warning when `trackLifecycleEvents` is
+   * disabled — silent no-ops are bad DX, hosts wiring this up should know
+   * they have the feature flag off.
    */
   recordOpenedURL(url: string, sourceApplication?: string): void {
     // Gated on the option, not the emitter: the emitter is null until init()

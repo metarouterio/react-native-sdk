@@ -73,6 +73,33 @@ describe('createAnalyticsClient', () => {
     await client.reset();
   });
 
+  it('replays a URL forwarded through the proxy before createAnalyticsClient into the bound client', async () => {
+    // No client exists yet, so the call queues for replay like any pre-init
+    // call. Same as both natives: it is not lost, but it is applied after
+    // bind, so it rides on the next Opened rather than the cold-launch one.
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    const spy = jest.spyOn(
+      MetaRouterAnalyticsClient.prototype,
+      'recordOpenedURL'
+    );
+    const { proxyClient } = require('./proxy/proxyClient');
+    proxyClient.recordOpenedURL('myapp://early');
+    expect(spy).not.toHaveBeenCalled();
+
+    const { createAnalyticsClient } = require('./init');
+    const client = createAnalyticsClient({
+      ...opts,
+      trackLifecycleEvents: true,
+    });
+    await client.getAnonymousId();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('myapp://early', undefined);
+    await client.reset();
+  });
+
   it('creates a client with all analytics methods', async () => {
     const { createAnalyticsClient } = require('./init');
     const client = await createAnalyticsClient(opts);

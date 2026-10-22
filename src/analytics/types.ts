@@ -90,7 +90,7 @@ export interface AnalyticsInterface {
    * forwarded while initialization is running still reaches the
    * cold-launch Opened.
    *
-   * No-op with a debug warning when `trackLifecycleEvents` is disabled.
+   * No-op with an always-on warning when `trackLifecycleEvents` is disabled.
    */
   recordOpenedURL: (url: string, sourceApplication?: string) => void;
   setAdvertisingId: (advertisingId: string) => Promise<void>;
