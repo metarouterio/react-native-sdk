@@ -17,6 +17,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 - [Disk-Backed Queue Persistence](#disk-backed-queue-persistence)
 - [Application Lifecycle Events](#application-lifecycle-events)
 - [Session Tracking](#session-tracking)
+- [WebView Bridge](#webview-bridge)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
@@ -237,6 +238,7 @@ The analytics client provides the following methods:
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
+- `attachWebView(webViewRef, allowedOrigins: string[])`: Bridge a `react-native-webview` WebView so its pages' events are sent through the SDK. Returns props to spread onto the `<WebView>`. See [WebView Bridge](#webview-bridge)
 - `getSessionId(): Promise<string | null>`: Returns the current session ID, or `null` before the first event has been sent this launch. Never waits for initialization and never extends the session. See [Session Tracking](#session-tracking)
 - `setTracing(enabled: boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately
@@ -260,6 +262,7 @@ The analytics client provides the following methods:
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
 - 💾 **Best-Effort Queue Persistence**: Persists unsent events to native disk storage and delivers them on reconnect or next launch
+- 🌐 **WebView Bridge**: Events from pages in a `react-native-webview` WebView arrive with the app's identity — see [WebView Bridge](#webview-bridge)
 - ⏱️ **Session Tracking**: Every event carries a session ID and count — see [Session Tracking](#session-tracking)
 - 📲 **Lifecycle Events (opt-in)**: Emit `Application Installed/Updated/Opened/Backgrounded` automatically when enabled — see [Application Lifecycle Events](#application-lifecycle-events)
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
@@ -400,6 +403,91 @@ const analytics = createAnalyticsClient({
 ```
 
 `fireSessionStarted` is off by default so upgrading the SDK never changes an app's event volume. Turn it on when a downstream destination needs an explicit session-start signal (GA4's `session_start`, for example).
+
+## WebView Bridge
+
+Hybrid apps render some screens as web content inside a WebView. Without extra work that activity is invisible to MetaRouter, or double-tracked by an in-page analytics setup on a separate identity. The WebView bridge captures events fired by page JavaScript and sends them through the SDK, so WebView and app activity arrive at your cluster as **one user, one pipeline**: the app's identity, device context and session, plus the page's own facts, on every event.
+
+### Attaching
+
+The bridge works with [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (the SDK does not depend on it). `attachWebView` returns the props that wire the bridge into a `<WebView>`:
+
+```tsx
+import { useRef } from 'react';
+import { WebView } from 'react-native-webview';
+
+function CheckoutScreen() {
+  const webViewRef = useRef<WebView>(null);
+  const bridge = analytics.attachWebView(webViewRef, ['https://www.example.com']);
+
+  return (
+    <WebView
+      ref={webViewRef}
+      source={{ uri: 'https://www.example.com/checkout' }}
+      injectedJavaScriptBeforeContentLoaded={bridge.injectedJavaScriptBeforeContentLoaded}
+      onMessage={(event) => {
+        if (!bridge.onMessage(event)) {
+          // Not a bridge message — the app's own page messages arrive here.
+        }
+      }}
+    />
+  );
+}
+```
+
+- `bridge.onMessage` returns `true` when it handled a bridge message and `false` for anything else, so an app that already uses `onMessage` chains its own handler. Without one, pass `onMessage={bridge.onMessage}`.
+- Pass the ref so the page receives an ack or error for each message. Without a ref, events are still captured.
+- Calling `attachWebView` on every render is fine, and so is calling it before `createAnalyticsClient` has finished initializing: messages that arrive before then are answered `not_ready`. The bridge keeps working across `reset()` and re-initialization.
+- If the app already sets `injectedJavaScriptBeforeContentLoaded`, join the two scripts (`bridge.injectedJavaScriptBeforeContentLoaded + yourScript`). When the attach is refused the bridge script is empty, so the join stays safe.
+
+Origins must be explicit `scheme://host[:port]` rules — no wildcards, paths or trailing slashes. Scheme and host are case-insensitive and default ports are ignored. Invalid rules are refused with a warning, and the returned props then do nothing. Origin scoping is the bridge's security boundary: it keeps other pages loaded in the same WebView (ads, redirects) from injecting events. `react-native-webview` does not scope its message channel to origins, so the SDK enforces the allowlist in two places: the injected wrapper defines nothing on other pages, and every message's sending-frame URL is checked — a message from any other origin is ignored without a reply. Messages must also carry a random token that only the injected wrapper holds, so a cross-origin iframe inside an allowed page cannot post events even on older Android WebViews, where `react-native-webview` reports the main page's URL for every frame. Cleartext `http` origins log a warning unless the host is loopback.
+
+### What the page sees
+
+Pages loaded from an allowed origin get a `window.metarouterBridge` object with two methods. Properties may be a plain object or a JSON string of one:
+
+```js
+window.metarouterBridge.page('page_view', { section: 'checkout' });
+window.metarouterBridge.track('product_viewed', JSON.stringify({ sku: 'SKU-123' }));
+```
+
+A typical integration is a small shim in the page's tag manager:
+
+```js
+function logEvent(name, params) {
+  var value = JSON.stringify(params);
+  if (!window.metarouterBridge) return; // origin not allowed
+  if (name === 'page_view') {
+    window.metarouterBridge.page(name, value);
+  } else {
+    window.metarouterBridge.track(name, value);
+  }
+}
+```
+
+The page-visible surface is identical in the iOS, Android and React Native SDKs, so one tag-manager integration serves every app.
+
+### What arrives at the cluster
+
+Bridged events go through the same enrichment as the app's own events. The page contributes only what the app cannot know:
+
+| From the page (stamped at call time) | From the SDK (merged at receipt) |
+|---|---|
+| event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context, session |
+| `context.page` — url, path, search, title, referrer | `messageId`, `timestamp` |
+
+Each bridge message carries an ID minted by the page, used to drop duplicate deliveries within 5 minutes. Malformed input is rejected with a coded error, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acknowledged.
+
+### Limits
+
+- **Main frame only.** `react-native-webview` injects scripts before content loads into the main frame only, so iframes do not get the bridge (the iOS and Android SDKs also bridge allowlisted iframes).
+- **Injection timing.** On iOS the wrapper is injected at document start. On Android, `react-native-webview` injects it when the page starts loading, which is not guaranteed to happen before the page's own scripts: an inline script at the top of the page can run first, find no bridge, and lose its call. Calls made once the page has loaded (and user-triggered ones) see the bridge. Guard calls with `if (window.metarouterBridge)` as in the shim above. A page already loaded when the props were first set has no bridge until it reloads.
+- **Replies go to the current page.** Replies are delivered to whatever page is in the main frame when they are sent, and only if its origin is allowed.
+
+### Debugging
+
+- SDK logs (`debug: true` or `enableDebugLogging()`) show attach confirmations, rejected messages with their error codes, and duplicate drops.
+- In Safari's Develop menu (iOS) or `chrome://inspect` (Android), check `typeof window.metarouterBridge` to verify injection, and read replies with `window.__metaRouterNativeChannel.onmessage = e => console.log(e.data)`.
 
 ## ✅ Compatibility
 

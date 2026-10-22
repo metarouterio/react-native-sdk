@@ -27,6 +27,11 @@ let configDisabledError: string | null = null;
 // bound client alone.
 let resetHandler: (() => Promise<void>) | null = null;
 
+// Owned by init.ts, which holds the session-wide bridge processor. Like reset,
+// attachWebView must work before a bind: its props are needed at the first
+// render, and queueing it would leave the WebView without a wrapper.
+let attachWebViewHandler: AnalyticsInterface['attachWebView'] | null = null;
+
 // The client whose init() is still running. recordOpenedURL only fills a
 // one-slot buffer that the cold-launch Application Opened reads during
 // init(), and the proxy binds only after init() resolves — so a cold-launch
@@ -103,6 +108,14 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   methodName: T,
   ...args: Parameters<AnalyticsInterface[T]>
 ): ReturnType<AnalyticsInterface[T]> {
+  // Bound or not: the props are stateless and the shared processor resolves
+  // the client per message.
+  if (methodName === 'attachWebView' && attachWebViewHandler) {
+    return attachWebViewHandler(
+      ...(args as Parameters<AnalyticsInterface['attachWebView']>)
+    ) as ReturnType<AnalyticsInterface[T]>;
+  }
+
   // Real client bound
   if (realClient && methodName !== 'reset') {
     if (methodName === 'flush') {
@@ -249,6 +262,8 @@ export const proxyClient: AnalyticsInterface = {
   getDebugInfo: () => handleMethodCall('getDebugInfo'),
   getAnonymousId: () => handleMethodCall('getAnonymousId'),
   getSessionId: () => handleMethodCall('getSessionId'),
+  attachWebView: (webViewRef, allowedOrigins) =>
+    handleMethodCall('attachWebView', webViewRef, allowedOrigins),
 };
 
 /**
@@ -314,6 +329,13 @@ export function setRealClient(
     }
     flushInFlight = null; // reset coalescer
   }
+}
+
+/** Registers init.ts's WebView bridge, used by `attachWebView()` in every state. */
+export function setAttachWebViewHandler(
+  handler: AnalyticsInterface['attachWebView'] | null
+) {
+  attachWebViewHandler = handler;
 }
 
 /** Registers init.ts's session reset, used by `reset()` in every state. */

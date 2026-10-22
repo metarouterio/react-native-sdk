@@ -44,6 +44,7 @@ import {
   SESSION_STARTED_EVENT,
   SessionManager,
 } from './session/sessionManager';
+import type { BridgeEnvelope, PageContext } from './webview/bridgeEnvelope';
 import {
   DEFAULT_MAX_DISK_EVENTS,
   validateInitOptions,
@@ -101,7 +102,6 @@ export class MetaRouterAnalyticsClient {
   // getDebugInfo peek it. Its state outlives reset() through storage, not
   // through this instance.
   private sessionManager: SessionManager;
-
   /**
    * Initializes the analytics client with the provided options.
    * @param options - The initialization options.
@@ -387,17 +387,24 @@ export class MetaRouterAnalyticsClient {
    * enqueue() and the lifecycle emitter so both paths produce identical
    * payloads.
    */
-  private buildEnrichedEvent(event: EventPayload): EnrichedEventPayload {
+  private buildEnrichedEvent(
+    event: EventPayload,
+    page?: PageContext
+  ): EnrichedEventPayload {
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
-    // Every enriched event is session activity, and this is the funnel both
-    // event sources share (public calls and lifecycle events), so touching
-    // here is what makes the session stamp universal.
-    return enrichEvent(
+    // Every enriched event is session activity, and this is the funnel all
+    // event sources share (public calls, lifecycle events, the WebView
+    // bridge), so touching here is what makes the session stamp universal.
+    const enriched = enrichEvent(
       eventWithIdentity,
       this.writeKey,
       this.context,
       this.sessionManager.touch()
     );
+    // Bridge events carry the page they happened on; native events leave
+    // context.page absent, matching web SDK output.
+    if (page) enriched.context = { ...enriched.context, page };
+    return enriched;
   }
 
   /**
@@ -409,14 +416,47 @@ export class MetaRouterAnalyticsClient {
       warn('Analytics client is not ready to operate');
       return;
     }
+    this.enqueueEnriched(this.buildEnrichedEvent(event));
+  }
 
-    this.dispatcher.enqueue(this.buildEnrichedEvent(event));
+  /**
+   * Bridge sink: a validated, deduplicated WebView envelope enters the normal
+   * event path. Identity, device context, session, messageId and timestamp
+   * all come from the existing enrichment — the envelope contributes only the
+   * event and the page it happened on. Returns false when the client cannot
+   * accept it, so the page gets `not_ready` rather than a false ack.
+   */
+  enqueueBridgeEvent(envelope: BridgeEnvelope): boolean {
+    if (!this.isReady()) return false;
+    this.enqueueEnriched(
+      this.buildEnrichedEvent(
+        {
+          type: envelope.type,
+          event: envelope.name,
+          properties: envelope.properties,
+          timestamp: this.now(),
+        },
+        envelope.page
+      )
+    );
+    return true;
+  }
+
+  private enqueueEnriched(enriched: EnrichedEventPayload) {
+    this.dispatcher.enqueue(enriched);
 
     // Check if we should flush to disk based on thresholds
-    if (this.persistentQueue.shouldFlushToDisk()) {
-      void this.persistentQueue.flushToDisk().catch((err) => {
-        warn('Failed to flush queue to disk after threshold:', err);
-      });
+    // Nothing here may throw out of this method: the event is already queued,
+    // and a bridge caller that saw a throw would NAK it and let the page
+    // re-send it as a duplicate.
+    try {
+      if (this.persistentQueue.shouldFlushToDisk()) {
+        void this.persistentQueue.flushToDisk().catch((err) => {
+          warn('Failed to flush queue to disk after threshold:', err);
+        });
+      }
+    } catch (err) {
+      warn('Failed to flush queue to disk after threshold:', err);
     }
   }
 
