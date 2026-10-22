@@ -73,11 +73,17 @@ function utf8ByteLength(s: string): number {
     const c = s.charCodeAt(i);
     if (c < 0x80) bytes += 1;
     else if (c < 0x800) bytes += 2;
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+    else if (
+      c >= 0xd800 &&
+      c <= 0xdbff &&
+      i + 1 < s.length &&
+      s.charCodeAt(i + 1) >= 0xdc00 &&
+      s.charCodeAt(i + 1) <= 0xdfff
+    ) {
       // A surrogate pair is one 4-byte code point.
       bytes += 4;
       i++;
-    } else bytes += 3;
+    } else bytes += 3; // includes a lone surrogate, encoded as U+FFFD
   }
   return bytes;
 }

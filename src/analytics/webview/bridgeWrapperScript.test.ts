@@ -159,6 +159,21 @@ describe('buildReplyScript', () => {
     expect(received).toEqual([{ data: reply }]);
   });
 
+  it('escapes U+2028/U+2029 so echoed text cannot break the script', () => {
+    const reply = JSON.stringify({
+      status: 'error',
+      messageId: 'a\u2028b\u2029c',
+    });
+    const script = buildReplyScript(reply, [ORIGIN]);
+    expect(script).not.toMatch(/[\u2028\u2029]/);
+    const page = runInPage(buildBridgeWrapperScript([ORIGIN]));
+    const received: { data: string }[] = [];
+    page.window[NATIVE_CHANNEL_NAME].onmessage = (e: { data: string }) =>
+      received.push(e);
+    vm.runInContext(script, page.context);
+    expect(received[0]!.data).toBe(reply);
+  });
+
   it('does not deliver to a page whose origin is not allowlisted', () => {
     // The WebView navigated between the message and its reply.
     const page = runInPage(

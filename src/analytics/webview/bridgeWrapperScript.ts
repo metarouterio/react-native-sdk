@@ -151,5 +151,16 @@ export function buildReplyScript(
   allowedOrigins: readonly string[]
 ): string {
   const channel = `window.${NATIVE_CHANNEL_NAME}`;
-  return `${JSON.stringify(allowedOrigins)}.indexOf(location.origin) !== -1 && ${channel} && typeof ${channel}.onmessage === 'function' && ${channel}.onmessage({ data: ${JSON.stringify(replyJson)} }); true;`;
+  return `${JSON.stringify(allowedOrigins)}.indexOf(location.origin) !== -1 && ${channel} && typeof ${channel}.onmessage === 'function' && ${channel}.onmessage({ data: ${jsStringLiteral(replyJson)} }); true;`;
+}
+
+/**
+ * JSON.stringify leaves U+2028/U+2029 unescaped; engines before ES2019 read
+ * them as line terminators, so page-controlled text echoed in a reply (a
+ * messageId, an unknown type) would turn the reply script into a SyntaxError.
+ */
+function jsStringLiteral(value: string): string {
+  return JSON.stringify(value)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }

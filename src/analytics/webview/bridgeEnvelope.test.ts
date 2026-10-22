@@ -205,6 +205,25 @@ describe('parseBridgeEnvelope', () => {
     expectInvalid(parseBridgeEnvelope(raw), 'payload_too_large');
   });
 
+  it('counts a lone high surrogate as three bytes, not a pair with the next char', () => {
+    // '\uD800' + '一' is 3 + 3 bytes; reading it as a pair would count 4 and
+    // skip the CJK char, letting an oversized payload under the cap.
+    const unit = '\uD800一';
+    const overhead = JSON.stringify({ ...base, properties: { e: '' } }).length;
+    const units = Math.floor((MAX_ENVELOPE_BYTES - overhead) / 6) + 1;
+    const raw = JSON.stringify({
+      ...base,
+      properties: { e: unit.repeat(units) },
+    });
+    // JSON.stringify escapes lone surrogates, so build the raw text by hand.
+    const rawUnescaped = raw.replace(/\\ud800/g, '\uD800');
+    expect(rawUnescaped.length).toBeLessThan(MAX_ENVELOPE_BYTES);
+    expect(parseBridgeEnvelope(rawUnescaped)).toMatchObject({
+      valid: false,
+      code: 'payload_too_large',
+    });
+  });
+
   it('counts a surrogate pair as four bytes', () => {
     // '😀' is two UTF-16 units and four UTF-8 bytes; just under the cap.
     const overhead = JSON.stringify({ ...base, properties: { e: '' } }).length;

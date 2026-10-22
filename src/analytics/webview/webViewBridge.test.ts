@@ -222,6 +222,22 @@ describe('attachWebViewBridge', () => {
     );
   });
 
+  it('evicts the least recently rendered list, not the oldest inserted', () => {
+    const logSpy = jest.spyOn(require('../utils/logger'), 'log');
+    const lists = Array.from({ length: 8 }, (_, i) => [
+      `https://lru${i}.example.com`,
+    ]);
+    for (const l of lists) attachWebViewBridge(ref, l, processor);
+    attachWebViewBridge(ref, lists[0]!, processor); // touched: now most recent
+    attachWebViewBridge(ref, ['https://lru-new.example.com'], processor); // evicts lru1
+    logSpy.mockClear();
+    attachWebViewBridge(ref, lists[0]!, processor);
+    expect(logSpy).not.toHaveBeenCalled(); // still cached
+    attachWebViewBridge(ref, lists[1]!, processor);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('attached')); // rebuilt
+    logSpy.mockRestore();
+  });
+
   it('logs the missing ref once, not once per render', () => {
     const logSpy = jest.spyOn(require('../utils/logger'), 'log');
     for (let i = 0; i < 3; i++) {

@@ -1,4 +1,5 @@
 import type { AnalyticsInterface } from '../types';
+import { inertProps } from '../webview/webViewBridge';
 
 type PendingItem = {
   fn: () => void | Promise<void>;
@@ -110,10 +111,18 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
 ): ReturnType<AnalyticsInterface[T]> {
   // Bound or not: the props are stateless and the shared processor resolves
   // the client per message.
-  if (methodName === 'attachWebView' && attachWebViewHandler) {
-    return attachWebViewHandler(
-      ...(args as Parameters<AnalyticsInterface['attachWebView']>)
-    ) as ReturnType<AnalyticsInterface[T]>;
+  if (methodName === 'attachWebView') {
+    if (attachWebViewHandler) {
+      return attachWebViewHandler(
+        ...(args as Parameters<AnalyticsInterface['attachWebView']>)
+      ) as ReturnType<AnalyticsInterface[T]>;
+    }
+    // Only reachable when init.ts was never loaded (a deep import). Queueing
+    // would hand the render undefined; inert props keep it rendering.
+    console.warn(
+      '[MetaRouter] attachWebView called before the SDK loaded — ignoring.'
+    );
+    return inertProps() as ReturnType<AnalyticsInterface[T]>;
   }
 
   // Real client bound

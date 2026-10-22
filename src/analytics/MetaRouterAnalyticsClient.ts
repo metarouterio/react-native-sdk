@@ -399,11 +399,9 @@ export class MetaRouterAnalyticsClient {
       eventWithIdentity,
       this.writeKey,
       this.context,
-      this.sessionManager.touch()
+      this.sessionManager.touch(),
+      page
     );
-    // Bridge events carry the page they happened on; native events leave
-    // context.page absent, matching web SDK output.
-    if (page) enriched.context = { ...enriched.context, page };
     return enriched;
   }
 

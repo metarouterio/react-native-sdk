@@ -115,7 +115,7 @@ function warnOnce(key: string, message: string) {
 // and the empty script is safe to join with the host's own. Bridge messages
 // are still claimed (and dropped): a page loaded under an earlier, valid
 // attach keeps posting, and its envelopes must not reach the host's handler.
-const inertProps = (): WebViewBridgeProps => ({
+export const inertProps = (): WebViewBridgeProps => ({
   injectedJavaScriptBeforeContentLoaded: '',
   onMessage: (event) => {
     const data = event?.nativeEvent?.data;
@@ -206,7 +206,11 @@ export function attachWebViewBridge(
   const state = stateFor(processor);
   const key = cacheKey(allowedOrigins);
   let attachment = key === null ? undefined : state.attachments.get(key);
-  if (!attachment) {
+  if (attachment) {
+    // Re-inserted so eviction drops the least recently rendered list.
+    state.attachments.delete(key!);
+    state.attachments.set(key!, attachment);
+  } else {
     const validated = key === null ? null : validate(allowedOrigins);
     if (!validated) {
       if (key === null) {
