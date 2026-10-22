@@ -2,6 +2,11 @@ import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import type { InitOptions } from './types';
 import { AppState } from 'react-native';
 import { StubNetworkMonitor } from './utils/networkMonitor';
+import pkg from '../../package.json';
+
+// No react-native-device-info in tests, so the app version falls back to
+// package.json's; read it rather than hardcoding it, or every bump breaks.
+const SDK_VERSION = pkg.version;
 
 const mockAddEventListener = jest.fn();
 jest
@@ -1141,16 +1146,16 @@ describe('MetaRouterAnalyticsClient', () => {
         'Application Opened',
       ]);
       expect(events[0].properties).toMatchObject({
-        version: '1.7.0',
+        version: SDK_VERSION,
         build: 'unknown',
       });
       expect(events[1].properties).toMatchObject({
         from_background: false,
-        version: '1.7.0',
+        version: SDK_VERSION,
         build: 'unknown',
       });
       expect(lifecycleStorage.setLifecycleVersionBuild).toHaveBeenCalledWith(
-        '1.7.0',
+        SDK_VERSION,
         'unknown'
       );
     });
@@ -1167,7 +1172,7 @@ describe('MetaRouterAnalyticsClient', () => {
         'Application Opened',
       ]);
       expect(events[0].properties).toMatchObject({
-        version: '1.7.0',
+        version: SDK_VERSION,
         build: 'unknown',
         previous_version: 'unknown',
         previous_build: 'unknown',
@@ -1176,7 +1181,7 @@ describe('MetaRouterAnalyticsClient', () => {
 
     it('emits only Application Opened when stored version matches', async () => {
       (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
-        '1.7.0'
+        SDK_VERSION
       );
       (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue(
         'unknown'
@@ -1207,7 +1212,7 @@ describe('MetaRouterAnalyticsClient', () => {
         'Application Opened',
       ]);
       expect(events[0].properties).toMatchObject({
-        version: '1.7.0',
+        version: SDK_VERSION,
         build: 'unknown',
         previous_version: '1.6.0',
         previous_build: '40',
@@ -1749,7 +1754,7 @@ describe('MetaRouterAnalyticsClient', () => {
       // After init, lifecycle storage should record the current version.
       // Re-arm the mock to return what it would have stored.
       (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
-        '1.7.0'
+        SDK_VERSION
       );
       (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue(
         'unknown'
