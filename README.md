@@ -15,6 +15,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 - [API Reference](#api-reference)
 - [Features](#features)
 - [Disk-Backed Queue Persistence](#disk-backed-queue-persistence)
+- [Application Lifecycle Events](#application-lifecycle-events)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
@@ -195,6 +196,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `debug` (boolean, optional, default: `false`): Enables verbose SDK logging. Can also be toggled at runtime via `analytics.enableDebugLogging()`.
 - `maxQueueEvents` (number, optional, default: `2000`): Maximum events held in the in-memory queue. Values below 1 are clamped to 1. The queue is also bounded by a 5 MB byte cap — whichever limit is reached first triggers drop-oldest eviction.
 - `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Must be ≥ 0. Set to `0` to disable disk persistence (events are lost on app kill).
+- `trackLifecycleEvents` (boolean, optional, default: `false`): Opt-in. Set to `true` to emit `Application Installed`, `Application Updated`, `Application Opened`, and `Application Backgrounded` events automatically. See [Application Lifecycle Events](#application-lifecycle-events).
 
 **Proxy behavior (quick notes):**
 
@@ -213,6 +215,7 @@ The analytics client provides the following methods:
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `page(name: string, properties?: Record<string, any>)`: Track page views
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
+- `recordOpenedURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. The SDK does not read `Linking` itself, so only URLs passed here are recorded. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a warning, always logged) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
@@ -238,6 +241,7 @@ The analytics client provides the following methods:
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
 - 💾 **Best-Effort Queue Persistence**: Can persist queued events to native disk storage and rehydrate them on next launch
+- 📲 **Lifecycle Events (opt-in)**: Emit `Application Installed/Updated/Opened/Backgrounded` automatically when enabled — see [Application Lifecycle Events](#application-lifecycle-events)
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
 - 🐛 **Debug Support**: Built-in debugging tools for troubleshooting
 
@@ -249,6 +253,94 @@ This release adds native iOS and Android storage for best-effort queue durabilit
 - If the in-memory queue grows past internal persistence thresholds, the SDK may snapshot the queue to disk as a fallback.
 - Persisted events are rehydrated during the next `init()`.
 - This is a durability baseline, not a full offline mode. The SDK still primarily uses in-memory batching and normal network delivery, and it does not guarantee zero-loss across every crash or termination window.
+
+## Application Lifecycle Events
+
+Opt-in. When enabled, the SDK emits four lifecycle events that mirror the iOS and Android native SDKs. They are sent through the same enrichment + batching pipeline as user-emitted events.
+
+| Event                       | When it fires                                                          | Properties                                                                                                |
+| --------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `Application Installed`     | First launch with no prior version stored and no prior identity state. | `version`, `build`                                                                                        |
+| `Application Updated`       | First launch where the stored version/build differs from the current. | `version`, `build`, `previous_version`, `previous_build`                                                  |
+| `Application Opened`        | Cold launch (foreground) and every return to the foreground after a background entry. | `from_background` (false on cold launch, true on resume), `version`, `build`, optional `url`, optional `referring_application` |
+| `Application Backgrounded`  | App enters background from the foreground.                             | _(none)_                                                                                                  |
+
+### Enabling lifecycle events
+
+Lifecycle events are **opt-in** — existing customers upgrading the SDK do not begin emitting these events without explicitly setting the flag. To enable:
+
+```js
+const analytics = createAnalyticsClient({
+  writeKey: "your-write-key",
+  ingestionHost: "https://your-ingestion-endpoint.com",
+  trackLifecycleEvents: true, // default: false
+});
+```
+
+### Notes
+
+- `active → inactive → active` blips (Control Center, a FaceID prompt, system alerts) are **suppressed**. `Application Opened` with `from_background: true` needs a real background entry first; a return that passes through `inactive` (e.g. a passcode prompt on resume) still counts.
+- On iOS, React Native reports `active → inactive → background` when the app is left; `Application Backgrounded` fires on the `background` step. A process that settles straight into the background from `unknown` (headless task, push wake) does not emit `Application Backgrounded`. On iOS the launch state is `inactive`, so locking the device before the app first becomes active does emit one, the same as the native iOS SDK.
+- Cold launches in a background process state (silent push, headless task) suppress the cold-launch `Application Opened`; the next `background → active` transition emits with `from_background: false` as the cold-launch bridge.
+- Existing users upgrading from a pre-lifecycle SDK build receive `Application Updated` with `previous_version="unknown"` and `previous_build="unknown"` (instead of a spurious `Application Installed`).
+- Lifecycle storage (`metarouter:lifecycle:version`, `metarouter:lifecycle:build`) is **not** cleared by `reset()` — install/update history survives logout.
+- `Application Backgrounded` is emitted **before** the SDK's flush-to-disk pass on background entry, so the event is captured by the same drain that ships pending events.
+
+### Deep-link wiring
+
+The SDK does **not** read `Linking` itself, the same as the iOS and Android SDKs: only URLs your app forwards through `recordOpenedURL` are attached to `Application Opened` (as `url`, plus `referring_application` when you pass one). Forward the cold-launch URL and runtime URL events:
+
+```js
+import { Linking } from "react-native";
+
+const analytics = createAnalyticsClient({ /* ... */ trackLifecycleEvents: true });
+
+// Cold launch: safe to call right after createAnalyticsClient(). A URL
+// forwarded while initialization is still running reaches the cold-launch
+// Application Opened.
+Linking.getInitialURL().then((url) => {
+  if (url) analytics.recordOpenedURL(url);
+});
+
+// Resume: attached to the next Application Opened.
+Linking.addEventListener("url", ({ url }) => {
+  analytics.recordOpenedURL(url);
+});
+
+// With a referring application (typically forwarded from native):
+analytics.recordOpenedURL("myapp://product/123", "com.example.referrer");
+```
+
+URLs from outside `Linking` (a UIScene URL handler on iOS, an Android `Intent.ACTION_VIEW`, a deep-link library such as Branch) are forwarded the same way.
+
+**Buffer semantics:**
+
+- One-shot — the buffer is cleared after the next `Application Opened` emits.
+- Last-write-wins — multiple `recordOpenedURL` calls before the next Opened keep only the most recent URL.
+- No-op with an always-on warning when `trackLifecycleEvents` is disabled, so misconfigurations surface in logs instead of failing silently.
+
+### Privacy & sanitization
+
+URLs can contain sensitive material (auth tokens, OTPs, magic-link secrets, PII in query strings). The SDK records the URL verbatim, and because it only records what you forward, sanitizing before the call is enough:
+
+```js
+function sanitize(url) {
+  const u = new URL(url);
+  // Strip known sensitive query params before forwarding.
+  ["token", "otp", "auth"].forEach((k) => u.searchParams.delete(k));
+  return u.toString();
+}
+
+Linking.addEventListener("url", ({ url }) => {
+  analytics.recordOpenedURL(sanitize(url));
+});
+```
+
+### Why the SDK does not auto-instrument deep links
+
+- **Privacy.** Hosts often receive URLs that contain credentials. Capturing them automatically would record secrets before the app has a chance to strip them.
+- **Host control.** Apps with custom URL routers or deep-link libraries (react-navigation linking, react-native-firebase dynamic links, Branch) need to decide *if* and *which* URLs reach analytics — `recordOpenedURL` is the explicit hand-off point.
+- **Parity.** The iOS (`recordOpenedURL`) and Android (`recordOpenedUrl`) SDKs work the same way, so the same app behaves the same on every platform.
 
 ## ✅ Compatibility
 
