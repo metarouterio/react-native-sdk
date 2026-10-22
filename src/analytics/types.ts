@@ -30,10 +30,11 @@ export interface EnrichedEventPayload extends EventWithIdentity {
  * Why `createAnalyticsClient` refused its options. In development builds the
  * call throws instead; in release the SDK stays inert for the session and
  * reports this through `onConfigError` and `getDebugInfo().configError`.
+ * `description` is the same text the iOS and Android SDKs give.
  */
 export type ConfigError =
-  | { type: 'emptyWriteKey' }
-  | { type: 'invalidIngestionHost'; raw: string };
+  | { type: 'emptyWriteKey'; description: string }
+  | { type: 'invalidIngestionHost'; raw: string; description: string };
 
 export interface InitOptions {
   /** Required. Trimmed; empty or whitespace-only is a config error. */

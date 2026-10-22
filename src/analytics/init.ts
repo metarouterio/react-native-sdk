@@ -9,7 +9,7 @@ import {
   takePendingOpenedURLs,
 } from './proxy/proxyClient';
 import type { InitOptions, AnalyticsInterface, ConfigError } from './types';
-import { describeConfigError, validateInitOptions } from './utils/initOptions';
+import { validateInitOptions } from './utils/initOptions';
 
 /*
  * Session choreography. Init, disable and reset work runs strictly FIFO on
@@ -43,6 +43,10 @@ export const buildConfig = {
     typeof __DEV__ !== 'undefined' && __DEV__ === true,
 };
 
+// For fire-and-forget enqueues: the runners catch everything today, but a
+// future throw must not surface as an unhandled rejection in the host.
+const ignoreFailure = () => {};
+
 function enqueue(work: () => Promise<void>): Promise<void> {
   const run = workChain.then(work);
   // The chain itself must survive a failed step; callers that await the
@@ -62,7 +66,7 @@ function passesConfigGate(
   configError: ConfigError | null
 ): configError is null {
   if (configError === null) return true;
-  const description = describeConfigError(configError);
+  const { description } = configError;
   if (buildConfig.isDevelopmentBuild()) {
     throw new Error(`Invalid InitOptions: ${description}`);
   }
@@ -84,9 +88,9 @@ export function createAnalyticsClient(
     initializationStarted = true;
     sessionRefused = true;
     currentOptions = null;
-    const description = describeConfigError(configError!);
+    const { description } = configError!;
     const decision = ++decisionCount;
-    void enqueue(() => runDisable(description, decision));
+    enqueue(() => runDisable(description, decision)).catch(ignoreFailure);
     return proxyClient;
   }
 
@@ -111,12 +115,16 @@ export function createAnalyticsClient(
   currentOptions = normalized;
   clearConfigDisabled();
   const decision = ++decisionCount;
-  void enqueue(() => runInit(normalized, decision));
+  enqueue(() => runInit(normalized, decision)).catch(ignoreFailure);
   return proxyClient;
 }
 
 async function runInit(options: InitOptions, decision: number): Promise<void> {
-  if (activeClient) return; // already bound; nothing queued since tore it down
+  // Unreachable today: every path that queues an init has a disable or reset
+  // queued ahead of it, or no bound client at all. Kept so a future path that
+  // breaks that invariant leaves the bound client alone instead of orphaning
+  // it with its flush loop still running.
+  if (activeClient) return;
   clearConfigDisabled();
 
   let instance: MetaRouterAnalyticsClient;

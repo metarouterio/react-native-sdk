@@ -73,10 +73,11 @@ describe('createAnalyticsClient', () => {
     await client.reset();
   });
 
-  it('replays a URL forwarded through the proxy before createAnalyticsClient into the bound client', async () => {
-    // No client exists yet, so the call queues for replay like any pre-init
-    // call. Same as both natives: it is not lost, but it is applied after
-    // bind, so it rides on the next Opened rather than the cold-launch one.
+  it('hands a URL forwarded through the proxy before createAnalyticsClient to the cold-launch client', async () => {
+    // No client exists yet, so the call queues like any pre-init call. The
+    // init that builds the client takes it from the queue before init()
+    // runs, so it reaches the cold-launch Opened instead of riding on the
+    // next resume after a replay.
     const {
       MetaRouterAnalyticsClient,
     } = require('./MetaRouterAnalyticsClient');
@@ -93,10 +94,14 @@ describe('createAnalyticsClient', () => {
       ...opts,
       trackLifecycleEvents: true,
     });
+    const initSpy = jest.spyOn(MetaRouterAnalyticsClient.prototype, 'init');
     await client.getAnonymousId();
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith('myapp://early', undefined);
+    expect(spy.mock.invocationCallOrder[0]).toBeLessThan(
+      initSpy.mock.invocationCallOrder[0]!
+    );
     await client.reset();
   });
 

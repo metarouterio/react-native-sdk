@@ -1,10 +1,16 @@
-import {
-  describeConfigError,
-  isLoopbackHost,
-  validateInitOptions,
-} from './initOptions';
+import { isLoopbackHost, validateInitOptions } from './initOptions';
 
 const base = { writeKey: 'wk', ingestionHost: 'https://example.com' };
+
+const EMPTY_WRITE_KEY = {
+  type: 'emptyWriteKey',
+  description: 'writeKey must not be empty or whitespace-only',
+};
+const invalidHost = (raw: string) => ({
+  type: 'invalidIngestionHost',
+  raw,
+  description: `ingestionHost must be an http(s) URL, got "${raw}"`,
+});
 
 describe('validateInitOptions', () => {
   let warnSpy: jest.SpyInstance;
@@ -27,13 +33,13 @@ describe('validateInitOptions', () => {
     it('records emptyWriteKey for an empty key instead of throwing', () => {
       expect(
         validateInitOptions({ ...base, writeKey: '' }).configError
-      ).toEqual({ type: 'emptyWriteKey' });
+      ).toEqual(EMPTY_WRITE_KEY);
     });
 
     it('rejects a whitespace-only key', () => {
       expect(
         validateInitOptions({ ...base, writeKey: '   ' }).configError
-      ).toEqual({ type: 'emptyWriteKey' });
+      ).toEqual(EMPTY_WRITE_KEY);
     });
 
     it('stores the key trimmed', () => {
@@ -58,7 +64,7 @@ describe('validateInitOptions', () => {
       (host, raw) => {
         expect(
           validateInitOptions({ ...base, ingestionHost: host }).configError
-        ).toEqual({ type: 'invalidIngestionHost', raw });
+        ).toEqual(invalidHost(raw));
       }
     );
 
@@ -66,7 +72,7 @@ describe('validateInitOptions', () => {
       expect(
         validateInitOptions({ ...base, ingestionHost: '  ftp://x/ ' })
           .configError
-      ).toEqual({ type: 'invalidIngestionHost', raw: '  ftp://x/ ' });
+      ).toEqual(invalidHost('  ftp://x/ '));
     });
 
     it('checks the scheme case-insensitively', () => {
@@ -89,6 +95,9 @@ describe('validateInitOptions', () => {
       'https://example.com:8443',
       'https://example.com/base/path',
       'https://[2001:db8::1]:443',
+      // Both accepted by Foundation and java.net.URL, so by the native SDKs.
+      'https://user:pw@example.com',
+      'https://example.com:',
     ])('accepts %p', (host) => {
       expect(
         validateInitOptions({ ...base, ingestionHost: host }).configError
@@ -112,6 +121,7 @@ describe('validateInitOptions', () => {
       'http://localhost:8080',
       'http://127.0.0.1:9999',
       'http://[::1]:9999',
+      'http://user:pw@localhost:8080',
     ])('does not warn for loopback %p', (host) => {
       validateInitOptions({ ...base, ingestionHost: host });
       expect(warnings()).toEqual([]);
@@ -122,7 +132,7 @@ describe('validateInitOptions', () => {
     expect(
       validateInitOptions({ writeKey: '', ingestionHost: 'ftp://x' })
         .configError
-    ).toEqual({ type: 'emptyWriteKey' });
+    ).toEqual(EMPTY_WRITE_KEY);
   });
 
   describe('numeric bounds clamp with a warning', () => {
@@ -211,13 +221,14 @@ describe('validateInitOptions', () => {
   });
 });
 
-describe('describeConfigError', () => {
+describe('ConfigError.description', () => {
   it('matches the iOS and Android wording byte for byte', () => {
-    expect(describeConfigError({ type: 'emptyWriteKey' })).toBe(
-      'writeKey must not be empty or whitespace-only'
-    );
     expect(
-      describeConfigError({ type: 'invalidIngestionHost', raw: 'nope' })
+      validateInitOptions({ ...base, writeKey: '' }).configError?.description
+    ).toBe('writeKey must not be empty or whitespace-only');
+    expect(
+      validateInitOptions({ ...base, ingestionHost: 'nope' }).configError
+        ?.description
     ).toBe('ingestionHost must be an http(s) URL, got "nope"');
   });
 });

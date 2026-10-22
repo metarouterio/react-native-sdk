@@ -57,8 +57,8 @@ import {
   useMetaRouter,
 } from "@metarouter/react-native-sdk";
 
-// Create the client once, outside any component. It is usable immediately;
-// there is no promise to await and nothing to catch.
+// Create the client once, outside any component. It is usable immediately:
+// there is no promise to await, and nothing to catch in a release build.
 const analytics = createAnalyticsClient({
   writeKey: "your-write-key",
   ingestionHost: "https://your-ingestion-endpoint.com",
@@ -165,7 +165,7 @@ If you call `createAnalyticsClient()` with different options without resetting f
 
 ### createAnalyticsClient(options)
 
-Starts initialization and returns a **live proxy** to the client instance, synchronously. It does not return a Promise: there is nothing to `await` or `catch`. Invalid options never throw in a release build — see [Invalid configuration](#invalid-configuration).
+Starts initialization and returns a **live proxy** to the client instance, synchronously. It does not return a Promise, so there is nothing to `await`, and in a release build nothing to `catch`: invalid options never throw there (development builds throw so the mistake surfaces at the call site). See [Invalid configuration](#invalid-configuration).
 
 Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and replayed **in order** once the client is fully initialized.
 
@@ -178,7 +178,7 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `maxQueueEvents` (number, optional, default: `2000`): Maximum events held in the in-memory queue. Values below 1 are clamped to 1. The queue is also bounded by a 5 MB byte cap — whichever limit is reached first triggers drop-oldest eviction.
 - `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Negative values are clamped to `0` with a warning. Set to `0` to disable disk persistence (events are lost on app kill).
 - `trackLifecycleEvents` (boolean, optional, default: `false`): Opt-in. Set to `true` to emit `Application Installed`, `Application Updated`, `Application Opened`, and `Application Backgrounded` events automatically. See [Application Lifecycle Events](#application-lifecycle-events).
-- `onConfigError` (function, optional): Called with a `ConfigError` when the options are invalid in a release build. See [Invalid configuration](#invalid-configuration).
+- `onConfigError` (function, optional): Called with a `ConfigError` (`type`, `description`, and `raw` for a bad host) when the options are invalid in a release build. See [Invalid configuration](#invalid-configuration).
 
 Out-of-range numbers are clamped and logged as a warning; they never fail initialization.
 
@@ -206,13 +206,16 @@ While the session is disabled:
 
 A later `createAnalyticsClient` with valid options recovers the session, and so does `reset()`. An invalid call made while a valid session is running disables that session too, rather than leaving the old configuration running unnoticed.
 
+Disabling a running session resets its client, which clears the stored identity (anonymous ID, user ID, group ID, advertising ID), the same as the Android SDK. A single invalid call between two valid ones therefore starts the recovered session as a new anonymous user.
+
 ```js
 const analytics = createAnalyticsClient({
   writeKey: remoteConfig.writeKey,
   ingestionHost: remoteConfig.ingestionHost,
   onConfigError: (error) => {
-    // error.type is "emptyWriteKey" or "invalidIngestionHost" (with error.raw)
-    reportToYourDiagnostics("MetaRouter config", error);
+    // error.type is "emptyWriteKey" or "invalidIngestionHost" (with error.raw);
+    // error.description is the same text the iOS and Android SDKs report.
+    reportToYourDiagnostics("MetaRouter config", error.description);
   },
 });
 ```

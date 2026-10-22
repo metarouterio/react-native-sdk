@@ -83,7 +83,10 @@ describe('invalid InitOptions', () => {
     const client = createAnalyticsClient({ ...invalid, onConfigError });
 
     expect(onConfigError).toHaveBeenCalledTimes(1);
-    expect(onConfigError).toHaveBeenCalledWith({ type: 'emptyWriteKey' });
+    expect(onConfigError).toHaveBeenCalledWith({
+      type: 'emptyWriteKey',
+      description: 'writeKey must not be empty or whitespace-only',
+    });
     expect(errorSpy).toHaveBeenCalledWith(
       '[MetaRouter] MetaRouter disabled for this session — writeKey must not be empty or whitespace-only'
     );
@@ -266,56 +269,158 @@ describe('invalid InitOptions', () => {
     await client.reset();
   });
 
+  it.each([401, 403, 404])(
+    'never calls onConfigError for a %p from the ingestion host',
+    async (status) => {
+      // Auth and routing failures stop the dispatcher through their own
+      // fatal-config path; onConfigError is for options rejected at init.
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: false,
+        status,
+        headers: { get: () => null },
+      });
+      const { createAnalyticsClient } = load();
+      const onConfigError = jest.fn();
+      const client = createAnalyticsClient({ ...valid, onConfigError });
+      await client.getAnonymousId();
+
+      client.track('Rejected Upstream');
+      await client.flush();
+
+      expect(global.fetch).toHaveBeenCalled();
+      expect(onConfigError).not.toHaveBeenCalled();
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+      await client.reset();
+    }
+  );
+
+  it('signals again on a second invalid call and stays refused', async () => {
+    const { createAnalyticsClient } = load();
+    const onConfigError = jest.fn();
+    const client = createAnalyticsClient({ ...invalid, onConfigError });
+    await settle();
+    createAnalyticsClient({ ...invalid, onConfigError });
+
+    expect(onConfigError).toHaveBeenCalledTimes(2);
+    expect(await lifecycleOf(client)).toBe('disabled');
+    expect(await client.getAnonymousId()).toBe('');
+  });
+
+  it('a refused session whose recovering init fails is recovered by the next valid call', async () => {
+    const { createAnalyticsClient, ClientClass } = load();
+    const client = createAnalyticsClient(invalid);
+    await settle();
+    jest
+      .spyOn(ClientClass.prototype, 'init')
+      .mockRejectedValueOnce(new Error('storage unavailable'));
+
+    createAnalyticsClient(valid); // this init fails
+    await settle();
+    createAnalyticsClient(valid);
+    expect(await client.getAnonymousId()).toBe('anon-123');
+    expect(await lifecycleOf(client)).toBe('ready');
+    await client.reset();
+  });
+
+  it('keeps at most 20 calls while refused, dropping the oldest', async () => {
+    const { createAnalyticsClient, ClientClass } = load();
+    const trackSpy = jest.spyOn(ClientClass.prototype, 'track');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createAnalyticsClient(invalid);
+    await settle();
+
+    for (let i = 0; i < 25; i++) client.track(`Event ${i}`);
+    createAnalyticsClient(valid);
+    // Settle instead of awaiting a query: a query made now would take a
+    // queue slot itself and evict one more event.
+    await settle();
+
+    const replayed = trackSpy.mock.calls.map(([name]) => name);
+    expect(replayed).toHaveLength(20);
+    expect(replayed[0]).toBe('Event 5');
+    expect(replayed[19]).toBe('Event 24');
+    warnSpy.mockRestore();
+    await client.reset();
+  });
+
+  it('a throwing onConfigError propagates and leaves a running session running', async () => {
+    // Same order as native: the callback runs before the refusal is
+    // recorded, so its throw leaves nothing recorded and nothing queued.
+    const { createAnalyticsClient, ClientClass } = load();
+    const resetSpy = jest.spyOn(ClientClass.prototype, 'reset');
+    const client = createAnalyticsClient(valid);
+    await client.getAnonymousId();
+
+    expect(() =>
+      createAnalyticsClient({
+        ...invalid,
+        onConfigError: () => {
+          throw new Error('host bug');
+        },
+      })
+    ).toThrow('host bug');
+
+    expect(await lifecycleOf(client)).toBe('ready');
+    expect(resetSpy).not.toHaveBeenCalled();
+    await client.reset();
+  });
+
   // Back-to-back sequences with no settling between calls. Each would end
   // stuck (bound to nothing, or disabled with no way out) if a queued step
-  // wrote the session flags when it ran instead of when it was queued.
+  // wrote the session flags when it ran instead of when it was queued. One run
+  // each: JS microtask order is fixed, so repeating a sequence replays the
+  // same schedule.
   describe('ordering of back-to-back calls', () => {
-    const ITERATIONS = 15;
-
     it('invalid then valid createAnalyticsClient ends ready', async () => {
-      for (let i = 0; i < ITERATIONS; i++) {
-        jest.resetModules();
-        mockIdentityStorage();
-        const { createAnalyticsClient } = load();
-        createAnalyticsClient(invalid);
-        const client = createAnalyticsClient(valid);
-        expect(await client.getAnonymousId()).toBe('anon-123');
-        expect(await lifecycleOf(client)).toBe('ready');
-        await client.reset();
-      }
+      const { createAnalyticsClient } = load();
+      createAnalyticsClient(invalid);
+      const client = createAnalyticsClient(valid);
+      expect(await client.getAnonymousId()).toBe('anon-123');
+      expect(await lifecycleOf(client)).toBe('ready');
+      await client.reset();
     });
 
     it('valid then invalid ends disabled, and a later valid call recovers', async () => {
-      for (let i = 0; i < ITERATIONS; i++) {
-        jest.resetModules();
-        mockIdentityStorage();
-        const { createAnalyticsClient } = load();
-        createAnalyticsClient(valid);
-        const client = createAnalyticsClient(invalid);
-        expect(await lifecycleOf(client)).toBe('disabled');
+      const { createAnalyticsClient } = load();
+      createAnalyticsClient(valid);
+      const client = createAnalyticsClient(invalid);
+      expect(await lifecycleOf(client)).toBe('disabled');
 
-        createAnalyticsClient(valid);
-        expect(await client.getAnonymousId()).toBe('anon-123');
-        expect(await lifecycleOf(client)).toBe('ready');
-        await client.reset();
-      }
+      createAnalyticsClient(valid);
+      expect(await client.getAnonymousId()).toBe('anon-123');
+      expect(await lifecycleOf(client)).toBe('ready');
+      await client.reset();
     });
 
     it('valid, reset, valid ends ready with the second session', async () => {
-      for (let i = 0; i < ITERATIONS; i++) {
-        jest.resetModules();
-        mockIdentityStorage();
-        const { createAnalyticsClient } = load();
-        const client = createAnalyticsClient(valid);
-        const resetDone = client.reset();
-        createAnalyticsClient({ ...valid, maxQueueEvents: 3000 });
-        await resetDone;
-        expect(await client.getAnonymousId()).toBe('anon-123');
-        const debug = await client.getDebugInfo();
-        expect(debug.lifecycle).toBe('ready');
-        expect(debug.maxQueueEvents).toBe(3000);
-        await client.reset();
-      }
+      const { createAnalyticsClient } = load();
+      const client = createAnalyticsClient(valid);
+      const resetDone = client.reset();
+      createAnalyticsClient({ ...valid, maxQueueEvents: 3000 });
+      await resetDone;
+      expect(await client.getAnonymousId()).toBe('anon-123');
+      const debug = await client.getDebugInfo();
+      expect(debug.lifecycle).toBe('ready');
+      expect(debug.maxQueueEvents).toBe(3000);
+      await client.reset();
+    });
+
+    it('invalid then reset() ends unbound and not refused, so the next valid call binds', async () => {
+      const { createAnalyticsClient } = load();
+      const onConfigError = jest.fn();
+      const client = createAnalyticsClient({ ...invalid, onConfigError });
+      await client.reset();
+
+      // Not refused any more: a query waits for the next bind instead of
+      // answering with the disabled verdict.
+      let answered = false;
+      void client.getAnonymousId().then(() => (answered = true));
+      await settle();
+      expect(answered).toBe(false);
+
+      createAnalyticsClient(valid);
+      expect(await client.getAnonymousId()).toBe('anon-123');
+      await client.reset();
     });
   });
 });

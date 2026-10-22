@@ -41,7 +41,6 @@ import {
 import { DebouncedNetworkMonitor } from './utils/debouncedNetworkMonitor';
 import {
   DEFAULT_MAX_DISK_EVENTS,
-  describeConfigError,
   validateInitOptions,
 } from './utils/initOptions';
 
@@ -111,9 +110,7 @@ export class MetaRouterAnalyticsClient {
       logWarnings: false,
     });
     if (configError) {
-      throw new Error(
-        `Invalid InitOptions: ${describeConfigError(configError)}`
-      );
+      throw new Error(`Invalid InitOptions: ${configError.description}`);
     }
 
     this.ingestionHost = normalized.ingestionHost;
