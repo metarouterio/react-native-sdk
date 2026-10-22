@@ -3,12 +3,29 @@ import type { AnalyticsInterface } from '../types';
 type PendingItem = {
   fn: () => void | Promise<void>;
   reject?: (err: Error) => void; // only for async calls
+  // Settles an async call's promise with its degraded value when the session
+  // is refused before the call could run (see markConfigDisabled).
+  degrade?: () => void;
+  // Arguments of a queued recordOpenedURL, so the init that builds the next
+  // client can hand them over before its cold-launch Opened (see
+  // takePendingOpenedURLs).
+  openedURL?: Parameters<AnalyticsInterface['recordOpenedURL']>;
 };
 
 const pendingCalls: PendingItem[] = [];
 const MAX_PENDING_CALLS = 20;
 
 let realClient: AnalyticsInterface | null = null;
+
+// Description of the config error that refused this session, or null. While
+// set, calls still queue (and replay if a valid init recovers the session),
+// but nothing that returns a promise may wait for a bind that is not coming.
+let configDisabledError: string | null = null;
+
+// Owned by init.ts: reset must work before a bind (it is how a refused or
+// still-initializing session is cleared), so the proxy cannot route it to the
+// bound client alone.
+let resetHandler: (() => Promise<void>) | null = null;
 
 // The client whose init() is still running. recordOpenedURL only fills a
 // one-slot buffer that the cold-launch Application Opened reads during
@@ -34,6 +51,27 @@ const ASYNC_METHODS: Record<AsyncMethod, true> = {
 };
 const isAsyncMethod = (m: PropertyKey): m is AsyncMethod =>
   (ASYNC_METHODS as any)[m] === true;
+
+/**
+ * What an async call resolves to on a config-refused session. getAnonymousId
+ * resolves "" promptly, like iOS and Android: a permanent hang on a
+ * misconfigured SDK would be worse than the crash this contract replaces.
+ */
+function degradedResult(methodName: AsyncMethod): unknown {
+  switch (methodName) {
+    case 'getAnonymousId':
+      return '';
+    case 'getDebugInfo':
+      return {
+        lifecycle: 'disabled',
+        proxy: true,
+        pendingCalls: pendingCalls.length,
+        configError: configDisabledError,
+      };
+    default:
+      return undefined;
+  }
+}
 
 // One in-flight flush at a time
 let flushInFlight: Promise<void> | null = null;
@@ -66,7 +104,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
   ...args: Parameters<AnalyticsInterface[T]>
 ): ReturnType<AnalyticsInterface[T]> {
   // Real client bound
-  if (realClient) {
+  if (realClient && methodName !== 'reset') {
     if (methodName === 'flush') {
       if (flushInFlight)
         return flushInFlight as ReturnType<AnalyticsInterface[T]>;
@@ -81,12 +119,31 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     return (realClient[methodName] as any)(...args);
   }
 
+  if (methodName === 'reset') {
+    if (resetHandler) {
+      return resetHandler() as ReturnType<AnalyticsInterface[T]>;
+    }
+    return (realClient ? realClient.reset() : Promise.resolve()) as ReturnType<
+      AnalyticsInterface[T]
+    >;
+  }
+
   // No real client bound yet
   if (methodName === 'recordOpenedURL' && initializingClient) {
     initializingClient.recordOpenedURL(
       ...(args as Parameters<AnalyticsInterface['recordOpenedURL']>)
     );
     return undefined as ReturnType<AnalyticsInterface[T]>;
+  }
+
+  // Refused session: queries answer now and never take a queue slot.
+  if (
+    configDisabledError !== null &&
+    (methodName === 'getAnonymousId' || methodName === 'getDebugInfo')
+  ) {
+    return Promise.resolve(degradedResult(methodName)) as ReturnType<
+      AnalyticsInterface[T]
+    >;
   }
 
   if (pendingCalls.length >= MAX_PENDING_CALLS) {
@@ -101,10 +158,19 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     );
   }
 
-  // Special-cases while unbound:
-  if (methodName === 'reset') {
-    // Nothing to reset pre-bind; resolve immediately
-    return Promise.resolve() as ReturnType<AnalyticsInterface[T]>;
+  if (isAsyncMethod(methodName) && configDisabledError !== null) {
+    // Refused session: commands (flush, advertising id) still queue so a
+    // recovering valid init replays them like any other call, but their
+    // promise resolves now instead of waiting for a bind.
+    pendingCalls.push({
+      fn: () => {
+        if (!realClient) return;
+        return Promise.resolve((realClient[methodName] as any)(...args)).then(
+          () => undefined
+        );
+      },
+    });
+    return Promise.resolve(undefined) as ReturnType<AnalyticsInterface[T]>;
   }
 
   if (isAsyncMethod(methodName)) {
@@ -112,6 +178,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     return new Promise<any>((resolve, reject) => {
       pendingCalls.push({
         reject, // keep a handle for dropPending
+        degrade: () => resolve(degradedResult(methodName)),
         fn: async () => {
           try {
             if (!realClient) {
@@ -148,6 +215,9 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
       if (!realClient) return;
       (realClient[methodName] as any)(...args);
     },
+    ...(methodName === 'recordOpenedURL' && {
+      openedURL: args as Parameters<AnalyticsInterface['recordOpenedURL']>,
+    }),
   });
   return undefined as ReturnType<AnalyticsInterface[T]>;
 }
@@ -217,6 +287,8 @@ export function setRealClient(
   opts?: { dropPending?: boolean }
 ) {
   realClient = client;
+  // Binding a client, or a reset's unbind, ends any refusal.
+  configDisabledError = null;
 
   if (client) {
     const items = pendingCalls.splice(0, pendingCalls.length);
@@ -235,4 +307,55 @@ export function setRealClient(
     }
     flushInFlight = null; // reset coalescer
   }
+}
+
+/** Registers init.ts's session reset, used by `reset()` in every state. */
+export function setResetHandler(handler: (() => Promise<void>) | null) {
+  resetHandler = handler;
+}
+
+/**
+ * Refuses the session: unbinds, drops calls queued before the refusal (they
+ * belonged to a session that never bound), settles their promises with the
+ * degraded value instead of rejecting, and makes later async calls resolve
+ * degraded. Calls made after this point queue and replay on recovery.
+ */
+export function markConfigDisabled(description: string) {
+  realClient = null;
+  flushInFlight = null;
+  configDisabledError = description;
+  const items = pendingCalls.splice(0, pendingCalls.length);
+  for (const it of items) it.degrade?.();
+}
+
+/**
+ * Lifts a refusal before a valid init builds its client, so async calls made
+ * during that init wait for the incoming bind rather than resolving against
+ * the previous verdict.
+ */
+export function clearConfigDisabled() {
+  configDisabledError = null;
+}
+
+/**
+ * Removes and returns queued recordOpenedURL calls, oldest first. The init that
+ * builds a client applies them before init() runs: createAnalyticsClient only
+ * queues that init, so a URL forwarded right after the call (the usual
+ * `Linking.getInitialURL()` wiring) is queued here before any client exists,
+ * and replaying it after bind would miss the cold-launch Opened.
+ */
+export function takePendingOpenedURLs(): Parameters<
+  AnalyticsInterface['recordOpenedURL']
+>[] {
+  const taken: Parameters<AnalyticsInterface['recordOpenedURL']>[] = [];
+  for (let i = 0; i < pendingCalls.length; ) {
+    const args = pendingCalls[i]!.openedURL;
+    if (args) {
+      taken.push(args);
+      pendingCalls.splice(i, 1);
+    } else {
+      i++;
+    }
+  }
+  return taken;
 }

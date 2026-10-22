@@ -39,6 +39,10 @@ import {
   type NetworkStatus,
 } from './utils/networkMonitor';
 import { DebouncedNetworkMonitor } from './utils/debouncedNetworkMonitor';
+import {
+  DEFAULT_MAX_DISK_EVENTS,
+  validateInitOptions,
+} from './utils/initOptions';
 
 /**
  * Analytics client for MetaRouter.
@@ -60,13 +64,10 @@ export class MetaRouterAnalyticsClient {
   private appStateSubscription: { remove?: () => void } | null = null;
   private identityManager: IdentityManager;
   private static readonly AUTO_FLUSH_THRESHOLD = 20;
-  private static readonly DEFAULT_MAX_QUEUE_EVENTS = 2000;
-  private static readonly DEFAULT_MAX_DISK_EVENTS = 10_000;
   // Byte cap is intentionally internal (parity with iOS/Android). Not a
   // public option. 5MB — revisit only if a customer actually needs to tune.
   private static readonly MAX_QUEUE_BYTES = 5 * 1024 * 1024;
-  private maxDiskEvents: number =
-    MetaRouterAnalyticsClient.DEFAULT_MAX_DISK_EVENTS;
+  private maxDiskEvents: number = DEFAULT_MAX_DISK_EVENTS;
   private dispatcher!: Dispatcher;
   private persistentQueue!: PersistentEventQueue;
   private tracingEnabled: boolean = false;
@@ -100,55 +101,26 @@ export class MetaRouterAnalyticsClient {
     options: InitOptions,
     deps?: { networkMonitor?: NetworkReachability }
   ) {
-    const { writeKey, ingestionHost, flushIntervalSeconds } = options;
-
-    if (!writeKey || typeof writeKey !== 'string' || writeKey.trim() === '') {
-      throw new Error(
-        'MetaRouterAnalyticsClient initialization failed: `writeKey` is required and must be a non-empty string.'
-      );
+    // Same rules as the createAnalyticsClient gate, without logging: the
+    // gate already logged this call's warnings, and logging here would print
+    // every cleartext/clamp warning twice. Constructed directly (bypassing the
+    // gate), invalid options throw on every build type, like Android's direct
+    // client entry point — this path has no inert session to fall back to.
+    const { options: normalized, configError } = validateInitOptions(options, {
+      logWarnings: false,
+    });
+    if (configError) {
+      throw new Error(`Invalid InitOptions: ${configError.description}`);
     }
 
-    try {
-      // Validate it's a proper absolute URL
-      // and ensure it does not end with a trailing slash
-      // e.g., "https://example.com" or "https://example.com/api" are valid,
-      // but "https://example.com/" or "https://example.com/api/" are not.
-      // eslint-disable-next-line no-new
-      new URL(ingestionHost);
-      if (ingestionHost.endsWith('/')) {
-        throw new Error();
-      }
-    } catch {
-      throw new Error(
-        'MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash.'
-      );
-    }
-
-    this.ingestionHost = ingestionHost;
-    this.writeKey = writeKey;
-    this.flushIntervalSeconds = Math.max(1, flushIntervalSeconds ?? 10);
-
-    // Validate + normalize persistence caps.
-    const rawMaxDisk =
-      options.maxDiskEvents ??
-      MetaRouterAnalyticsClient.DEFAULT_MAX_DISK_EVENTS;
-    if (rawMaxDisk < 0) {
-      throw new Error(
-        'MetaRouterAnalyticsClient initialization failed: `maxDiskEvents` must be >= 0 (use 0 to disable disk persistence).'
-      );
-    }
-    this.maxDiskEvents = rawMaxDisk;
-
-    const rawMaxQueue =
-      options.maxQueueEvents ??
-      MetaRouterAnalyticsClient.DEFAULT_MAX_QUEUE_EVENTS;
-    const maxQueueEvents = Math.max(1, rawMaxQueue);
-
-    if (this.maxDiskEvents > 0 && this.maxDiskEvents < maxQueueEvents) {
-      warn(
-        `maxDiskEvents (${this.maxDiskEvents}) is less than maxQueueEvents (${maxQueueEvents}) — memory can hold more events than disk can preserve; events may be dropped during background flush`
-      );
-    }
+    this.ingestionHost = normalized.ingestionHost;
+    this.writeKey = normalized.writeKey;
+    this.flushIntervalSeconds = Math.max(
+      1,
+      normalized.flushIntervalSeconds ?? 10
+    );
+    this.maxDiskEvents = normalized.maxDiskEvents!;
+    const maxQueueEvents = normalized.maxQueueEvents!;
 
     setDebugLogging(options.debug ?? false);
     this.trackLifecycleEvents = options.trackLifecycleEvents ?? false;

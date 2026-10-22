@@ -67,7 +67,7 @@ describe('MetaRouterAnalyticsClient', () => {
           writeKey: '',
         })
     ).toThrow(
-      'MetaRouterAnalyticsClient initialization failed: `writeKey` is required and must be a non-empty string.'
+      'Invalid InitOptions: writeKey must not be empty or whitespace-only'
     );
   });
 
@@ -79,7 +79,7 @@ describe('MetaRouterAnalyticsClient', () => {
           ingestionHost: 'not-a-url',
         })
     ).toThrow(
-      'MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash.'
+      'Invalid InitOptions: ingestionHost must be an http(s) URL, got "not-a-url"'
     );
   });
 
@@ -289,15 +289,14 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects ingestionHost that ends with a slash', () => {
-    expect(
-      () =>
-        new MetaRouterAnalyticsClient({
-          ingestionHost: 'https://example.com/',
-          writeKey: 'k',
-        })
-    ).toThrow(
-      'MetaRouterAnalyticsClient initialization failed: `ingestionHost` must be a valid URL and not end in a slash.'
+  it('trims a trailing slash on ingestionHost instead of rejecting it', async () => {
+    const client = new MetaRouterAnalyticsClient({
+      ingestionHost: 'https://example.com/',
+      writeKey: 'k',
+    });
+    await client.init();
+    expect((await client.getDebugInfo()).ingestionHost).toBe(
+      'https://example.com'
     );
   });
 
@@ -982,14 +981,12 @@ describe('MetaRouterAnalyticsClient', () => {
   });
 
   describe('maxDiskEvents validation', () => {
-    it('rejects negative maxDiskEvents at construction', () => {
-      expect(
-        () =>
-          new MetaRouterAnalyticsClient({
-            ...opts,
-            maxDiskEvents: -1,
-          })
-      ).toThrow(/maxDiskEvents.*must be >= 0/);
+    it('clamps negative maxDiskEvents to 0 at construction instead of throwing', () => {
+      const client = new MetaRouterAnalyticsClient({
+        ...opts,
+        maxDiskEvents: -1,
+      });
+      expect((client as any).maxDiskEvents).toBe(0);
     });
 
     it('accepts maxDiskEvents: 0 (persistence disabled)', () => {
@@ -1002,61 +999,20 @@ describe('MetaRouterAnalyticsClient', () => {
       ).not.toThrow();
     });
 
-    it('warns when 0 < maxDiskEvents < maxQueueEvents', () => {
+    it('does not log validation warnings itself (createAnalyticsClient already did)', () => {
+      // Logging here too would print every clamp/cleartext warning twice per
+      // init. The warnings themselves are covered in initOptions.test.ts.
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       new MetaRouterAnalyticsClient({
         ...opts,
+        ingestionHost: 'http://collector.example.com',
         maxQueueEvents: 2000,
         maxDiskEvents: 100,
       });
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringContaining(
-          'maxDiskEvents (100) is less than maxQueueEvents (2000)'
-        )
-      );
-      warnSpy.mockRestore();
-    });
-
-    it('does not warn when maxDiskEvents === maxQueueEvents', () => {
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      new MetaRouterAnalyticsClient({
-        ...opts,
-        maxQueueEvents: 500,
-        maxDiskEvents: 500,
-      });
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringContaining('is less than maxQueueEvents')
-      );
-      warnSpy.mockRestore();
-    });
-
-    it('does not warn when maxDiskEvents === 0 (disabled, not inverted)', () => {
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      new MetaRouterAnalyticsClient({
-        ...opts,
-        maxQueueEvents: 2000,
-        maxDiskEvents: 0,
-      });
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringContaining('is less than maxQueueEvents')
-      );
-      warnSpy.mockRestore();
-    });
-
-    it('does not warn when maxDiskEvents > maxQueueEvents', () => {
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      new MetaRouterAnalyticsClient({
-        ...opts,
-        maxQueueEvents: 2000,
-        maxDiskEvents: 10000,
-      });
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringContaining('is less than maxQueueEvents')
-      );
+      const messages = warnSpy.mock.calls.map((c) => c.join(' '));
+      expect(
+        messages.filter((m) => /cleartext|clamped|is less than/.test(m))
+      ).toEqual([]);
       warnSpy.mockRestore();
     });
   });

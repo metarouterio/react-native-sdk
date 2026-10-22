@@ -221,7 +221,11 @@ describe('Dispatcher', () => {
 
       expect(d.getDebugInfo().maxBatchSize).toBe(100);
     } finally {
-      jest.useRealTimers();
+      // Restore the global setup from jest.setup.js, not real timers: with
+      // real timers, every later test in this file schedules real retry and
+      // backoff timeouts that are never cleared, and the jest process does
+      // not exit after the run.
+      jest.useFakeTimers({ advanceTimers: true });
     }
   });
 

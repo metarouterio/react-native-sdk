@@ -1,4 +1,10 @@
-import { proxyClient, setRealClient } from './proxyClient';
+import {
+  clearConfigDisabled,
+  markConfigDisabled,
+  proxyClient,
+  setRealClient,
+  takePendingOpenedURLs,
+} from './proxyClient';
 import type { AnalyticsInterface } from '../types';
 
 describe('proxyClient', () => {
@@ -274,5 +280,81 @@ describe('proxyClient', () => {
     expect(mockClient.reset).toHaveBeenCalled();
     expect(mockClient.getDebugInfo).toHaveBeenCalled();
     expect(mockClient.getAnonymousId).toHaveBeenCalled();
+  });
+
+  describe('config-disabled session', () => {
+    const DESC = 'writeKey must not be empty or whitespace-only';
+
+    it('settles waiting async calls with degraded values instead of rejecting', async () => {
+      const anonId = proxyClient.getAnonymousId();
+      const debug = proxyClient.getDebugInfo();
+      const flushed = proxyClient.flush();
+
+      markConfigDisabled(DESC);
+
+      await expect(anonId).resolves.toBe('');
+      await expect(debug).resolves.toMatchObject({
+        lifecycle: 'disabled',
+        configError: DESC,
+      });
+      await expect(flushed).resolves.toBeUndefined();
+    });
+
+    it('answers queries immediately and never hangs while disabled', async () => {
+      markConfigDisabled(DESC);
+      await expect(proxyClient.getAnonymousId()).resolves.toBe('');
+      await expect(proxyClient.getDebugInfo()).resolves.toMatchObject({
+        lifecycle: 'disabled',
+        proxy: true,
+        configError: DESC,
+      });
+      await expect(proxyClient.setAdvertisingId('ad')).resolves.toBeUndefined();
+    });
+
+    it('drops calls queued before the refusal but replays calls made after it', () => {
+      proxyClient.track('Before');
+      markConfigDisabled(DESC);
+      proxyClient.track('After');
+
+      setRealClient(mockClient);
+
+      expect(mockClient.track).toHaveBeenCalledTimes(1);
+      expect(mockClient.track).toHaveBeenCalledWith('After', undefined);
+    });
+
+    it('makes async calls wait for the next bind again once the refusal is lifted', async () => {
+      markConfigDisabled(DESC);
+      clearConfigDisabled();
+
+      const anonId = proxyClient.getAnonymousId();
+      setRealClient(mockClient);
+      await expect(anonId).resolves.toBe('anon-mock-id');
+    });
+
+    it('queries do not take a slot in the capped queue', () => {
+      markConfigDisabled(DESC);
+      for (let i = 0; i < 20; i++) proxyClient.track(`E${i}`);
+      void proxyClient.getAnonymousId();
+      void proxyClient.getDebugInfo();
+      clearConfigDisabled();
+      setRealClient(mockClient);
+      expect(mockClient.track).toHaveBeenCalledTimes(20);
+      expect(mockClient.track).toHaveBeenNthCalledWith(1, 'E0', undefined);
+    });
+  });
+
+  it('takePendingOpenedURLs removes queued recordOpenedURL calls only, in order', () => {
+    proxyClient.recordOpenedURL('myapp://a');
+    proxyClient.track('Kept');
+    proxyClient.recordOpenedURL('myapp://b', 'com.example.ref');
+
+    expect(takePendingOpenedURLs()).toEqual([
+      ['myapp://a', undefined],
+      ['myapp://b', 'com.example.ref'],
+    ]);
+    expect(takePendingOpenedURLs()).toEqual([]);
+
+    setRealClient({ ...mockClient, recordOpenedURL: jest.fn() } as any);
+    expect(mockClient.track).toHaveBeenCalledWith('Kept', undefined);
   });
 });

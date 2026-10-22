@@ -38,27 +38,34 @@ describe('createAnalyticsClient', () => {
       undefined
     );
   });
-  it('routes recordOpenedURL to the initializing client instead of queueing it for replay', async () => {
+  it('hands recordOpenedURL to the new client before its init() instead of replaying it after bind', async () => {
     // The proxy binds only after init() resolves, but the cold-launch
-    // Application Opened is emitted inside init(). A URL queued for replay
+    // Application Opened is emitted inside init(). A URL replayed after bind
     // would miss that Opened and attach to the next resume instead.
     const {
       MetaRouterAnalyticsClient,
     } = require('./MetaRouterAnalyticsClient');
-    const spy = jest.spyOn(
+    const urlSpy = jest.spyOn(
       MetaRouterAnalyticsClient.prototype,
       'recordOpenedURL'
     );
+    const initSpy = jest.spyOn(MetaRouterAnalyticsClient.prototype, 'init');
     const { createAnalyticsClient } = require('./init');
     const client = createAnalyticsClient({
       ...opts,
       trackLifecycleEvents: true,
     });
 
+    // Forwarded right after the call, before the queued init has built a
+    // client — the usual Linking.getInitialURL() wiring.
     client.recordOpenedURL('myapp://cold', 'com.example.referrer');
+    await client.getAnonymousId(); // resolves once bound
 
-    // Reached synchronously, while init() is still running.
-    expect(spy).toHaveBeenCalledWith('myapp://cold', 'com.example.referrer');
+    expect(urlSpy).toHaveBeenCalledTimes(1);
+    expect(urlSpy).toHaveBeenCalledWith('myapp://cold', 'com.example.referrer');
+    expect(urlSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      initSpy.mock.invocationCallOrder[0]!
+    );
 
     // Let init finish and tear the client down so its flush loop does not
     // keep the worker alive.
@@ -66,10 +73,11 @@ describe('createAnalyticsClient', () => {
     await client.reset();
   });
 
-  it('replays a URL forwarded through the proxy before createAnalyticsClient into the bound client', async () => {
-    // No client exists yet, so the call queues for replay like any pre-init
-    // call. Same as both natives: it is not lost, but it is applied after
-    // bind, so it rides on the next Opened rather than the cold-launch one.
+  it('hands a URL forwarded through the proxy before createAnalyticsClient to the cold-launch client', async () => {
+    // No client exists yet, so the call queues like any pre-init call. The
+    // init that builds the client takes it from the queue before init()
+    // runs, so it reaches the cold-launch Opened instead of riding on the
+    // next resume after a replay.
     const {
       MetaRouterAnalyticsClient,
     } = require('./MetaRouterAnalyticsClient');
@@ -86,10 +94,14 @@ describe('createAnalyticsClient', () => {
       ...opts,
       trackLifecycleEvents: true,
     });
+    const initSpy = jest.spyOn(MetaRouterAnalyticsClient.prototype, 'init');
     await client.getAnonymousId();
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith('myapp://early', undefined);
+    expect(spy.mock.invocationCallOrder[0]).toBeLessThan(
+      initSpy.mock.invocationCallOrder[0]!
+    );
     await client.reset();
   });
 
@@ -123,6 +135,10 @@ describe('createAnalyticsClient', () => {
       jest.doMock('./proxy/proxyClient', () => ({
         setRealClient: setRealClientSpy,
         setInitializingClient: jest.fn(),
+        setResetHandler: jest.fn(),
+        takePendingOpenedURLs: jest.fn(() => []),
+        clearConfigDisabled: jest.fn(),
+        markConfigDisabled: jest.fn(),
         proxyClient: {},
       }));
       const { createAnalyticsClient } = require('./init');
@@ -252,38 +268,41 @@ describe('createAnalyticsClient', () => {
     expect(debug2?.maxQueueEvents).toBe(3000);
   });
 
-  it('warns if reconfiguration attempted without awaiting reset', async () => {
+  it('createAnalyticsClient right after a non-awaited reset queues a real init with the new options', async () => {
+    // reset() clears the session flags when it is called, and its teardown
+    // runs in order before the next init — so not awaiting it is safe.
+    const { createAnalyticsClient } = require('./init');
+
+    const client1 = createAnalyticsClient({ ...opts, maxQueueEvents: 1000 });
+    await client1.getAnonymousId();
+
+    const resetDone = client1.reset(); // not awaited before the next call
+    const client2 = createAnalyticsClient({ ...opts, maxQueueEvents: 3000 });
+
+    // Until the queued teardown runs, calls still reach the old client; once
+    // it has, the next bind is the new init's.
+    await resetDone;
+    await client2.getAnonymousId();
+    const debug = await client2.getDebugInfo();
+    expect(debug.lifecycle).toBe('ready');
+    expect(debug.maxQueueEvents).toBe(3000);
+    await client2.reset();
+  });
+
+  it('warns when createAnalyticsClient is called again with different options and no reset', async () => {
     const { createAnalyticsClient } = require('./init');
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // First client with maxQueueEvents: 1000
-    const client1 = createAnalyticsClient({
-      ...opts,
-      maxQueueEvents: 1000,
-    });
+    const client = createAnalyticsClient({ ...opts, maxQueueEvents: 1000 });
+    createAnalyticsClient({ ...opts, maxQueueEvents: 3000 });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // Reset WITHOUT awaiting
-    client1.reset(); // ❌ Not awaited!
-
-    // Immediately try to create with new config
-    const client2 = createAnalyticsClient({
-      ...opts,
-      maxQueueEvents: 3000,
-    });
-
-    // Should warn about config change
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining(
         '[MetaRouter] Config changed but client not reset'
       )
     );
-
     warnSpy.mockRestore();
-
-    // Clean up - properly await the reset that was left hanging
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await client2.reset();
+    await client.getAnonymousId();
+    await client.reset();
   });
 });
