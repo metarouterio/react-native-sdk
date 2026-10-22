@@ -215,7 +215,7 @@ The analytics client provides the following methods:
 - `screen(name: string, properties?: Record<string, any>)`: Track screen views
 - `page(name: string, properties?: Record<string, any>)`: Track page views
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
-- `recordOpenedURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. The SDK does not read `Linking` itself, so only URLs passed here are recorded. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a debug warning) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
+- `recordOpenedURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. The SDK does not read `Linking` itself, so only URLs passed here are recorded. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a warning, always logged) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
@@ -280,7 +280,7 @@ const analytics = createAnalyticsClient({
 ### Notes
 
 - `active → inactive → active` blips (Control Center, a FaceID prompt, system alerts) are **suppressed**. `Application Opened` with `from_background: true` needs a real background entry first; a return that passes through `inactive` (e.g. a passcode prompt on resume) still counts.
-- On iOS, React Native reports `active → inactive → background` when the app is left; `Application Backgrounded` fires on the `background` step. A process that never reached the foreground (headless task, push wake) does not emit `Application Backgrounded`.
+- On iOS, React Native reports `active → inactive → background` when the app is left; `Application Backgrounded` fires on the `background` step. A process that settles straight into the background from `unknown` (headless task, push wake) does not emit `Application Backgrounded`. On iOS the launch state is `inactive`, so locking the device before the app first becomes active does emit one, the same as the native iOS SDK.
 - Cold launches in a background process state (silent push, headless task) suppress the cold-launch `Application Opened`; the next `background → active` transition emits with `from_background: false` as the cold-launch bridge.
 - Existing users upgrading from a pre-lifecycle SDK build receive `Application Updated` with `previous_version="unknown"` and `previous_build="unknown"` (instead of a spurious `Application Installed`).
 - Lifecycle storage (`metarouter:lifecycle:version`, `metarouter:lifecycle:build`) is **not** cleared by `reset()` — install/update history survives logout.
@@ -317,7 +317,7 @@ URLs from outside `Linking` (a UIScene URL handler on iOS, an Android `Intent.AC
 
 - One-shot — the buffer is cleared after the next `Application Opened` emits.
 - Last-write-wins — multiple `recordOpenedURL` calls before the next Opened keep only the most recent URL.
-- No-op with a debug warning when `trackLifecycleEvents` is disabled, so misconfigurations surface in logs instead of failing silently.
+- No-op with an always-on warning when `trackLifecycleEvents` is disabled, so misconfigurations surface in logs instead of failing silently.
 
 ### Privacy & sanitization
 
