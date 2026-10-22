@@ -18,10 +18,23 @@ jest.mock('./utils/identityStorage', () => ({
   ADVERTISING_ID_KEY: 'metarouter:advertising_id',
 }));
 
+jest.mock('./utils/lifecycleStorage', () => ({
+  getLifecycleVersion: jest.fn(() => Promise.resolve(null)),
+  getLifecycleBuild: jest.fn(() => Promise.resolve(null)),
+  setLifecycleVersionBuild: jest.fn(() => Promise.resolve()),
+  LIFECYCLE_VERSION_KEY: 'metarouter:lifecycle:version',
+  LIFECYCLE_BUILD_KEY: 'metarouter:lifecycle:build',
+}));
+
+// Existing tests assert specific queue lengths and order. Disable lifecycle
+// emission here so the auto-emitted Application Opened / Updated events do
+// not skew those assertions. A dedicated `describe('lifecycle events')`
+// block below covers the behavior with the flag enabled.
 const opts: InitOptions = {
   ingestionHost: 'https://example.com',
   writeKey: 'test_write_key',
   flushIntervalSeconds: 5,
+  trackLifecycleEvents: false,
 };
 
 describe('MetaRouterAnalyticsClient', () => {
@@ -1098,6 +1111,706 @@ describe('MetaRouterAnalyticsClient', () => {
       await pq.flushToDisk();
 
       expect(flushSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lifecycle events', () => {
+    const lifecycleOpts: InitOptions = {
+      ingestionHost: 'https://example.com',
+      writeKey: 'test_write_key',
+      flushIntervalSeconds: 5,
+      trackLifecycleEvents: true,
+    };
+
+    const getLifecycleEvents = (client: MetaRouterAnalyticsClient) =>
+      client.queue.filter(
+        (e) => e.type === 'track' && e.event?.startsWith('Application ')
+      );
+
+    // Stop the dispatcher's flush() from synchronously draining the in-memory
+    // queue inside its first iteration (`drainBatch` runs before the await).
+    // Without this, events emitted right before `this.flush()` in
+    // handleAppStateChange disappear from `client.queue` before assertions
+    // can read them — the production behavior is correct (event was shipped
+    // via fetch), but the queue snapshot is empty.
+    const disableDispatcherFlush = (client: MetaRouterAnalyticsClient) => {
+      jest
+        .spyOn((client as any).dispatcher, 'flush')
+        .mockResolvedValue(undefined);
+    };
+
+    let lifecycleStorage: any;
+
+    beforeEach(() => {
+      lifecycleStorage = require('./utils/lifecycleStorage');
+      (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
+        null
+      );
+      (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue(null);
+      (
+        lifecycleStorage.setLifecycleVersionBuild as jest.Mock
+      ).mockResolvedValue(undefined);
+      // Default jest setup mock — reset for each test.
+      const RN = require('react-native');
+      RN.AppState.currentState = 'active';
+      (RN.Linking.getInitialURL as jest.Mock).mockResolvedValue(null);
+      (RN.Linking.addEventListener as jest.Mock).mockReturnValue({
+        remove: jest.fn(),
+      });
+    });
+
+    it('emits Application Installed then Opened on a fresh install', async () => {
+      const identityStorage = require('./utils/identityStorage');
+      // Empty storage that keeps what is written to it, like AsyncStorage.
+      // IdentityManager.init() persists a fresh anonymousId on first launch;
+      // a mock that always reads back null hides whether the install check
+      // runs before or after that write.
+      const store = new Map<string, string>();
+      (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+        async (key: string) => store.get(key) ?? null
+      );
+      (identityStorage.setIdentityField as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          store.set(key, value);
+        }
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      expect(store.get(identityStorage.ANONYMOUS_ID_KEY)).toBeDefined();
+      const events = getLifecycleEvents(client);
+      expect(events.map((e) => e.event)).toEqual([
+        'Application Installed',
+        'Application Opened',
+      ]);
+      expect(events[0].properties).toMatchObject({
+        version: '1.7.0',
+        build: 'unknown',
+      });
+      expect(events[1].properties).toMatchObject({
+        from_background: false,
+        version: '1.7.0',
+        build: 'unknown',
+      });
+      expect(lifecycleStorage.setLifecycleVersionBuild).toHaveBeenCalledWith(
+        '1.7.0',
+        'unknown'
+      );
+    });
+
+    it('emits Application Updated with unknown sentinel for SDK upgrades', async () => {
+      // Identity exists (anon-123 from default mock) but no lifecycle storage:
+      // this is an existing user upgrading from a pre-lifecycle SDK build.
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      const events = getLifecycleEvents(client);
+      expect(events.map((e) => e.event)).toEqual([
+        'Application Updated',
+        'Application Opened',
+      ]);
+      expect(events[0].properties).toMatchObject({
+        version: '1.7.0',
+        build: 'unknown',
+        previous_version: 'unknown',
+        previous_build: 'unknown',
+      });
+    });
+
+    it('emits only Application Opened when stored version matches', async () => {
+      (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
+        '1.7.0'
+      );
+      (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue(
+        'unknown'
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      const events = getLifecycleEvents(client);
+      expect(events.map((e) => e.event)).toEqual(['Application Opened']);
+      expect(events[0].properties).toMatchObject({
+        from_background: false,
+      });
+    });
+
+    it('emits Application Updated with the previous values when version differs', async () => {
+      (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
+        '1.6.0'
+      );
+      (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue('40');
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      const events = getLifecycleEvents(client);
+      expect(events.map((e) => e.event)).toEqual([
+        'Application Updated',
+        'Application Opened',
+      ]);
+      expect(events[0].properties).toMatchObject({
+        version: '1.7.0',
+        build: 'unknown',
+        previous_version: '1.6.0',
+        previous_build: '40',
+      });
+    });
+
+    it('suppresses cold-launch Application Opened when process is in background', async () => {
+      const RN = require('react-native');
+      RN.AppState.currentState = 'background';
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const events = getLifecycleEvents(client);
+      // Updated may still fire (identity exists), but no Opened.
+      expect(events.some((e) => e.event === 'Application Opened')).toBe(false);
+
+      // Clear queue, then simulate background→active transition.
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      // Seed appState to 'background' so the transition is recognized.
+      (client as any).appState = 'background';
+      (client as any).wasBackgrounded = true;
+      RN.AppState.currentState = 'active';
+      handler('active');
+
+      const opened = client.queue.find(
+        (e) => e.type === 'track' && e.event === 'Application Opened'
+      );
+      expect(opened).toBeDefined();
+      expect(opened!.properties).toMatchObject({ from_background: false });
+    });
+
+    it('emits Application Backgrounded before flushing on background entry', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const initialCount = client.queue.length;
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      const flushSpy = jest.spyOn(client, 'flush');
+
+      (client as any).appState = 'active';
+      handler('background');
+
+      // Backgrounded enqueued synchronously before flush() awaits.
+      const bgEvent = client.queue
+        .slice(initialCount)
+        .find(
+          (e) => e.type === 'track' && e.event === 'Application Backgrounded'
+        );
+      expect(bgEvent).toBeDefined();
+      expect(flushSpy).toHaveBeenCalled();
+    });
+
+    it('does not emit Application Backgrounded on inactive transitions', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      (client as any).appState = 'active';
+      handler('inactive');
+
+      const bgEvent = client.queue.find(
+        (e) => e.type === 'track' && e.event === 'Application Backgrounded'
+      );
+      expect(bgEvent).toBeUndefined();
+    });
+
+    it('emits Application Backgrounded once on the iOS active→inactive→background sequence', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      // Spy on enqueue rather than reading client.queue: each step also moves
+      // the memory queue to disk, so the queue is empty once the handler
+      // resolves.
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      const flushSpy = jest.spyOn(client, 'flush');
+
+      (client as any).appState = 'active';
+      await handler('inactive');
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      await handler('background');
+
+      const backgrounded = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter(
+          (e: any) =>
+            e.type === 'track' && e.event === 'Application Backgrounded'
+        );
+      expect(backgrounded).toHaveLength(1);
+      // The inactive step already flushed before Backgrounded existed, so the
+      // background step must flush again or the event waits for the next
+      // foreground.
+      expect(flushSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('emits the resume Opened when the return passes through inactive', async () => {
+      // e.g. a FaceID or passcode prompt on resume: background → inactive →
+      // active. Must not be treated as a Control Center blip.
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'active';
+      await handler('inactive');
+      await handler('background');
+      await handler('inactive');
+      await handler('active');
+
+      const names = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event?.startsWith('Application '))
+        .map((e: any) => [e.event, e.properties?.from_background]);
+      expect(names).toEqual([
+        ['Application Backgrounded', undefined],
+        ['Application Opened', true],
+      ]);
+    });
+
+    it('does not emit Backgrounded for a process that never reached the foreground', async () => {
+      // Headless JS / push wake: AppState settles from `unknown` straight to
+      // background. A Backgrounded here would have no Opened before it.
+      const RN = require('react-native');
+      RN.AppState.currentState = 'unknown';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'unknown';
+      await handler('background');
+
+      const backgrounded = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event === 'Application Backgrounded');
+      expect(backgrounded).toHaveLength(0);
+    });
+
+    // Opened / Backgrounded only: the spy is attached before init(), so it
+    // also sees the cold-launch Updated(unknown) from the mocked storage.
+    const foregroundCalls = (enqueueSpy: jest.SpyInstance) =>
+      enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter(
+          (e: any) =>
+            e.event === 'Application Opened' ||
+            e.event === 'Application Backgrounded'
+        )
+        .map((e: any) => [e.event, e.properties?.from_background]);
+
+    it('does not report a Control Center blip as a resume after a background cycle during init()', async () => {
+      // Hold init() between the AppState listener attaching and `ready`
+      // (the advertising-id read sits in that window) and complete a
+      // background → active cycle there.
+      const identityStorage = require('./utils/identityStorage');
+      let releaseInit!: () => void;
+      const held = new Promise<undefined>((resolve) => {
+        releaseInit = () => resolve(undefined);
+      });
+      (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+        async (key: string) => {
+          if (key === identityStorage.ADVERTISING_ID_KEY) return held;
+          if (key === identityStorage.ANONYMOUS_ID_KEY) return 'anon-123';
+          return undefined;
+        }
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      const initDone = client.init();
+      while ((AppState.addEventListener as jest.Mock).mock.calls.length === 0) {
+        await Promise.resolve();
+      }
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      (client as any).appState = 'active';
+      await handler('inactive');
+      await handler('background');
+      await handler('active');
+
+      releaseInit();
+      await initDone;
+      disableDispatcherFlush(client);
+
+      await handler('inactive');
+      await handler('active');
+
+      // Only the cold-launch Opened: no Backgrounded before ready, and the
+      // blip after it is not a resume.
+      expect(foregroundCalls(enqueueSpy)).toEqual([
+        ['Application Opened', false],
+      ]);
+    });
+
+    it('emits a Backgrounded with no Opened when the app is locked before first activation (iOS inactive launch)', async () => {
+      // On iOS the initial AppState is `inactive` during launch. Same as the
+      // native SDK: inactive → background counts as leaving the foreground.
+      const RN = require('react-native');
+      RN.AppState.currentState = 'inactive';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      await client.init();
+      disableDispatcherFlush(client);
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      await handler('background');
+      await handler('active');
+
+      // The cold-launch Opened was deferred (not active at launch) and is
+      // emitted on the first activation.
+      expect(foregroundCalls(enqueueSpy)).toEqual([
+        ['Application Backgrounded', undefined],
+        ['Application Opened', false],
+      ]);
+    });
+
+    it('attaches a URL forwarded before the first activation to the deferred cold-launch Opened (unknown → active)', async () => {
+      const RN = require('react-native');
+      RN.AppState.currentState = 'unknown';
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const enqueueSpy = jest.spyOn((client as any).dispatcher, 'enqueue');
+      await client.init();
+      disableDispatcherFlush(client);
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      client.recordOpenedURL('myapp://push', 'com.example.referrer');
+      await handler('active');
+
+      const opened = enqueueSpy.mock.calls
+        .map(([e]: any[]) => e)
+        .filter((e: any) => e.event === 'Application Opened');
+      expect(opened).toHaveLength(1);
+      expect(opened[0].properties).toMatchObject({
+        from_background: false,
+        url: 'myapp://push',
+        referring_application: 'com.example.referrer',
+      });
+    });
+
+    it('emits Application Opened with from_background=true on background→active', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+      disableDispatcherFlush(client);
+
+      const startIndex = client.queue.length;
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'background';
+
+      (client as any).wasBackgrounded = true;
+      handler('active');
+
+      const opened = client.queue
+        .slice(startIndex)
+        .find((e) => e.type === 'track' && e.event === 'Application Opened');
+      expect(opened).toBeDefined();
+      expect(opened!.properties).toMatchObject({ from_background: true });
+    });
+
+    it('does not emit Application Opened on inactive→active transitions', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      const startIndex = client.queue.length;
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+
+      (client as any).appState = 'inactive';
+      handler('active');
+
+      const opened = client.queue
+        .slice(startIndex)
+        .find((e) => e.type === 'track' && e.event === 'Application Opened');
+      expect(opened).toBeUndefined();
+    });
+
+    it('never reads Linking: URLs reach Opened only through recordOpenedURL', async () => {
+      // Deep links carry auth tokens and OTPs. If the SDK captured Linking
+      // itself, the raw URL would race the host's sanitized forward for the
+      // same one-slot buffer and could win.
+      const RN = require('react-native');
+      (RN.Linking.getInitialURL as jest.Mock).mockResolvedValue(
+        'myapp://reset?token=secret'
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      expect(RN.Linking.getInitialURL).not.toHaveBeenCalled();
+      expect(RN.Linking.addEventListener).not.toHaveBeenCalled();
+      const opened = client.queue.find(
+        (e) => e.type === 'track' && e.event === 'Application Opened'
+      );
+      expect(opened).toBeDefined();
+      expect(opened!.properties?.url).toBeUndefined();
+    });
+
+    it('attaches a URL forwarded during init() to the cold-launch Application Opened', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      const initDone = client.init();
+      client.recordOpenedURL('myapp://cold', 'com.example.referrer');
+      await initDone;
+
+      const opened = client.queue.filter(
+        (e) => e.type === 'track' && e.event === 'Application Opened'
+      );
+      expect(opened).toHaveLength(1);
+      expect(opened[0].properties).toMatchObject({
+        from_background: false,
+        url: 'myapp://cold',
+        referring_application: 'com.example.referrer',
+      });
+    });
+
+    it('emits no lifecycle events when trackLifecycleEvents is false', async () => {
+      const client = new MetaRouterAnalyticsClient({
+        ...lifecycleOpts,
+        trackLifecycleEvents: false,
+      });
+      await client.init();
+
+      const startIndex = client.queue.length;
+      expect(getLifecycleEvents(client)).toHaveLength(0);
+
+      const handler = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      (client as any).appState = 'active';
+      handler('background');
+      (client as any).appState = 'background';
+      (client as any).wasBackgrounded = true;
+      handler('active');
+
+      const newEvents = client.queue.slice(startIndex);
+      const lifecycleNames = newEvents
+        .filter((e) => e.event?.startsWith('Application '))
+        .map((e) => e.event);
+      expect(lifecycleNames).toHaveLength(0);
+    });
+
+    it('preserves lifecycle storage across reset()', async () => {
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      // The mock module shape is `{ __esModule: true, default: { ... } }`,
+      // so spy on the `default` export's removeItem.
+      const AsyncStorageMock = require('@react-native-async-storage/async-storage');
+      const removeSpy = jest.spyOn(AsyncStorageMock.default, 'removeItem');
+
+      await client.reset();
+
+      // Lifecycle keys must NOT be removed by reset().
+      const removedKeys = removeSpy.mock.calls.map((c) => c[0]);
+      expect(removedKeys).not.toContain('metarouter:lifecycle:version');
+      expect(removedKeys).not.toContain('metarouter:lifecycle:build');
+    });
+
+    describe('recordOpenedURL public API', () => {
+      it('attaches the buffered URL to the next Application Opened', async () => {
+        const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+        await client.init();
+        disableDispatcherFlush(client);
+
+        client.recordOpenedURL('myapp://from-host');
+
+        const startIndex = client.queue.length;
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened = client.queue
+          .slice(startIndex)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        expect(opened).toBeDefined();
+        expect(opened!.properties?.url).toBe('myapp://from-host');
+      });
+
+      it('populates referring_application when sourceApplication is provided', async () => {
+        const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+        await client.init();
+        disableDispatcherFlush(client);
+
+        client.recordOpenedURL('myapp://from-host', 'com.example.referrer');
+
+        const startIndex = client.queue.length;
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened = client.queue
+          .slice(startIndex)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        expect(opened!.properties).toMatchObject({
+          url: 'myapp://from-host',
+          referring_application: 'com.example.referrer',
+        });
+      });
+
+      it('is last-write-wins when called multiple times before Opened', async () => {
+        const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+        await client.init();
+        disableDispatcherFlush(client);
+
+        client.recordOpenedURL('myapp://first');
+        client.recordOpenedURL('myapp://second');
+        client.recordOpenedURL('myapp://third');
+
+        const startIndex = client.queue.length;
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened = client.queue
+          .slice(startIndex)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        expect(opened!.properties?.url).toBe('myapp://third');
+      });
+
+      it('clears the buffer after the next Opened (one-shot)', async () => {
+        const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+        await client.init();
+        disableDispatcherFlush(client);
+
+        client.recordOpenedURL('myapp://once');
+
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const startIndex2 = client.queue.length;
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened2 = client.queue
+          .slice(startIndex2)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        expect(opened2).toBeDefined();
+        expect(opened2!.properties?.url).toBeUndefined();
+      });
+
+      it('warns and is a no-op when trackLifecycleEvents is disabled', async () => {
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+        const client = new MetaRouterAnalyticsClient({
+          ...lifecycleOpts,
+          trackLifecycleEvents: false,
+        });
+        await client.init();
+
+        client.recordOpenedURL('myapp://ignored');
+
+        const startIndex = client.queue.length;
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened = client.queue
+          .slice(startIndex)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        // No Opened emit at all when feature is disabled.
+        expect(opened).toBeUndefined();
+        // And the call surfaced a warning so callers can detect the misconfig.
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.stringContaining('trackLifecycleEvents is disabled')
+        );
+        warnSpy.mockRestore();
+      });
+
+      it('ignores invalid url input (empty or non-string)', async () => {
+        const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+        await client.init();
+        disableDispatcherFlush(client);
+
+        client.recordOpenedURL('');
+        client.recordOpenedURL(undefined as unknown as string);
+
+        const startIndex = client.queue.length;
+        const handler = (AppState.addEventListener as jest.Mock).mock
+          .calls[0][1];
+        (client as any).appState = 'background';
+        (client as any).wasBackgrounded = true;
+        handler('active');
+
+        const opened = client.queue
+          .slice(startIndex)
+          .find((e) => e.type === 'track' && e.event === 'Application Opened');
+        expect(opened).toBeDefined();
+        expect(opened!.properties?.url).toBeUndefined();
+      });
+    });
+
+    it('defaults trackLifecycleEvents to false (opt-in) when option is omitted', async () => {
+      const identityStorage = require('./utils/identityStorage');
+      (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+        async () => null
+      );
+
+      const client = new MetaRouterAnalyticsClient({
+        ingestionHost: 'https://example.com',
+        writeKey: 'test_write_key',
+      });
+      await client.init();
+
+      // No lifecycle events at all — opt-in default.
+      const events = client.queue.filter(
+        (e) => e.type === 'track' && e.event?.startsWith('Application ')
+      );
+      expect(events).toHaveLength(0);
+    });
+
+    it('does not re-emit Application Installed after reset() when version is unchanged', async () => {
+      // First launch: fresh install.
+      const identityStorage = require('./utils/identityStorage');
+      (identityStorage.getIdentityField as jest.Mock).mockImplementation(
+        async () => null
+      );
+
+      const client = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client.init();
+
+      // After init, lifecycle storage should record the current version.
+      // Re-arm the mock to return what it would have stored.
+      (lifecycleStorage.getLifecycleVersion as jest.Mock).mockResolvedValue(
+        '1.7.0'
+      );
+      (lifecycleStorage.getLifecycleBuild as jest.Mock).mockResolvedValue(
+        'unknown'
+      );
+
+      await client.reset();
+
+      // Second launch: same version, lifecycle storage intact → no Installed.
+      const client2 = new MetaRouterAnalyticsClient(lifecycleOpts);
+      await client2.init();
+
+      const events = getLifecycleEvents(client2);
+      expect(events.some((e) => e.event === 'Application Installed')).toBe(
+        false
+      );
+      expect(events.some((e) => e.event === 'Application Updated')).toBe(false);
+      expect(events.some((e) => e.event === 'Application Opened')).toBe(true);
     });
   });
 });
