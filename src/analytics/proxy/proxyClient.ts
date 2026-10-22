@@ -128,7 +128,13 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     >;
   }
 
-  // No real client bound yet
+  // No real client bound yet. No queueing and no waiting for a bind, unlike
+  // getAnonymousId: sessions are minted by events, so before a bind "null — no
+  // session yet" is the true answer, refused sessions included.
+  if (methodName === 'getSessionId') {
+    return Promise.resolve(null) as ReturnType<AnalyticsInterface[T]>;
+  }
+
   if (methodName === 'recordOpenedURL' && initializingClient) {
     initializingClient.recordOpenedURL(
       ...(args as Parameters<AnalyticsInterface['recordOpenedURL']>)
@@ -242,6 +248,7 @@ export const proxyClient: AnalyticsInterface = {
   enableDebugLogging: () => handleMethodCall('enableDebugLogging'),
   getDebugInfo: () => handleMethodCall('getDebugInfo'),
   getAnonymousId: () => handleMethodCall('getAnonymousId'),
+  getSessionId: () => handleMethodCall('getSessionId'),
 };
 
 /**

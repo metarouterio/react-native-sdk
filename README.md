@@ -16,6 +16,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 - [Features](#features)
 - [Disk-Backed Queue Persistence](#disk-backed-queue-persistence)
 - [Application Lifecycle Events](#application-lifecycle-events)
+- [Session Tracking](#session-tracking)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
@@ -178,6 +179,8 @@ Calls to `track`, `identify`, etc. are **buffered in-memory** by the proxy and r
 - `maxQueueEvents` (number, optional, default: `2000`): Maximum events held in the in-memory queue. Values below 1 are clamped to 1. The queue is also bounded by a 5 MB byte cap — whichever limit is reached first triggers drop-oldest eviction.
 - `maxDiskEvents` (number, optional, default: `10000`): Maximum unsent events retained on disk for crash safety and offline recovery. Negative values are clamped to `0` with a warning. Set to `0` to disable disk persistence (events are lost on app kill).
 - `trackLifecycleEvents` (boolean, optional, default: `false`): Opt-in. Set to `true` to emit `Application Installed`, `Application Updated`, `Application Opened`, and `Application Backgrounded` events automatically. See [Application Lifecycle Events](#application-lifecycle-events).
+- `sessionTimeoutMinutes` (number, optional, default: `30`): Minutes of inactivity after which the next event starts a new session. Values below 1 are clamped to 1. See [Session Tracking](#session-tracking).
+- `fireSessionStarted` (boolean, optional, default: `false`): Emit a `Session Started` track event each time a new session starts. See [Session Tracking](#session-tracking).
 - `onConfigError` (function, optional): Called with a `ConfigError` (`type`, `description`, and `raw` for a bad host) when the options are invalid in a release build. See [Invalid configuration](#invalid-configuration).
 
 Out-of-range numbers are clamped and logged as a warning; they never fail initialization.
@@ -234,9 +237,10 @@ The analytics client provides the following methods:
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
+- `getSessionId(): Promise<string | null>`: Returns the current session ID, or `null` before the first event has been sent this launch. Never waits for initialization and never extends the session. See [Session Tracking](#session-tracking)
 - `setTracing(enabled: boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately
-- `reset()`: Reset analytics state and clear all stored data (includes clearing advertising ID)
+- `reset()`: Reset analytics state and clear stored identity (includes clearing advertising ID). The analytics session survives, so a logout does not split it
 - `enableDebugLogging()`: Enable debug logging
 - `getDebugInfo()`: Get current debug information
 
@@ -255,18 +259,22 @@ The analytics client provides the following methods:
 - 🎣 **React Hooks**: Easy integration with React components
 - 🔧 **TypeScript Support**: Full TypeScript support included
 - 🚀 **Lightweight**: Minimal overhead and dependencies
-- 💾 **Best-Effort Queue Persistence**: Can persist queued events to native disk storage and rehydrate them on next launch
+- 💾 **Best-Effort Queue Persistence**: Persists unsent events to native disk storage and delivers them on reconnect or next launch
+- ⏱️ **Session Tracking**: Every event carries a session ID and count — see [Session Tracking](#session-tracking)
 - 📲 **Lifecycle Events (opt-in)**: Emit `Application Installed/Updated/Opened/Backgrounded` automatically when enabled — see [Application Lifecycle Events](#application-lifecycle-events)
 - 🔄 **Reset Capability**: Easily reset analytics state for testing or logout scenarios
 - 🐛 **Debug Support**: Built-in debugging tools for troubleshooting
 
 ## Disk-Backed Queue Persistence
 
-This release adds native iOS and Android storage for best-effort queue durability.
+Native iOS and Android storage gives the queue best-effort durability.
 
-- If queued events remain buffered when the app backgrounds, the SDK may persist the remaining queue to disk.
-- If the in-memory queue grows past internal persistence thresholds, the SDK may snapshot the queue to disk as a fallback.
-- Persisted events are rehydrated during the next `init()`.
+- Events still in memory when the app backgrounds are written to disk.
+- Once 500 events or 2 MB are queued in memory, the queue is also written to disk as a crash-safety snapshot.
+- When the in-memory queue reaches `maxQueueEvents`, or the device is offline, overflowing events go to disk instead of being dropped.
+- Events on disk are sent straight to the network when connectivity returns or on the next launch, without being loaded back into the memory queue. Events older than 7 days are discarded.
+- When disk storage reaches `maxDiskEvents`, the oldest events are dropped. `reset()` deletes everything on disk.
+- Without the native modules (for example in Expo Go), persistence is disabled with a warning.
 - This is a durability baseline, not a full offline mode. The SDK still primarily uses in-memory batching and normal network delivery, and it does not guarantee zero-loss across every crash or termination window.
 
 ## Application Lifecycle Events
@@ -356,6 +364,42 @@ Linking.addEventListener("url", ({ url }) => {
 - **Privacy.** Hosts often receive URLs that contain credentials. Capturing them automatically would record secrets before the app has a chance to strip them.
 - **Host control.** Apps with custom URL routers or deep-link libraries (react-navigation linking, react-native-firebase dynamic links, Branch) need to decide *if* and *which* URLs reach analytics — `recordOpenedURL` is the explicit hand-off point.
 - **Parity.** The iOS (`recordOpenedURL`) and Android (`recordOpenedUrl`) SDKs work the same way, so the same app behaves the same on every platform.
+
+## Session Tracking
+
+Every event carries the analytics session it belongs to, stamped as:
+
+```json
+"context": {
+  "providers": {
+    "metarouter": {
+      "sessionID": "1757400000000",
+      "sessionCount": 3
+    }
+  }
+}
+```
+
+This is the same path and shape the web SDK's MetaRouter session sync and the iOS and Android SDKs produce, so pipeline mappings (e.g. GA4 `session_id` / `session_number`) read one field from every platform. `sessionID` is the epoch-millisecond timestamp of the session's first activity, as a string; `sessionCount` is the lifetime session ordinal for the install.
+
+Session stamping is **always on** — there is nothing to enable and no network cost. A session starts with the first event and ends after `sessionTimeoutMinutes` (default 30) of inactivity; the window slides, so steady activity keeps one session alive indefinitely. Any tracked or lifecycle event counts as activity. Sessions survive app restarts that happen inside the window, and survive `reset()` — a logout mid-session does not split the session.
+
+While the app is running, inactivity is measured on a native clock that keeps counting while the device sleeps and ignores changes to the device time. Across an app restart only the device time is available, so changing it can start a new session. Without the SDK's native modules (for example in Expo Go), the SDK uses the device time throughout and logs a warning.
+
+### Session Started event
+
+Optionally, the SDK emits a `Session Started` track event (no properties, matching web) each time a new session starts:
+
+```ts
+const analytics = createAnalyticsClient({
+  writeKey: 'YOUR_WRITE_KEY',
+  ingestionHost: 'https://your-ingestion-host.com',
+  sessionTimeoutMinutes: 30, // default
+  fireSessionStarted: true, // default false
+});
+```
+
+`fireSessionStarted` is off by default so upgrading the SDK never changes an app's event volume. Turn it on when a downstream destination needs an explicit session-start signal (GA4's `session_start`, for example).
 
 ## ✅ Compatibility
 

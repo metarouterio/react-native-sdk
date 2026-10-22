@@ -27,6 +27,7 @@ describe('proxyClient', () => {
       enableDebugLogging: jest.fn(),
       getDebugInfo: jest.fn().mockResolvedValue({ ok: true }),
       getAnonymousId: jest.fn().mockResolvedValue('anon-mock-id'),
+      getSessionId: jest.fn().mockResolvedValue('1757400000000'),
     };
     const { setRealClient } = require('./proxyClient');
     setRealClient(null, { dropPending: true }); // clear state between tests
@@ -280,6 +281,33 @@ describe('proxyClient', () => {
     expect(mockClient.reset).toHaveBeenCalled();
     expect(mockClient.getDebugInfo).toHaveBeenCalled();
     expect(mockClient.getAnonymousId).toHaveBeenCalled();
+  });
+
+  describe('getSessionId', () => {
+    it('resolves null before a bind without queueing', async () => {
+      await expect(proxyClient.getSessionId()).resolves.toBeNull();
+
+      setRealClient(mockClient);
+      // Nothing was queued for replay.
+      expect(mockClient.getSessionId).not.toHaveBeenCalled();
+    });
+
+    it('does not take a slot in the capped queue', () => {
+      for (let i = 0; i < 20; i++) proxyClient.track(`E${i}`);
+      void proxyClient.getSessionId();
+      setRealClient(mockClient);
+      expect(mockClient.track).toHaveBeenNthCalledWith(1, 'E0', undefined);
+    });
+
+    it('resolves null on a refused session', async () => {
+      markConfigDisabled('writeKey must not be empty or whitespace-only');
+      await expect(proxyClient.getSessionId()).resolves.toBeNull();
+    });
+
+    it('forwards to the bound client', async () => {
+      setRealClient(mockClient);
+      await expect(proxyClient.getSessionId()).resolves.toBe('1757400000000');
+    });
   });
 
   describe('config-disabled session', () => {

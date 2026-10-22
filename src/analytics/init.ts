@@ -237,6 +237,7 @@ function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
     enableDebugLogging: () => instance.enableDebugLogging(),
     getDebugInfo: () => instance.getDebugInfo(),
     getAnonymousId: () => instance.getAnonymousId(),
+    getSessionId: () => instance.getSessionId(),
     flush: () => instance.flush(),
     reset: () => resetSession(),
   };

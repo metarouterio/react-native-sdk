@@ -169,24 +169,44 @@ describe('validateInitOptions', () => {
         ),
       ]);
     });
-  });
 
-  it.each(['flushIntervalSeconds', 'maxQueueEvents', 'maxDiskEvents'] as const)(
-    'treats a non-finite %s as unset, with a warning',
-    (field) => {
+    it('sessionTimeoutMinutes 0 → 1', () => {
       const { options, configError } = validateInitOptions({
         ...base,
-        [field]: NaN,
+        sessionTimeoutMinutes: 0,
       });
       expect(configError).toBeNull();
-      expect(Number.isNaN(options[field])).toBe(false);
+      expect(options.sessionTimeoutMinutes).toBe(1);
       expect(warnings()).toEqual([
-        expect.stringContaining(
-          `${field} (NaN) is not a finite number — using the default`
-        ),
+        expect.stringContaining('sessionTimeoutMinutes (0) clamped to 1'),
       ]);
-    }
-  );
+    });
+
+    it('leaves sessionTimeoutMinutes unset when not given', () => {
+      expect(validateInitOptions(base).options.sessionTimeoutMinutes).toBe(
+        undefined
+      );
+    });
+  });
+
+  it.each([
+    'flushIntervalSeconds',
+    'maxQueueEvents',
+    'maxDiskEvents',
+    'sessionTimeoutMinutes',
+  ] as const)('treats a non-finite %s as unset, with a warning', (field) => {
+    const { options, configError } = validateInitOptions({
+      ...base,
+      [field]: NaN,
+    });
+    expect(configError).toBeNull();
+    expect(Number.isNaN(options[field])).toBe(false);
+    expect(warnings()).toEqual([
+      expect.stringContaining(
+        `${field} (NaN) is not a finite number — using the default`
+      ),
+    ]);
+  });
 
   describe('maxDiskEvents below maxQueueEvents', () => {
     it('warns when 0 < disk < queue', () => {

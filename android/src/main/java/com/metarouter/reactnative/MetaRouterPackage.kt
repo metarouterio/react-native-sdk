@@ -11,7 +11,8 @@ class MetaRouterPackage : ReactPackage {
     ): List<NativeModule> {
         return listOf(
             MetaRouterQueueStorageModule(reactContext),
-            MetaRouterNetworkMonitorModule(reactContext)
+            MetaRouterNetworkMonitorModule(reactContext),
+            MetaRouterClockModule(reactContext)
         )
     }
 
