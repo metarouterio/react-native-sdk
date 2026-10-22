@@ -80,6 +80,16 @@ describe('enrichEvent()', () => {
     expect(context.providers).toBeUndefined();
   });
 
+  it('adds context.page beside the session stamp when given one', () => {
+    const page = { url: 'https://shop.example.com/cart', path: '/cart' };
+    const enriched = enrichEvent(baseEvent, writeKey, context, session, page);
+    expect(enriched.context.page).toEqual(page);
+    expect(enriched.context.providers).toBeDefined();
+    expect(
+      enrichEvent(baseEvent, writeKey, context, session).context
+    ).not.toHaveProperty('page');
+  });
+
   it('includes advertisingId in context when present', () => {
     const contextWithAd: EventContext = {
       ...context,
