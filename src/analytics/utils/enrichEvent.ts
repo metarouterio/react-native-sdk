@@ -2,8 +2,9 @@ import {
   EnrichedEventPayload,
   EventContext,
   EventWithIdentity,
-} from "../types";
-import uuid from "react-native-uuid";
+} from '../types';
+import uuid from 'react-native-uuid';
+import type { SessionInfo } from '../session/sessionManager';
 
 /**
  * Generate a messageId with a timestamp prefix (ms since epoch + UUID).
@@ -24,18 +25,33 @@ function generateMessageId(): string {
  * @param event    The base event with identity information.
  * @param writeKey The write key for the analytics project.
  * @param context  The context information (device, app, environment, etc.).
+ * @param session  The session this event belongs to; stamped at
+ *                 `context.providers.metarouter`.
  * @returns        The enriched event payload.
  */
 export function enrichEvent(
   event: EventWithIdentity,
   writeKey: string,
-  context: EventContext
+  context: EventContext,
+  session: SessionInfo
 ): EnrichedEventPayload {
   const enriched = {
     ...event,
     writeKey,
     messageId: generateMessageId(),
-    context,
+    // A copy per event: `context` is the client's shared cached object. Key
+    // names and the epoch-ms string mirror the web SDK's MetaRouter session,
+    // so pipeline mappings read one shape from every platform — renaming any
+    // side forks them.
+    context: {
+      ...context,
+      providers: {
+        metarouter: {
+          sessionID: session.sessionId,
+          sessionCount: session.sessionCount,
+        },
+      },
+    },
   };
 
   return enriched;

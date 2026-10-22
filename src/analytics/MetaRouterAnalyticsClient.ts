@@ -40,6 +40,11 @@ import {
 } from './utils/networkMonitor';
 import { DebouncedNetworkMonitor } from './utils/debouncedNetworkMonitor';
 import {
+  DEFAULT_SESSION_TIMEOUT_MINUTES,
+  SESSION_STARTED_EVENT,
+  SessionManager,
+} from './session/sessionManager';
+import {
   DEFAULT_MAX_DISK_EVENTS,
   validateInitOptions,
 } from './utils/initOptions';
@@ -92,6 +97,10 @@ export class MetaRouterAnalyticsClient {
   // passcode prompt on resume), and comparing only the previous state would
   // mistake it for a Control Center blip and drop the Opened.
   private wasBackgrounded: boolean = false;
+  // One per client: enrichment touches it per event and getSessionId /
+  // getDebugInfo peek it. Its state outlives reset() through storage, not
+  // through this instance.
+  private sessionManager: SessionManager;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -99,7 +108,10 @@ export class MetaRouterAnalyticsClient {
    */
   constructor(
     options: InitOptions,
-    deps?: { networkMonitor?: NetworkReachability }
+    deps?: {
+      networkMonitor?: NetworkReachability;
+      sessionManager?: SessionManager;
+    }
   ) {
     // Same rules as the createAnalyticsClient gate, without logging: the
     // gate already logged this call's warnings, and logging here would print
@@ -125,6 +137,19 @@ export class MetaRouterAnalyticsClient {
     setDebugLogging(options.debug ?? false);
     this.trackLifecycleEvents = options.trackLifecycleEvents ?? false;
     this.identityManager = new IdentityManager();
+    this.sessionManager =
+      deps?.sessionManager ??
+      new SessionManager(
+        normalized.sessionTimeoutMinutes ?? DEFAULT_SESSION_TIMEOUT_MINUTES
+      );
+    // Installed here, before init() can let any event through: a handler
+    // installed after the install's first mint would drop its Session
+    // Started, which never recurs for that session.
+    if (options.fireSessionStarted) {
+      this.sessionManager.setOnSessionStart(() =>
+        this.track(SESSION_STARTED_EVENT)
+      );
+    }
     // Default: wrap the raw native monitor with the asymmetric debounce
     // (immediate offline, 2s stable-online). If a caller injects their own
     // monitor (e.g. in tests), use it as-is so they control the debounce
@@ -220,7 +245,13 @@ export class MetaRouterAnalyticsClient {
         const hadIdentityBeforeInit = this.trackLifecycleEvents
           ? await this.hasIdentityState()
           : false;
-        await this.identityManager.init();
+        // The session load must settle before `ready`: the first enriched
+        // event decides between resuming the persisted session and minting a
+        // new one. Independent of identity, so the reads overlap.
+        await Promise.all([
+          this.identityManager.init(),
+          this.sessionManager.loadPersisted(),
+        ]);
 
         // Cheap existence check — memory queue starts empty. Any on-disk
         // events are drained directly to the network below (if online) via
@@ -358,7 +389,15 @@ export class MetaRouterAnalyticsClient {
    */
   private buildEnrichedEvent(event: EventPayload): EnrichedEventPayload {
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
-    return enrichEvent(eventWithIdentity, this.writeKey, this.context);
+    // Every enriched event is session activity, and this is the funnel both
+    // event sources share (public calls and lifecycle events), so touching
+    // here is what makes the session stamp universal.
+    return enrichEvent(
+      eventWithIdentity,
+      this.writeKey,
+      this.context,
+      this.sessionManager.touch()
+    );
   }
 
   /**
@@ -767,10 +806,20 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
+   * The current session id, or null before the first event of the process
+   * has been enriched. A peek, not a touch: a diagnostic read is not activity
+   * and must not extend the inactivity window.
+   */
+  async getSessionId(): Promise<string | null> {
+    return this.sessionManager.peek()?.sessionId ?? null;
+  }
+
+  /**
    * Get current state for debugging
    */
   async getDebugInfo() {
     const d = this.dispatcher.getDebugInfo();
+    const session = this.sessionManager.peek();
     return {
       lifecycle: this.lifecycle,
       queueLength: d.queueLength,
@@ -789,6 +838,13 @@ export class MetaRouterAnalyticsClient {
       tracingEnabled: this.tracingEnabled,
       hasDiskData: this.persistentQueue.hasDiskData,
       networkStatus: this.networkStatus,
+      // Unmasked on purpose: a session id is an epoch-ms timestamp, not an
+      // identifier tied to a person, and the point of surfacing it here is
+      // matching it against event payloads.
+      ...(session && {
+        sessionId: session.sessionId,
+        sessionCount: session.sessionCount,
+      }),
     };
   }
 
@@ -822,6 +878,9 @@ export class MetaRouterAnalyticsClient {
     this.coldLaunchOpenDeferred = false;
     this.wasBackgrounded = false;
     this.lifecycleEmitter = null;
+    // The session survives reset() through storage: the next
+    // createAnalyticsClient builds a new client that resumes from it.
+    this.sessionManager.persistActivity();
 
     this.dispatcher.reset();
     await this.persistentQueue.deleteSnapshot();
