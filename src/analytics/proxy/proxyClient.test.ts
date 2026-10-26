@@ -28,6 +28,7 @@ describe('proxyClient', () => {
       getDebugInfo: jest.fn().mockResolvedValue({ ok: true }),
       getAnonymousId: jest.fn().mockResolvedValue('anon-mock-id'),
       getSessionId: jest.fn().mockResolvedValue('1757400000000'),
+      attachWebView: jest.fn(),
     };
     const { setRealClient } = require('./proxyClient');
     setRealClient(null, { dropPending: true }); // clear state between tests
@@ -281,6 +282,18 @@ describe('proxyClient', () => {
     expect(mockClient.reset).toHaveBeenCalled();
     expect(mockClient.getDebugInfo).toHaveBeenCalled();
     expect(mockClient.getAnonymousId).toHaveBeenCalled();
+  });
+
+  it('returns inert props for attachWebView when the SDK never registered its bridge', () => {
+    // proxyClient loaded without init.ts (a deep import): no handler.
+    const bridge = proxyClient.attachWebView(null, [
+      'https://shop.example.com',
+    ]);
+    expect(bridge.injectedJavaScriptBeforeContentLoaded).toBe('');
+    expect(bridge.onMessage({ nativeEvent: { data: 'host' } })).toBe(false);
+    // Nothing took a pending-call slot.
+    setRealClient(mockClient);
+    expect(mockClient.attachWebView).not.toHaveBeenCalled();
   });
 
   describe('getSessionId', () => {

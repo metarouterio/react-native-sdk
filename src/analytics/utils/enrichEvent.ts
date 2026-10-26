@@ -5,6 +5,7 @@ import {
 } from '../types';
 import uuid from 'react-native-uuid';
 import type { SessionInfo } from '../session/sessionManager';
+import type { PageContext } from '../webview/bridgeEnvelope';
 
 /**
  * Generate a messageId with a timestamp prefix (ms since epoch + UUID).
@@ -33,7 +34,8 @@ export function enrichEvent(
   event: EventWithIdentity,
   writeKey: string,
   context: EventContext,
-  session: SessionInfo
+  session: SessionInfo,
+  page?: PageContext
 ): EnrichedEventPayload {
   const enriched = {
     ...event,
@@ -51,6 +53,9 @@ export function enrichEvent(
           sessionCount: session.sessionCount,
         },
       },
+      // Bridge events carry the page they happened on; native events leave
+      // context.page absent, matching web SDK output.
+      ...(page && { page }),
     },
   };
 

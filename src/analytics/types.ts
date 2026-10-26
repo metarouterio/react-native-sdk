@@ -85,6 +85,28 @@ export interface InitOptions {
   onConfigError?: (error: ConfigError) => void;
 }
 
+/** The part of a `react-native-webview` ref the bridge uses to send replies. */
+export interface WebViewRefLike {
+  current: { injectJavaScript: (script: string) => void } | null;
+}
+
+/** The part of a `react-native-webview` message event the bridge reads. */
+export interface WebViewMessageEventLike {
+  nativeEvent: { data: string; url?: string };
+}
+
+/**
+ * Props returned by `attachWebView`, for a `react-native-webview` `<WebView>`.
+ * `onMessage` returns true when it consumed a bridge message and false for any
+ * other message, so a host with its own handler chains it:
+ * `onMessage={(e) => { if (!bridge.onMessage(e)) myHandler(e); }}`.
+ */
+export interface WebViewBridgeProps {
+  /** Empty when the attach was refused, so joining it with a host script is safe. */
+  injectedJavaScriptBeforeContentLoaded: string;
+  onMessage: (event: WebViewMessageEventLike) => boolean;
+}
+
 export interface AnalyticsInterface {
   track: (event: string, props?: Record<string, any>) => void;
   identify: (userId: string, traits?: Record<string, any>) => void;
@@ -120,6 +142,19 @@ export interface AnalyticsInterface {
    * stamped on every event at `context.providers.metarouter.sessionID`.
    */
   getSessionId: () => Promise<string | null>;
+  /**
+   * Bridges a `react-native-webview` WebView: pages on `allowedOrigins` get
+   * `window.metarouterBridge.track/page`, and their events are sent through
+   * this SDK with the app's identity, device context and session. Spread the
+   * returned props onto the `<WebView>` and pass its ref so the page receives
+   * acks. Origins must be exact `scheme://host[:port]`; invalid rules are
+   * refused with a warning and the returned props do nothing. Safe to call
+   * before initialization and on every render.
+   */
+  attachWebView: (
+    webViewRef: WebViewRefLike | null | undefined,
+    allowedOrigins: string[]
+  ) => WebViewBridgeProps;
 }
 
 export interface EventContext {
