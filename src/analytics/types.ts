@@ -64,6 +64,17 @@ export interface InitOptions {
    */
   trackLifecycleEvents?: boolean;
   /**
+   * Minutes of inactivity after which the next event starts a new session
+   * (default: 30). Clamped to >= 1. Session stamping itself is always on.
+   */
+  sessionTimeoutMinutes?: number;
+  /**
+   * Emit a `Session Started` track event each time a new session is minted.
+   * Defaults to false, so upgrading the SDK never changes an app's event
+   * volume.
+   */
+  fireSessionStarted?: boolean;
+  /**
    * Called synchronously by `createAnalyticsClient` when the options are
    * invalid in a release build, after the error is logged. The SDK is inert
    * for the session; a later `createAnalyticsClient` with valid options, or
@@ -102,6 +113,13 @@ export interface AnalyticsInterface {
   enableDebugLogging: () => void;
   getDebugInfo: () => Promise<Record<string, any>>;
   getAnonymousId: () => Promise<string>;
+  /**
+   * The current session id, or null before the first event of the process
+   * has been enriched. Sessions are minted by events, not reads, so this never
+   * waits for initialization and never extends the session. The same value is
+   * stamped on every event at `context.providers.metarouter.sessionID`.
+   */
+  getSessionId: () => Promise<string | null>;
 }
 
 export interface EventContext {
@@ -136,6 +154,12 @@ export interface EventContext {
   };
   locale: string;
   timezone: string;
+  /**
+   * Per-event provider values keyed by provider name — the mobile counterpart
+   * of the web SDK's `context.providers`. Set at enrichment, never cached with
+   * the rest of the context, because session values change per event.
+   */
+  providers?: Record<string, Record<string, unknown>>;
   [key: string]: any; // allow arbitrary context
 }
 

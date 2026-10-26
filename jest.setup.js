@@ -16,6 +16,9 @@ jest.mock('react-native', () => ({
     addEventListener: jest.fn(() => ({ remove: jest.fn() })),
   },
   NativeModules: {
+    MetaRouterClock: {
+      continuousMillis: jest.fn(() => Date.now()),
+    },
     MetaRouterQueueStorage: {
       exists: jest.fn(() => Promise.resolve(false)),
       readSnapshot: jest.fn(() => Promise.resolve(null)),
@@ -47,6 +50,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     setItem: jest.fn(() => Promise.resolve()),
     removeItem: jest.fn(() => Promise.resolve()),
     clear: jest.fn(() => Promise.resolve()),
+    multiGet: jest.fn((keys) => Promise.resolve(keys.map((k) => [k, null]))),
+    multiSet: jest.fn(() => Promise.resolve()),
   },
 }));
 
