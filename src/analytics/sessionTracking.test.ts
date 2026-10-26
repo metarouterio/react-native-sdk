@@ -91,6 +91,23 @@ describe('session tracking', () => {
     }
   });
 
+  it('sends the stamp in the POSTed batch body', async () => {
+    // Through the real dispatcher to the recorded request, not the queue:
+    // what the cluster receives is what the pipeline mappings read.
+    const client = makeClient();
+    await client.init();
+    client.track('A');
+    await client.flush();
+
+    const [, request] = (global.fetch as jest.Mock).mock.calls.at(-1)!;
+    const body = JSON.parse(request.body);
+    expect(body.batch).toHaveLength(1);
+    expect(body.batch[0].context.providers).toEqual({
+      metarouter: { sessionID: String(WALL_START), sessionCount: 1 },
+    });
+    await client.reset();
+  });
+
   it('does not write the stamp into the shared cached context', async () => {
     const client = makeClient();
     await client.init();
