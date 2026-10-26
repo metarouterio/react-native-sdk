@@ -107,6 +107,28 @@ describe('WebView bridge plumbing (direct client)', () => {
     await client.reset();
   });
 
+  it('sends page context and the session stamp in the POSTed batch body', async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    const bridge = attachTo(client);
+    bridge.onMessage(bridgeMessage(prefixOf(bridge), 'web-msg-1'));
+    await client.flush();
+
+    const [, request] = (global.fetch as jest.Mock).mock.calls.at(-1)!;
+    const body = JSON.parse(request.body);
+    expect(body.batch).toHaveLength(1);
+    expect(body.batch[0]).toMatchObject({
+      type: 'track',
+      event: 'Added To Cart',
+    });
+    expect(body.batch[0].context.page).toEqual(PAGE);
+    expect(body.batch[0].context.providers.metarouter).toEqual({
+      sessionID: expect.any(String),
+      sessionCount: 1,
+    });
+    await client.reset();
+  });
+
   it('maps a bridge page call to a page event', async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
@@ -182,6 +204,33 @@ describe('WebView bridge plumbing (public API)', () => {
 
     const debug = await analytics.getDebugInfo();
     expect(debug.queueLength).toBe(1);
+  });
+
+  it('keeps props from before reset() working after re-create', async () => {
+    // A WebView mounted before a logout keeps its props; the client created
+    // after reset() must receive its messages.
+    let init: typeof import('../init');
+    jest.isolateModules(() => {
+      init = require('../init');
+    });
+    analytics = init!.createAnalyticsClient(opts);
+    const injected: string[] = [];
+    const bridge = analytics.attachWebView(
+      { current: { injectJavaScript: (s) => injected.push(s) } },
+      [ORIGIN]
+    );
+    const prefix = prefixOf(bridge);
+    await analytics.getAnonymousId(); // bound
+
+    await analytics.reset();
+    bridge.onMessage(bridgeMessage(prefix, 'm1'));
+    expect(injected.at(-1)).toContain('not_ready');
+
+    analytics = init!.createAnalyticsClient(opts);
+    await analytics.getAnonymousId(); // re-bound
+    bridge.onMessage(bridgeMessage(prefix, 'm2'));
+    expect(injected.at(-1)).toContain('\\"status\\":\\"ok\\"');
+    expect((await analytics.getDebugInfo()).queueLength).toBe(1);
   });
 
   it('dedups across re-rendered props', async () => {

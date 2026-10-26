@@ -19,8 +19,9 @@ export const BRIDGE_MESSAGE_PREFIX = '__metaRouterBridge:';
 export const WRAPPER_VERSION = '1.0.0';
 
 /**
- * Builds the wrapper injected at document start (via
- * `injectedJavaScriptBeforeContentLoaded`). Identical to the iOS and Android
+ * Builds the wrapper injected via `injectedJavaScriptBeforeContentLoaded`:
+ * at document start on iOS, at `onPageStarted` on Android (so a page's
+ * earliest inline scripts can run before it exists). Identical to the iOS and Android
  * wrapper except for the channel shim:
  *
  * - Defines `window.metarouterBridge` with `track`/`page`, wraps each call in
