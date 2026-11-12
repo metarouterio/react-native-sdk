@@ -136,6 +136,7 @@ describe('createAnalyticsClient', () => {
         setRealClient: setRealClientSpy,
         setInitializingClient: jest.fn(),
         setResetHandler: jest.fn(),
+        setAttachWebViewHandler: jest.fn(),
         takePendingOpenedURLs: jest.fn(() => []),
         clearConfigDisabled: jest.fn(),
         markConfigDisabled: jest.fn(),

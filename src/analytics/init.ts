@@ -5,11 +5,14 @@ import {
   proxyClient,
   setInitializingClient,
   setRealClient,
+  setAttachWebViewHandler,
   setResetHandler,
   takePendingOpenedURLs,
 } from './proxy/proxyClient';
 import type { InitOptions, AnalyticsInterface, ConfigError } from './types';
 import { validateInitOptions } from './utils/initOptions';
+import { BridgeMessageProcessor } from './webview/bridgeMessageProcessor';
+import { attachWebViewBridge } from './webview/webViewBridge';
 
 /*
  * Session choreography. Init, disable and reset work runs strictly FIFO on
@@ -220,6 +223,23 @@ function resetSession(): Promise<void> {
 
 setResetHandler(resetSession);
 
+// One processor for every WebView the host attaches, across sessions — like
+// the native proxy's. The sink resolves the client per message: the props are
+// handed out at the first render, long before a client binds, and must keep
+// working across reset() and re-init. Before a bind, or during a teardown,
+// messages are refused with not_ready.
+const bridgeProcessor = new BridgeMessageProcessor(
+  (envelope) => activeClient?.enqueueBridgeEvent(envelope) ?? false
+);
+
+const attachWebView: AnalyticsInterface['attachWebView'] = (
+  webViewRef,
+  allowedOrigins
+) => attachWebViewBridge(webViewRef, allowedOrigins, bridgeProcessor);
+
+// The proxy routes every attachWebView here, bound or not.
+setAttachWebViewHandler(attachWebView);
+
 function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
   return {
     track: (event, props) => instance.track(event, props),
@@ -238,6 +258,7 @@ function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
     getDebugInfo: () => instance.getDebugInfo(),
     getAnonymousId: () => instance.getAnonymousId(),
     getSessionId: () => instance.getSessionId(),
+    attachWebView,
     flush: () => instance.flush(),
     reset: () => resetSession(),
   };
