@@ -52,7 +52,6 @@ describe('session tracking', () => {
     const sessionManager = new SessionManager(timeout, {
       load: async () => ({ ...stored }),
       saveSession: jest.fn(),
-      saveLastActivity: jest.fn(),
       wallClockMs: () => wallNow,
       monotonicClockMs: () => monoNow,
     });
@@ -231,6 +230,82 @@ describe('session tracking', () => {
     );
   });
 
+  it('rolls over on background, past the timeout, then active', async () => {
+    const client = makeClient({
+      trackLifecycleEvents: true,
+      fireSessionStarted: true,
+    });
+    await client.init();
+    await settle();
+    const onChange = (AppState.addEventListener as jest.Mock).mock.calls.at(
+      -1
+    )![1] as (state: string) => void;
+
+    onChange('background');
+    advance(31 * MINUTE);
+    onChange('active');
+    await settle();
+
+    // Backgrounding flushes, so read what was sent as well as what is queued.
+    const sent = (global.fetch as jest.Mock).mock.calls.flatMap(
+      ([, request]) => JSON.parse(request.body).batch ?? []
+    );
+    const stamped = [...sent, ...client.queue].map((e) => [
+      e.event,
+      e.context.providers.metarouter.sessionID,
+      e.context.providers.metarouter.sessionCount,
+    ]);
+    const newId = String(WALL_START + 31 * MINUTE);
+    expect(stamped).toContainEqual([
+      'Application Backgrounded',
+      String(WALL_START),
+      1,
+    ]);
+    // The foreground event mints the new session; Session Started follows it.
+    const opened = stamped.findIndex(
+      ([name, id]) => name === 'Application Opened' && id === newId
+    );
+    expect(opened).toBeGreaterThan(-1);
+    expect(stamped[opened]![2]).toBe(2);
+    expect(stamped.slice(opened + 1)).toContainEqual([
+      'Session Started',
+      newId,
+      2,
+    ]);
+  });
+
+  it('keeps the event when the session write throws', async () => {
+    // A storage module whose setItem throws synchronously must not reach the
+    // host's track() call, and the event must still be enqueued.
+    const AsyncStorage =
+      require('@react-native-async-storage/async-storage').default;
+    // Throws for the session key only, so another write in the init path
+    // cannot use up the throw and leave the session write untested.
+    const sessionWriteThrew = jest.fn();
+    AsyncStorage.setItem.mockImplementation((key: string) => {
+      if (key === 'metarouter:session') {
+        sessionWriteThrew();
+        throw new TypeError('setItem is not a function');
+      }
+      return Promise.resolve();
+    });
+    const sessionManager = new SessionManager(30, {
+      load: async () => ({ ...stored }),
+      wallClockMs: () => wallNow,
+      monotonicClockMs: () => monoNow,
+    });
+    const client = new MetaRouterAnalyticsClient(opts, {
+      sessionManager,
+    }) as MetaRouterAnalyticsClient & { queue: any[] };
+    await client.init();
+
+    expect(() => client.track('First')).not.toThrow();
+    expect(names(client)).toEqual(['First']);
+    expect(sessionWriteThrew).toHaveBeenCalled();
+    await client.reset();
+    AsyncStorage.setItem.mockImplementation(() => Promise.resolve());
+  });
+
   it('applies sessionTimeoutMinutes from InitOptions', async () => {
     // No injected manager: the client builds one from the options. The
     // jest-mocked native clock and the wall clock both follow Date.now.
@@ -258,12 +333,9 @@ describe('session tracking through the public API', () => {
     const store = new Map<string, string>();
     const AsyncStorage =
       require('@react-native-async-storage/async-storage').default;
-    AsyncStorage.multiGet.mockImplementation(async (keys: string[]) =>
-      keys.map((k) => [k, store.get(k) ?? null])
+    AsyncStorage.getItem.mockImplementation(
+      async (k: string) => store.get(k) ?? null
     );
-    AsyncStorage.multiSet.mockImplementation(async (pairs: string[][]) => {
-      for (const [k, v] of pairs) store.set(k!, v!);
-    });
     AsyncStorage.setItem.mockImplementation(async (k: string, v: string) => {
       store.set(k, v);
     });
@@ -285,9 +357,11 @@ describe('session tracking through the public API', () => {
     first.track('Logout');
     await first.reset();
     // Written by reset() itself, before any new client touches the session.
-    expect(store.get('metarouter:session:last_activity_ms')).toBe(
-      String(WALL_START + 3_000)
-    );
+    expect(JSON.parse(store.get('metarouter:session')!)).toEqual({
+      id: sessionId,
+      count: 1,
+      lastActivityMs: WALL_START + 3_000,
+    });
 
     const second = createAnalyticsClient(opts);
     await second.getAnonymousId();

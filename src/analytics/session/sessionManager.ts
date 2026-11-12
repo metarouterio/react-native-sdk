@@ -1,7 +1,6 @@
 import { continuousMillis } from '../utils/monotonicClock';
 import {
   loadSession,
-  saveLastActivity,
   saveSession,
   type StoredSession,
 } from '../utils/sessionStorage';
@@ -41,7 +40,6 @@ export interface SessionInfo {
 export interface SessionManagerDeps {
   load?: () => Promise<StoredSession>;
   saveSession?: typeof saveSession;
-  saveLastActivity?: typeof saveLastActivity;
   wallClockMs?: () => number;
   monotonicClockMs?: () => number;
 }
@@ -76,7 +74,6 @@ export class SessionManager {
   private readonly timeoutMs: number;
   private readonly load: () => Promise<StoredSession>;
   private readonly persistSession: typeof saveSession;
-  private readonly persistLastActivity: typeof saveLastActivity;
   private readonly wallClockMs: () => number;
   private readonly monotonicClockMs: () => number;
 
@@ -100,7 +97,6 @@ export class SessionManager {
     this.timeoutMs = timeoutMinutes * 60_000;
     this.load = deps.load ?? loadSession;
     this.persistSession = deps.saveSession ?? saveSession;
-    this.persistLastActivity = deps.saveLastActivity ?? saveLastActivity;
     this.wallClockMs = deps.wallClockMs ?? Date.now;
     this.monotonicClockMs = deps.monotonicClockMs ?? continuousMillis;
   }
@@ -122,7 +118,11 @@ export class SessionManager {
    */
   persistActivity(): void {
     if (this.sessionId === null) return;
-    this.persistLastActivity(this.lastActivityWall);
+    this.persistSession(
+      this.sessionId,
+      this.sessionCount,
+      this.lastActivityWall
+    );
   }
 
   /**
@@ -151,7 +151,7 @@ export class SessionManager {
         this.lastActivityMono = monoNow;
         this.lastActivityWall = wallNow;
         if (monoNow - this.lastPersistedMono >= PERSIST_THROTTLE_MS) {
-          this.persistLastActivity(wallNow);
+          this.persistSession(this.sessionId, this.sessionCount, wallNow);
           this.lastPersistedMono = monoNow;
         }
         info = {
@@ -176,7 +176,7 @@ export class SessionManager {
         this.lastActivityWall = wallNow;
         // Once per process — no throttle; skipping it would leave the
         // pre-restart timestamp in place for up to a throttle window.
-        this.persistLastActivity(wallNow);
+        this.persistSession(this.sessionId, this.sessionCount, wallNow);
         this.lastPersistedMono = monoNow;
         info = {
           sessionId: stored.id,

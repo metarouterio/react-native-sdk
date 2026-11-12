@@ -14,7 +14,6 @@ describe('SessionManager', () => {
   let monoNow: number;
   let stored: StoredSession;
   let saveSession: jest.Mock;
-  let saveLastActivity: jest.Mock;
 
   beforeEach(() => {
     wallNow = WALL_START;
@@ -23,16 +22,12 @@ describe('SessionManager', () => {
     saveSession = jest.fn((id, count, lastActivityMs) => {
       stored = { id, count, lastActivityMs };
     });
-    saveLastActivity = jest.fn((lastActivityMs) => {
-      stored = { ...stored, lastActivityMs };
-    });
   });
 
   async function makeManager(timeoutMinutes = 30) {
     const manager = new SessionManager(timeoutMinutes, {
       load: async () => ({ ...stored }),
       saveSession,
-      saveLastActivity,
       wallClockMs: () => wallNow,
       monotonicClockMs: () => monoNow,
     });
@@ -127,7 +122,7 @@ describe('SessionManager', () => {
     });
     // Resume persists once, unthrottled, so the pre-restart stamp is not
     // left in place for a throttle window.
-    expect(saveLastActivity).toHaveBeenCalledWith(wallNow);
+    expect(saveSession).toHaveBeenCalledWith('1757399000000', 4, wallNow);
   });
 
   it('a restart past the timeout mints and continues the counter', async () => {
@@ -183,7 +178,6 @@ describe('SessionManager', () => {
     const manager = new SessionManager(30, {
       load: async () => ({ ...stored }),
       saveSession,
-      saveLastActivity,
       wallClockMs: () => wallNow,
       monotonicClockMs: () => monoNow,
     });
@@ -197,19 +191,19 @@ describe('SessionManager', () => {
   it('extends persist at most once per throttle window, on the monotonic clock', async () => {
     const manager = await makeManager();
     manager.touch();
-    saveLastActivity.mockClear();
+    saveSession.mockClear();
 
     // Wall time races ahead of monotonic time: a throttle measured on the
     // wall clock would persist here.
     monoNow += PERSIST_THROTTLE_MS - 1;
     wallNow += 10 * PERSIST_THROTTLE_MS;
     manager.touch();
-    expect(saveLastActivity).not.toHaveBeenCalled();
+    expect(saveSession).not.toHaveBeenCalled();
 
     monoNow += 1;
     manager.touch();
-    expect(saveLastActivity).toHaveBeenCalledTimes(1);
-    expect(saveLastActivity).toHaveBeenCalledWith(wallNow);
+    expect(saveSession).toHaveBeenCalledTimes(1);
+    expect(saveSession).toHaveBeenCalledWith(String(WALL_START), 1, wallNow);
   });
 
   it('peek is null before the first touch', async () => {
@@ -267,21 +261,21 @@ describe('SessionManager', () => {
   it('persistActivity writes the latest activity inside the throttle window', async () => {
     const manager = await makeManager();
     manager.touch();
-    saveLastActivity.mockClear();
+    saveSession.mockClear();
 
     monoNow += 1_000;
     wallNow += 1_000;
     manager.touch(); // throttled
-    expect(saveLastActivity).not.toHaveBeenCalled();
+    expect(saveSession).not.toHaveBeenCalled();
 
     manager.persistActivity();
-    expect(saveLastActivity).toHaveBeenCalledWith(wallNow);
+    expect(saveSession).toHaveBeenCalledWith(String(WALL_START), 1, wallNow);
   });
 
   it('persistActivity is a no-op before the first touch', async () => {
     const manager = await makeManager();
     manager.persistActivity();
-    expect(saveLastActivity).not.toHaveBeenCalled();
+    expect(saveSession).not.toHaveBeenCalled();
   });
 
   it('rejects a non-positive timeout', () => {

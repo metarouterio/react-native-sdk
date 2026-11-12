@@ -43,6 +43,8 @@ jest.mock('react-native', () => ({
   },
 }));
 
+// Only the calls AsyncStorage 2.x and 3.x both have (the peer range spans
+// both): a method from one major alone would pass here and throw in an app.
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: {
@@ -50,8 +52,6 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     setItem: jest.fn(() => Promise.resolve()),
     removeItem: jest.fn(() => Promise.resolve()),
     clear: jest.fn(() => Promise.resolve()),
-    multiGet: jest.fn((keys) => Promise.resolve(keys.map((k) => [k, null]))),
-    multiSet: jest.fn(() => Promise.resolve()),
   },
 }));
 

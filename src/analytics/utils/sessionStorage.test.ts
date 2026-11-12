@@ -1,47 +1,37 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  loadSession,
-  saveLastActivity,
-  saveSession,
-  SESSION_COUNT_KEY,
-  SESSION_ID_KEY,
-  SESSION_LAST_ACTIVITY_KEY,
-} from './sessionStorage';
+import { loadSession, saveSession, SESSION_KEY } from './sessionStorage';
 
+// getItem/setItem only: the calls AsyncStorage 2.x and 3.x both have.
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  multiGet: jest.fn(),
-  multiSet: jest.fn(() => Promise.resolve()),
+  getItem: jest.fn(),
   setItem: jest.fn(() => Promise.resolve()),
 }));
 
-const multiGet = AsyncStorage.multiGet as jest.Mock;
-const multiSet = AsyncStorage.multiSet as jest.Mock;
+const getItem = AsyncStorage.getItem as jest.Mock;
 const setItem = AsyncStorage.setItem as jest.Mock;
 
-function storeValues(values: Record<string, string | null>) {
-  multiGet.mockImplementation(async (keys: string[]) =>
-    keys.map((k) => [k, values[k] ?? null])
+function storeValue(value: unknown) {
+  getItem.mockImplementation(async (key: string) =>
+    key === SESSION_KEY && value !== undefined
+      ? typeof value === 'string'
+        ? value
+        : JSON.stringify(value)
+      : null
   );
 }
+
+const EMPTY = { id: null, count: null, lastActivityMs: null };
 
 describe('sessionStorage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('uses the native SDKs key names', () => {
-    expect(SESSION_ID_KEY).toBe('metarouter:session:id');
-    expect(SESSION_COUNT_KEY).toBe('metarouter:session:count');
-    expect(SESSION_LAST_ACTIVITY_KEY).toBe(
-      'metarouter:session:last_activity_ms'
-    );
-  });
-
   it('loads a stored session', async () => {
-    storeValues({
-      [SESSION_ID_KEY]: '1757400000000',
-      [SESSION_COUNT_KEY]: '3',
-      [SESSION_LAST_ACTIVITY_KEY]: '1757400060000',
+    storeValue({
+      id: '1757400000000',
+      count: 3,
+      lastActivityMs: 1_757_400_060_000,
     });
 
     await expect(loadSession()).resolves.toEqual({
@@ -51,12 +41,8 @@ describe('sessionStorage', () => {
     });
   });
 
-  it('reads missing or corrupt numbers as absent', async () => {
-    storeValues({
-      [SESSION_ID_KEY]: '1757400000000',
-      [SESSION_COUNT_KEY]: 'abc',
-      [SESSION_LAST_ACTIVITY_KEY]: '1.5',
-    });
+  it('reads missing or corrupt fields as absent', async () => {
+    storeValue({ id: '1757400000000', count: 'abc', lastActivityMs: 1.5 });
 
     await expect(loadSession()).resolves.toEqual({
       id: '1757400000000',
@@ -66,77 +52,100 @@ describe('sessionStorage', () => {
   });
 
   it('reads nothing stored as an empty session, not a failure', async () => {
-    storeValues({});
+    const delay = jest.fn(() => Promise.resolve());
+    storeValue(undefined);
 
-    await expect(loadSession()).resolves.toEqual({
-      id: null,
-      count: null,
-      lastActivityMs: null,
-    });
+    await expect(loadSession(delay)).resolves.toEqual(EMPTY);
+    expect(delay).not.toHaveBeenCalled();
   });
 
-  it('rejects a count below 1 and an empty value', async () => {
-    for (const count of ['', '0', '-5']) {
-      storeValues({
-        [SESSION_ID_KEY]: 'x',
-        [SESSION_COUNT_KEY]: count,
-        [SESSION_LAST_ACTIVITY_KEY]: '',
-      });
-      await expect(loadSession()).resolves.toEqual({
-        id: 'x',
-        count: null,
-        lastActivityMs: null,
-      });
+  it('rejects a count below 1 and an empty id', async () => {
+    for (const count of [0, -5]) {
+      storeValue({ id: '', count, lastActivityMs: -1 });
+      await expect(loadSession()).resolves.toEqual(EMPTY);
     }
+  });
+
+  it('reads an unparseable value as empty at once, with a warning', async () => {
+    const delay = jest.fn(() => Promise.resolve());
+    const logger = require('./logger');
+    const warnSpy = jest.spyOn(logger, 'warn');
+
+    for (const value of ['{not json', 'null', '42']) {
+      storeValue(value);
+      await expect(loadSession(delay)).resolves.toEqual(EMPTY);
+    }
+    // The same bad value would fail every retry.
+    expect(delay).not.toHaveBeenCalled();
+    expect(getItem).toHaveBeenCalledTimes(3);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Stored session is corrupt'),
+      '{not json'
+    );
   });
 
   it('retries a failed read after a backoff', async () => {
     const delay = jest.fn(() => Promise.resolve());
-    multiGet.mockRejectedValueOnce(new Error('busy'));
-    storeValues({ [SESSION_ID_KEY]: 'x', [SESSION_COUNT_KEY]: '5' });
+    storeValue({ id: 'x', count: 5 });
+    getItem.mockRejectedValueOnce(new Error('busy'));
 
     await expect(loadSession(delay)).resolves.toMatchObject({
       id: 'x',
       count: 5,
     });
-    expect(multiGet).toHaveBeenCalledTimes(2);
+    expect(getItem).toHaveBeenCalledTimes(2);
     expect(delay).toHaveBeenCalledWith(100);
   });
 
   it('reads storage that stays unreadable as empty, with a warning', async () => {
     const delay = jest.fn(() => Promise.resolve());
-    multiGet.mockRejectedValue(new Error('storage unavailable'));
+    getItem.mockRejectedValue(new Error('storage unavailable'));
     const logger = require('./logger');
     const warnSpy = jest.spyOn(logger, 'warn');
 
-    await expect(loadSession(delay)).resolves.toEqual({
-      id: null,
-      count: null,
-      lastActivityMs: null,
-    });
-    expect(multiGet).toHaveBeenCalledTimes(3);
+    await expect(loadSession(delay)).resolves.toEqual(EMPTY);
+    expect(getItem).toHaveBeenCalledTimes(3);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Session storage unreadable'),
       expect.any(Error)
     );
   });
 
-  it('writes a new session in one multiSet', () => {
+  it('writes the whole session in one setItem', () => {
     saveSession('1757400000000', 2, 1_757_400_000_000);
 
-    expect(multiSet).toHaveBeenCalledTimes(1);
-    expect(multiSet).toHaveBeenCalledWith([
-      [SESSION_ID_KEY, '1757400000000'],
-      [SESSION_COUNT_KEY, '2'],
-      [SESSION_LAST_ACTIVITY_KEY, '1757400000000'],
-    ]);
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(setItem.mock.calls[0]![0]).toBe(SESSION_KEY);
+    expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual({
+      id: '1757400000000',
+      count: 2,
+      lastActivityMs: 1_757_400_000_000,
+    });
   });
 
-  it('swallows a failed write', async () => {
+  it('round-trips what it writes', async () => {
+    saveSession('1757400000000', 2, 1_757_400_000_000);
+    storeValue(setItem.mock.calls[0]![1]);
+
+    await expect(loadSession()).resolves.toEqual({
+      id: '1757400000000',
+      count: 2,
+      lastActivityMs: 1_757_400_000_000,
+    });
+  });
+
+  it('swallows a rejected write', async () => {
     setItem.mockRejectedValueOnce(new Error('disk full'));
 
-    expect(() => saveLastActivity(1)).not.toThrow();
-    expect(setItem).toHaveBeenCalledWith(SESSION_LAST_ACTIVITY_KEY, '1');
+    expect(() => saveSession('x', 1, 1)).not.toThrow();
     await Promise.resolve();
+  });
+
+  it('swallows a write that throws synchronously', () => {
+    setItem.mockImplementationOnce(() => {
+      throw new TypeError('setItem is not a function');
+    });
+
+    expect(() => saveSession('x', 1, 1)).not.toThrow();
   });
 });
