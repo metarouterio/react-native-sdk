@@ -410,7 +410,7 @@ Hybrid apps render some screens as web content inside a WebView. Without extra w
 
 ### Attaching
 
-The bridge works with [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (the SDK does not depend on it). `attachWebView` returns the props that wire the bridge into a `<WebView>`:
+The bridge works with [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) 13.13.1 or newer, an optional peer dependency (earlier versions report the main page's URL for messages from iframes, which the origin check relies on). `attachWebView` returns the props that wire the bridge into a `<WebView>`:
 
 ```tsx
 import { useRef } from 'react';
@@ -440,7 +440,7 @@ function CheckoutScreen() {
 - Calling `attachWebView` on every render is fine, and so is calling it before `createAnalyticsClient` has finished initializing: messages that arrive before then are answered `not_ready`. The bridge keeps working across `reset()` and re-initialization.
 - If the app already sets `injectedJavaScriptBeforeContentLoaded`, join the two scripts (`bridge.injectedJavaScriptBeforeContentLoaded + yourScript`). When the attach is refused the bridge script is empty, so the join stays safe.
 
-Origins must be explicit `scheme://host[:port]` rules — no wildcards, paths or trailing slashes. Scheme and host are case-insensitive and default ports are ignored. Invalid rules are refused with a warning, and the returned props then do nothing. Origin scoping is the bridge's security boundary: it keeps other pages loaded in the same WebView (ads, redirects) from injecting events. `react-native-webview` does not scope its message channel to origins, so the SDK enforces the allowlist in two places: the injected wrapper defines nothing on other pages, and every message's sending-frame URL is checked — a message from any other origin is ignored without a reply. Messages must also carry a random token that only the injected wrapper holds, so a cross-origin iframe inside an allowed page cannot post events even on older Android WebViews, where `react-native-webview` reports the main page's URL for every frame. Cleartext `http` origins log a warning unless the host is loopback.
+Origins must be explicit `scheme://host[:port]` rules — no wildcards, paths or trailing slashes. Scheme and host are case-insensitive and default ports are ignored. Invalid rules are refused with a warning, and the returned props then do nothing. Origin scoping is the bridge's security boundary: it keeps other pages loaded in the same WebView (ads, redirects) from injecting events. `react-native-webview` does not scope its message channel to origins, so the SDK enforces the allowlist in two places: the injected wrapper defines nothing on other pages, and every message's sending-frame URL is checked — a message from any other origin is ignored without a reply. Messages must also carry a random token that the injected wrapper holds, as a second layer against frames that never received the wrapper. The token is not a secret from scripts on an allowed page (they are trusted already, and can call the bridge directly). Cleartext `http` origins log a warning unless the host is loopback.
 
 ### What the page sees
 
@@ -482,6 +482,7 @@ Each bridge message carries an ID minted by the page, used to drop duplicate del
 
 - **Main frame only.** `react-native-webview` injects scripts before content loads into the main frame only, so iframes do not get the bridge (the iOS and Android SDKs also bridge allowlisted iframes).
 - **Injection timing.** On iOS the wrapper is injected at document start. On Android, `react-native-webview` injects it when the page starts loading, which is not guaranteed to happen before the page's own scripts: an inline script at the top of the page can run first, find no bridge, and lose its call. Calls made once the page has loaded (and user-triggered ones) see the bridge. Guard calls with `if (window.metarouterBridge)` as in the shim above. A page already loaded when the props were first set has no bridge until it reloads.
+- **Android WebView 82 or newer.** On Android the bridge needs the device's WebView provider to support `WEB_MESSAGE_LISTENER`, which Android System WebView has had since version 82 (2020) and which updates through Google Play. Without it `react-native-webview` reports the main page's URL for messages from every frame, so the origin check could not keep an iframe out; the bridge then refuses to attach, with a warning, and `attachWebView` returns props that do nothing (the Android SDK does the same). The check is a native module, so the app must be rebuilt after upgrading; without the module (e.g. Expo Go) the bridge also stays off.
 - **Replies go to the current page.** Replies are delivered to whatever page is in the main frame when they are sent, and only if its origin is allowed.
 
 ### Debugging

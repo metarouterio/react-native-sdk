@@ -149,9 +149,9 @@ describe('attachWebViewBridge', () => {
   });
 
   it('drops a bridge-shaped message without the session token, even from an allowlisted URL', () => {
-    // Android without WEB_MESSAGE_LISTENER reports the main page's URL for a
-    // message posted by any frame, so a cross-origin iframe passes the origin
-    // check; only the token tells it apart.
+    // A frame without the wrapper, reported under an allowlisted URL (as
+    // react-native-webview did before 13.13.1): only the token tells it
+    // apart.
     const bridge = attachWebViewBridge(ref, [ORIGIN], processor);
     const forged = message(
       BRIDGE_MESSAGE_PREFIX +
@@ -180,9 +180,9 @@ describe('attachWebViewBridge', () => {
   it('guards the reply script with the allowlist', () => {
     const bridge = attachWebViewBridge(ref, [ORIGIN], processor);
     bridge.onMessage(bridgeMessage('m1'));
-    expect(injected[0]).toContain(
-      `${JSON.stringify([ORIGIN])}.indexOf(location.origin) !== -1`
-    );
+    // The guard itself is exercised in a page in bridgeWrapperScript.test.ts.
+    expect(injected[0]).toContain(JSON.stringify([ORIGIN]));
+    expect(injected[0]).toContain('location.origin');
   });
 
   it.each([

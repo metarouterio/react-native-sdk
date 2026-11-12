@@ -59,7 +59,13 @@ export function buildBridgeWrapperScript(
   return `(function() {
   'use strict';
   var ALLOWED_ORIGINS = ${originsJsArray};
-  if (ALLOWED_ORIGINS.indexOf(location.origin) === -1) { return; }
+  // A plain loop, not indexOf: on Android the page's own scripts can run
+  // first, and a patched Array.prototype.indexOf would pass any origin.
+  var allowed = false;
+  for (var i = 0; i < ALLOWED_ORIGINS.length; i++) {
+    if (ALLOWED_ORIGINS[i] === location.origin) { allowed = true; }
+  }
+  if (!allowed) { return; }
   if (window.${bridgeObjectName}) { return; }
 
   if (!window.${NATIVE_CHANNEL_NAME}) {
@@ -152,7 +158,9 @@ export function buildReplyScript(
   allowedOrigins: readonly string[]
 ): string {
   const channel = `window.${NATIVE_CHANNEL_NAME}`;
-  return `${JSON.stringify(allowedOrigins)}.indexOf(location.origin) !== -1 && ${channel} && typeof ${channel}.onmessage === 'function' && ${channel}.onmessage({ data: ${jsStringLiteral(replyJson)} }); true;`;
+  // A plain loop rather than indexOf, which the page can patch (see the
+  // wrapper).
+  return `(function() { var o = ${JSON.stringify(allowedOrigins)}; for (var i = 0; i < o.length; i++) { if (o[i] === location.origin) { if (${channel} && typeof ${channel}.onmessage === 'function') { ${channel}.onmessage({ data: ${jsStringLiteral(replyJson)} }); } return; } } })(); true;`;
 }
 
 /**

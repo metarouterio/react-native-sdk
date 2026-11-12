@@ -19,6 +19,9 @@ jest.mock('react-native', () => ({
     MetaRouterClock: {
       continuousMillis: jest.fn(() => Date.now()),
     },
+    MetaRouterWebViewSupport: {
+      isWebMessageListenerSupported: jest.fn(() => true),
+    },
     MetaRouterQueueStorage: {
       exists: jest.fn(() => Promise.resolve(false)),
       readSnapshot: jest.fn(() => Promise.resolve(null)),

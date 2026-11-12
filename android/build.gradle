@@ -38,4 +38,6 @@ repositories {
 
 dependencies {
   implementation "com.facebook.react:react-android:+"
+  // Same version as the Android SDK; WebViewFeature for the bridge check.
+  implementation "androidx.webkit:webkit:1.12.1"
 }

@@ -1,5 +1,6 @@
 import uuid from 'react-native-uuid';
 import { log, warn } from '../utils/logger';
+import { isBridgeSupported } from './webViewSupport';
 import { isLoopbackHost } from '../utils/initOptions';
 import type { BridgeMessageProcessor } from './bridgeMessageProcessor';
 import {
@@ -54,11 +55,14 @@ export function originOf(url: string | undefined): string | null {
 
 /**
  * Per-processor state. The token goes into the message prefix only the
- * main-frame wrapper knows. On Android without WEB_MESSAGE_LISTENER,
- * react-native-webview exposes its channel to every frame and reports the
- * main page's URL for every message, so the origin check alone would let a
- * cross-origin iframe (an ad) inside an allowlisted page post events. The
- * iframe cannot read the parent page's script, so it cannot forge the token.
+ * main-frame wrapper knows: a second layer behind the origin check against
+ * frames that never received the wrapper. A cross-origin iframe cannot read
+ * the parent page's script, so it cannot forge the token. It is the only
+ * guard where react-native-webview reports the main page's URL for every
+ * frame: Android WebViews without WEB_MESSAGE_LISTENER are refused for that
+ * reason (see webViewSupport), and react-native-webview before 13.13.1, which
+ * did the same on both platforms, is outside the peer range (a package
+ * manager that ignores peer ranges can still install it).
  *
  * The token does not hide from main-frame scripts on an allowed page, and is
  * not meant to: those are trusted already — they can call metarouterBridge
@@ -221,6 +225,10 @@ export function attachWebViewBridge(
       }
       return inertProps();
     }
+    // After validation, so origin mistakes are reported even where the bridge
+    // cannot run (e.g. Expo Go); before caching, so a cache hit implies
+    // support. Warns once itself, and the answer is cached for the process.
+    if (!isBridgeSupported()) return inertProps();
     validated.script = buildBridgeWrapperScript(
       validated.origins,
       DEFAULT_BRIDGE_OBJECT_NAME,

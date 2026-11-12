@@ -13,7 +13,7 @@ const ORIGIN = 'https://shop.example.com';
 /** Runs the wrapper in a minimal page and returns what it posted. */
 function runInPage(
   script: string,
-  opts: { origin?: string; withChannel?: boolean } = {}
+  opts: { origin?: string; withChannel?: boolean; pageScript?: string } = {}
 ) {
   const posted: string[] = [];
   const origin = opts.origin ?? ORIGIN;
@@ -36,6 +36,8 @@ function runInPage(
     String,
     Uint8Array,
   });
+  // Page code that runs before the wrapper (Android injects it late).
+  if (opts.pageScript) vm.runInContext(opts.pageScript, context);
   vm.runInContext(script, context);
   const envelopes = () =>
     posted.map((p) => {
@@ -59,6 +61,16 @@ describe('buildBridgeWrapperScript', () => {
     });
     expect(window.metarouterBridge).toBeUndefined();
     expect(window[NATIVE_CHANNEL_NAME]).toBeUndefined();
+  });
+
+  it('ignores a page-patched Array.prototype.indexOf', () => {
+    // Otherwise a hostile page could get the wrapper (and its token)
+    // installed on an origin outside the allowlist.
+    const { window } = runInPage(buildBridgeWrapperScript([ORIGIN]), {
+      origin: 'https://evil.example.com',
+      pageScript: 'Array.prototype.indexOf = function () { return 0; };',
+    });
+    expect(window.metarouterBridge).toBeUndefined();
   });
 
   it('posts a prefixed envelope that round-trips through the parser', () => {
@@ -185,6 +197,22 @@ describe('buildReplyScript', () => {
     const received: unknown[] = [];
     page.window[NATIVE_CHANNEL_NAME].onmessage = (e: unknown) =>
       received.push(e);
+    vm.runInContext(buildReplyScript('{}', [ORIGIN]), page.context);
+    expect(received).toHaveLength(0);
+  });
+
+  it('does not deliver to a disallowed page that patched indexOf', () => {
+    const page = runInPage(
+      buildBridgeWrapperScript(['https://other.example.com']),
+      { origin: 'https://other.example.com' }
+    );
+    const received: unknown[] = [];
+    page.window[NATIVE_CHANNEL_NAME].onmessage = (e: unknown) =>
+      received.push(e);
+    vm.runInContext(
+      'Array.prototype.indexOf = function () { return 0; };',
+      page.context
+    );
     vm.runInContext(buildReplyScript('{}', [ORIGIN]), page.context);
     expect(received).toHaveLength(0);
   });

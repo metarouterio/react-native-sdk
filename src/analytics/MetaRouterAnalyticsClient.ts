@@ -102,6 +102,7 @@ export class MetaRouterAnalyticsClient {
   // getDebugInfo peek it. Its state outlives reset() through storage, not
   // through this instance.
   private sessionManager: SessionManager;
+
   /**
    * Initializes the analytics client with the provided options.
    * @param options - The initialization options.
@@ -395,14 +396,13 @@ export class MetaRouterAnalyticsClient {
     // Every enriched event is session activity, and this is the funnel all
     // event sources share (public calls, lifecycle events, the WebView
     // bridge), so touching here is what makes the session stamp universal.
-    const enriched = enrichEvent(
+    return enrichEvent(
       eventWithIdentity,
       this.writeKey,
       this.context,
       this.sessionManager.touch(),
       page
     );
-    return enriched;
   }
 
   /**

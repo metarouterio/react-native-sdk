@@ -153,7 +153,7 @@ export interface AnalyticsInterface {
    */
   attachWebView: (
     webViewRef: WebViewRefLike | null | undefined,
-    allowedOrigins: string[]
+    allowedOrigins: readonly string[]
   ) => WebViewBridgeProps;
 }
 
