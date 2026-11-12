@@ -1,14 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { warn } from './logger';
 
-// Key strings are byte-identical to the iOS and Android SDKs so
-// cross-platform debugging reads one vocabulary.
-export const SESSION_ID_KEY = 'metarouter:session:id';
-export const SESSION_COUNT_KEY = 'metarouter:session:count';
-export const SESSION_LAST_ACTIVITY_KEY = 'metarouter:session:last_activity_ms';
+// One JSON value under one key, read and written with getItem/setItem, which
+// AsyncStorage 2.x and 3.x both have (2.x's multiGet/multiSet became
+// getMany/setMany in 3.x, so no batch call works on both). One setItem also
+// keeps the id, count and last activity consistent if the app is killed
+// mid-write. The iOS and Android SDKs keep the same three fields under
+// separate keys.
+export const SESSION_KEY = 'metarouter:session';
 
 /**
- * Persisted session state. Lives in its own keys, outside identityStorage, so
+ * Persisted session state. Lives in its own key, outside identityStorage, so
  * neither IdentityManager.reset() nor the client's reset() can end a session as
  * a side effect: a logout mid-session must not fragment the analytics session —
  * session-scoped reporting downstream (e.g. GA4) counts the visit, not the
@@ -23,37 +25,39 @@ export interface StoredSession {
   lastActivityMs: number | null;
 }
 
-// A missing or corrupt value reads as absent, so a fresh install starts its
-// counter at 1 instead of resuming a phantom count. `Number('')` is 0, hence
-// the explicit minimum rather than an integer check alone.
-function parseInteger(
-  raw: string | null | undefined,
-  min: number
-): number | null {
-  if (raw == null || raw === '') return null;
-  const n = Number(raw);
-  return Number.isSafeInteger(n) && n >= min ? n : null;
+// A missing or corrupt field reads as absent, so a fresh install starts its
+// counter at 1 instead of resuming a phantom count.
+function integerAtLeast(value: unknown, min: number): number | null {
+  return typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= min
+    ? value
+    : null;
 }
 
 // Waits before each retry of a failed read. A failure here is usually transient
 // (storage busy at cold start); an immediate retry tends to fail the same way.
 const RETRY_DELAYS_MS = [100, 400];
 
-async function read(): Promise<StoredSession> {
-  const pairs = await AsyncStorage.multiGet([
-    SESSION_ID_KEY,
-    SESSION_COUNT_KEY,
-    SESSION_LAST_ACTIVITY_KEY,
-  ]);
-  const values = new Map(pairs);
+const EMPTY: StoredSession = { id: null, count: null, lastActivityMs: null };
+
+// Null for a value that is not a JSON object: rereading the same bad value
+// would fail the same way, so it is not retried like a failed read.
+function parse(raw: string): StoredSession | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { id, count, lastActivityMs } = parsed as Record<string, unknown>;
   return {
-    id: values.get(SESSION_ID_KEY) ?? null,
-    count: parseInteger(values.get(SESSION_COUNT_KEY), 1),
-    lastActivityMs: parseInteger(values.get(SESSION_LAST_ACTIVITY_KEY), 0),
+    id: typeof id === 'string' && id !== '' ? id : null,
+    count: integerAtLeast(count, 1),
+    lastActivityMs: integerAtLeast(lastActivityMs, 0),
   };
 }
-
-const EMPTY: StoredSession = { id: null, count: null, lastActivityMs: null };
 
 /**
  * Reads the stored session, retrying with a short backoff. If storage stays
@@ -70,11 +74,21 @@ export async function loadSession(
   let lastError: unknown;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await delay(RETRY_DELAYS_MS[attempt - 1]!);
+    let raw: string | null;
     try {
-      return await read();
+      raw = await AsyncStorage.getItem(SESSION_KEY);
     } catch (err) {
       lastError = err;
+      continue;
     }
+    if (raw == null) return EMPTY;
+    const session = parse(raw);
+    if (session) return session;
+    warn(
+      'Stored session is corrupt — starting a new session counted from 1.',
+      raw.slice(0, 100)
+    );
+    return EMPTY;
   }
   warn(
     'Session storage unreadable — starting a new session counted from 1.',
@@ -83,24 +97,21 @@ export async function loadSession(
   return EMPTY;
 }
 
-// Fire-and-forget: called from synchronous enrichment. A lost write costs at
-// most one extra session after the next restart.
+// Fire-and-forget: called from synchronous enrichment, so it must not throw
+// into the host's track() — not even synchronously, which a storage module
+// that is missing or mismatched does before a promise exists. A lost write
+// costs at most one extra session after the next restart.
 export function saveSession(
   id: string,
   count: number,
   lastActivityMs: number
 ): void {
-  // One multiSet so a kill mid-write cannot leave a new id beside the
-  // previous session's count or last activity.
-  AsyncStorage.multiSet([
-    [SESSION_ID_KEY, id],
-    [SESSION_COUNT_KEY, String(count)],
-    [SESSION_LAST_ACTIVITY_KEY, String(lastActivityMs)],
-  ]).catch(() => {});
-}
-
-export function saveLastActivity(lastActivityMs: number): void {
-  AsyncStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(lastActivityMs)).catch(
-    () => {}
-  );
+  try {
+    AsyncStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({ id, count, lastActivityMs })
+    ).catch(() => {});
+  } catch {
+    // Same outcome as a rejected write.
+  }
 }
