@@ -31,7 +31,6 @@ describe('getContextInfo', () => {
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      isWifiEnabled: () => Promise.resolve(true),
     }));
 
     // Re-import the module to get the mocked version
@@ -87,44 +86,20 @@ describe('getContextInfo', () => {
     expect(context.app.version).toBe('1.2.3');
   });
 
-  it('includes advertisingId in device context when provided', async () => {
-    // Mock DeviceInfo module
+  it('carries no advertisingId or network: enrichment stamps those per event', async () => {
     jest.doMock('react-native-device-info', () => ({
       getManufacturer: () => Promise.resolve('Apple'),
       getDeviceId: () => 'iPhone17,2',
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      isWifiEnabled: () => Promise.resolve(true),
     }));
 
-    // Re-import the module to get the mocked version
-    const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
-
-    const advertisingId = 'IDFA-12345-67890-ABCDEF';
-    const context = await getContextInfoMocked(
-      buildAppContext(),
-      advertisingId
-    );
-
-    expect(context.device.advertisingId).toBe(advertisingId);
-  });
-
-  it('excludes advertisingId from device context when not provided', async () => {
-    // Mock DeviceInfo module
-    jest.doMock('react-native-device-info', () => ({
-      getManufacturer: () => Promise.resolve('Apple'),
-      getDeviceId: () => 'iPhone17,2',
-      getSystemName: () => 'iOS',
-      getSystemVersion: () => '17.0',
-      isWifiEnabled: () => Promise.resolve(true),
-    }));
-
-    // Re-import the module to get the mocked version
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
 
     const context = await getContextInfoMocked(buildAppContext());
 
     expect(context.device.advertisingId).toBeUndefined();
+    expect(context).not.toHaveProperty('network');
   });
 
   describe('Android', () => {
@@ -149,7 +124,6 @@ describe('getContextInfo', () => {
         getDeviceId: () => 'o1s',
         getSystemName: () => 'Android',
         getSystemVersion: () => '14',
-        isWifiEnabled: () => Promise.resolve(true),
       }));
 
       const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
@@ -180,7 +154,6 @@ describe('getContextInfo', () => {
       getDevice: () => Promise.resolve('iPhone17,2'),
       getSystemName: () => 'iOS',
       getSystemVersion: () => '17.0',
-      isWifiEnabled: () => Promise.resolve(true),
     }));
 
     const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
@@ -192,23 +165,5 @@ describe('getContextInfo', () => {
       type: 'ios',
     });
     expect(context.device.name).toBeUndefined();
-  });
-
-  it('excludes advertisingId from device context when provided as undefined', async () => {
-    // Mock DeviceInfo module
-    jest.doMock('react-native-device-info', () => ({
-      getManufacturer: () => Promise.resolve('Apple'),
-      getDeviceId: () => 'iPhone17,2',
-      getSystemName: () => 'iOS',
-      getSystemVersion: () => '17.0',
-      isWifiEnabled: () => Promise.resolve(true),
-    }));
-
-    // Re-import the module to get the mocked version
-    const { getContextInfo: getContextInfoMocked } = require('./contextInfo');
-
-    const context = await getContextInfoMocked(buildAppContext(), undefined);
-
-    expect(context.device.advertisingId).toBeUndefined();
   });
 });
