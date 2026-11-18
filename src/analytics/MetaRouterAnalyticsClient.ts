@@ -9,7 +9,7 @@ import { AppState, AppStateStatus } from 'react-native';
 import { log, setDebugLogging, warn, error } from './utils/logger';
 import { IdentityManager } from './IdentityManager';
 import { enrichEvent } from './utils/enrichEvent';
-import { getContextInfo, clearContextCache } from './utils/contextInfo';
+import { getContextInfo } from './utils/contextInfo';
 import { AppContext, loadAppContext } from './utils/appContext';
 import {
   getIdentityField,
@@ -51,6 +51,12 @@ import {
 } from './utils/initOptions';
 
 /**
+ * Longest init waits for the native network module's first wifi reading,
+ * normally milliseconds away. Same bound as the iOS SDK's first-path wait.
+ */
+const FIRST_WIFI_READING_TIMEOUT_MS = 500;
+
+/**
  * Analytics client for MetaRouter.
  * - Handles event queueing, batching, and delivery with retries.
  * - Manages user, group, and anonymous identity.
@@ -65,6 +71,9 @@ export class MetaRouterAnalyticsClient {
   private ingestionHost: string;
   private writeKey: string;
   private context!: EventContext;
+  // Held in memory and overlaid per event, so `setAdvertisingId(id); track()`
+  // stamps the new ID on that track without waiting for the storage write.
+  private advertisingId: string | undefined;
   private appContext!: AppContext;
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
@@ -239,6 +248,11 @@ export class MetaRouterAnalyticsClient {
 
     this.initPromise = (async () => {
       try {
+        // Started first so the native module's first reading arrives during
+        // the storage reads below; awaited just before `ready`.
+        const firstWifiReading = this.networkMonitor.awaitIsWifi(
+          FIRST_WIFI_READING_TIMEOUT_MS
+        );
         // Must be read before identityManager.init(): init() generates and
         // persists an anonymousId on first launch, so checking afterwards
         // would make every fresh install look like an upgrade from a
@@ -263,15 +277,13 @@ export class MetaRouterAnalyticsClient {
         this.startFlushLoop();
         this.setupAppStateListener();
 
-        // Load persisted advertising ID if available
-        const persistedAdvertisingId =
-          await getIdentityField(ADVERTISING_ID_KEY);
+        // Load persisted advertising ID if available. A setAdvertisingId
+        // call can't land meanwhile: it is queued until init resolves.
+        this.advertisingId =
+          (await getIdentityField(ADVERTISING_ID_KEY)) || undefined;
 
         this.appContext = loadAppContext();
-        this.context = await getContextInfo(
-          this.appContext,
-          persistedAdvertisingId || undefined
-        );
+        this.context = await getContextInfo(this.appContext);
 
         if (this.trackLifecycleEvents) {
           this.lifecycleEmitter = new LifecycleEmitter(
@@ -286,6 +298,11 @@ export class MetaRouterAnalyticsClient {
             this.appContext
           );
         }
+
+        // Cold-launch events (Installed / Opened, replayed pre-init calls)
+        // follow right after `ready`; without the first reading they would
+        // ship without `network`. Usually already settled by now.
+        await firstWifiReading;
 
         this.lifecycle = 'ready';
 
@@ -393,13 +410,25 @@ export class MetaRouterAnalyticsClient {
     page?: PageContext
   ): EnrichedEventPayload {
     const eventWithIdentity = this.identityManager.addIdentityInfo(event);
+    // Volatile fields are read at enrichment, not cached with the context, so
+    // they describe the event's moment rather than the first event's. Unknown
+    // wifi omits `network`: the spec requires `wifi` to be a boolean whenever
+    // `network` is present, so there is no null form.
+    const wifi = this.networkMonitor.isWifi;
+    const context: EventContext = {
+      ...this.context,
+      ...(this.advertisingId && {
+        device: { ...this.context.device, advertisingId: this.advertisingId },
+      }),
+      ...(wifi !== null && { network: { wifi } }),
+    };
     // Every enriched event is session activity, and this is the funnel all
     // event sources share (public calls, lifecycle events, the WebView
     // bridge), so touching here is what makes the session stamp universal.
     return enrichEvent(
       eventWithIdentity,
       this.writeKey,
-      this.context,
+      context,
       this.sessionManager.touch(),
       page
     );
@@ -769,10 +798,9 @@ export class MetaRouterAnalyticsClient {
     }
 
     log('Setting advertising ID');
+    this.advertisingId = advertisingId;
     await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
-    clearContextCache();
-    this.context = await getContextInfo(this.appContext, advertisingId);
-    log('Advertising ID updated, persisted, and context refreshed');
+    log('Advertising ID updated and persisted');
   }
 
   /**
@@ -791,9 +819,8 @@ export class MetaRouterAnalyticsClient {
     }
 
     log('Clearing advertising ID');
+    this.advertisingId = undefined;
     await removeIdentityField(ADVERTISING_ID_KEY);
-    clearContextCache();
-    this.context = await getContextInfo(this.appContext);
     log('Advertising ID cleared from storage and context');
   }
 

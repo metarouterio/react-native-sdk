@@ -457,6 +457,21 @@ describe('MetaRouterAnalyticsClient', () => {
     });
   });
 
+  it('stamps advertisingId on a track called right after setAdvertisingId, without awaiting it', async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+
+    const set = client.setAdvertisingId('IDFA-UNAWAITED');
+    client.track('Right After Set');
+    await set;
+    const clear = client.clearAdvertisingId();
+    client.track('Right After Clear');
+    await clear;
+
+    expect(client.queue[0].context.device.advertisingId).toBe('IDFA-UNAWAITED');
+    expect(client.queue[1].context.device.advertisingId).toBeUndefined();
+  });
+
   it('does not set advertisingId if client is not ready', async () => {
     const advertisingId = 'IDFA-BEFORE-READY';
     const client = new MetaRouterAnalyticsClient(opts);
@@ -716,6 +731,60 @@ describe('MetaRouterAnalyticsClient', () => {
 
       const debugInfo = await client.getDebugInfo();
       expect(debugInfo.networkStatus).toBe('disconnected');
+    });
+
+    it('stamps network.wifi per event, following an interface switch', async () => {
+      const monitor = new StubNetworkMonitor('connected', true);
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      client.track('On Wifi');
+      monitor.isWifi = false;
+      client.track('On Cellular');
+
+      expect(client.queue[0].context.network).toEqual({ wifi: true });
+      expect(client.queue[1].context.network).toEqual({ wifi: false });
+    });
+
+    it('omits network when the interface is unknown', async () => {
+      const monitor = new StubNetworkMonitor('connected', null);
+      const client = new MetaRouterAnalyticsClient(opts, {
+        networkMonitor: monitor,
+      });
+      await client.init();
+
+      client.track('Unknown Interface');
+
+      expect(client.queue[0].context).not.toHaveProperty('network');
+    });
+
+    it('init waits for the first wifi reading, so cold-launch events carry it', async () => {
+      const monitor = new StubNetworkMonitor('connected', null);
+      let deliverFirstReading!: () => void;
+      monitor.awaitIsWifi = () =>
+        new Promise((resolve) => {
+          deliverFirstReading = () => {
+            monitor.isWifi = true;
+            resolve(true);
+          };
+        });
+      const client = new MetaRouterAnalyticsClient(
+        { ...opts, trackLifecycleEvents: true },
+        { networkMonitor: monitor }
+      );
+
+      const initDone = jest.fn();
+      const init = client.init().then(initDone);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(initDone).not.toHaveBeenCalled();
+
+      deliverFirstReading();
+      await init;
+
+      expect(client.queue[0].event).toMatch(/^Application /);
+      expect(client.queue[0].context.network).toEqual({ wifi: true });
     });
 
     it('SDK functions normally when network monitoring unavailable', async () => {

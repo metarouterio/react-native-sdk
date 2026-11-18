@@ -53,6 +53,19 @@ export class DebouncedNetworkMonitor implements NetworkReachability {
     return this._currentStatus;
   }
 
+  /**
+   * Not debounced: the debounce exists to avoid flapping the dispatcher's
+   * offline gate, whereas `wifi` is a fact stamped on the event — reporting
+   * the previous interface for 2s after a switch would mislabel those events.
+   */
+  get isWifi(): boolean | null {
+    return this.inner.isWifi;
+  }
+
+  awaitIsWifi(timeoutMs: number): Promise<boolean | null> {
+    return this.inner.awaitIsWifi(timeoutMs);
+  }
+
   onStatusChange(handler: (status: NetworkStatus) => void): () => void {
     this.handler = handler;
     return () => {
@@ -65,6 +78,9 @@ export class DebouncedNetworkMonitor implements NetworkReachability {
     this.unsubscribeInner?.();
     this.unsubscribeInner = null;
     this.handler = null;
+    // The wrapper owns its inner monitor: without this the native
+    // subscription outlives every reset(), and the inner wifi value stays set.
+    this.inner.stop();
   }
 
   private clearOnlineTimer(): void {

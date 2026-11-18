@@ -1,3 +1,5 @@
+import { utf8ByteLength } from '../utils/utf8';
+
 /**
  * Error codes returned to the web producer. Closed set — the web side may
  * branch on these, so adding a code is a contract change. The strings are the
@@ -65,28 +67,6 @@ export const MAX_ENVELOPE_BYTES = 64 * 1024;
 // UUIDs are 36 chars; the ceiling keeps the dedup store bounded in bytes, not
 // just entries — 1000 retained near-64 KB ids would be ~64 MB.
 export const MAX_MESSAGE_ID_CHARS = 256;
-
-/** UTF-8 byte length without allocating an encoded copy. */
-function utf8ByteLength(s: string): number {
-  let bytes = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x80) bytes += 1;
-    else if (c < 0x800) bytes += 2;
-    else if (
-      c >= 0xd800 &&
-      c <= 0xdbff &&
-      i + 1 < s.length &&
-      s.charCodeAt(i + 1) >= 0xdc00 &&
-      s.charCodeAt(i + 1) <= 0xdfff
-    ) {
-      // A surrogate pair is one 4-byte code point.
-      bytes += 4;
-      i++;
-    } else bytes += 3; // includes a lone surrogate, encoded as U+FFFD
-  }
-  return bytes;
-}
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
