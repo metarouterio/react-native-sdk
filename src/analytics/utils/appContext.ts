@@ -1,5 +1,3 @@
-import pkg from '../../../package.json';
-
 let DeviceInfo: any = null;
 
 try {
@@ -23,14 +21,16 @@ export interface AppContext {
 }
 
 /**
- * Reads the current app identity from `react-native-device-info`. Falls back
- * to package.json version + 'unknown' for everything else if the native
- * module is missing (e.g. unit tests, Expo Go without the dev client).
+ * Reads the current app identity from `react-native-device-info`. Every field
+ * falls back to 'unknown' when the package isn't installed (e.g. unit tests);
+ * without its native module (Expo Go) device-info returns 'unknown' itself.
+ * Never the SDK's own version: that would report the SDK as the app's version
+ * and fire Application Updated on SDK upgrades instead of app updates.
  */
 export function loadAppContext(): AppContext {
   return {
     name: DeviceInfo?.getApplicationName?.() ?? 'unknown',
-    version: DeviceInfo?.getVersion?.() ?? pkg.version ?? 'unknown',
+    version: DeviceInfo?.getVersion?.() ?? 'unknown',
     build: DeviceInfo?.getBuildNumber?.() ?? 'unknown',
     namespace: DeviceInfo?.getBundleId?.() ?? 'unknown',
   };
