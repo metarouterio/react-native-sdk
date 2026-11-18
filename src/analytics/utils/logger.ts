@@ -21,7 +21,12 @@ export function setDebugLogging(value: boolean) {
  * @param args Arguments to log.
  */
 export function log(...args: any[]) {
-  if (enabled) console.log('[MetaRouter]', ...args);
+  if (!enabled) return;
+  try {
+    console.log('[MetaRouter]', ...args);
+  } catch {
+    // As warn.
+  }
 }
 
 /**
@@ -29,7 +34,14 @@ export function log(...args: any[]) {
  * @param args Arguments to log as a warning.
  */
 export function warn(...args: any[]) {
-  console.warn('[MetaRouter]', ...args);
+  try {
+    console.warn('[MetaRouter]', ...args);
+  } catch {
+    // Logging must never change SDK control flow: hosts sometimes make
+    // console.warn throw (fail-on-console test setups), and a warning can sit
+    // on the import path. Such a host no longer sees SDK warnings as thrown
+    // test failures; setups that record calls and fail afterwards still do.
+  }
 }
 
 /**
@@ -37,5 +49,9 @@ export function warn(...args: any[]) {
  * @param args Arguments to log as an error.
  */
 export function error(...args: any[]) {
-  console.error('[MetaRouter]', ...args);
+  try {
+    console.error('[MetaRouter]', ...args);
+  } catch {
+    // As warn.
+  }
 }

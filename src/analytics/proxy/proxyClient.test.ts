@@ -73,7 +73,8 @@ describe('proxyClient', () => {
       proxyClient.track(`Event ${i}`);
     }
     expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining('[MetaRouter] Oldest call dropped (queue cap 20)')
+      '[MetaRouter]',
+      'Oldest call dropped (queue cap 20)'
     );
   });
 
@@ -205,7 +206,8 @@ describe('proxyClient', () => {
     });
     setRealClient(mockClient);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('replay error:'),
+      '[MetaRouter]',
+      'replay error:',
       expect.any(Error)
     );
     // subsequent calls still work
@@ -291,6 +293,10 @@ describe('proxyClient', () => {
     ]);
     expect(bridge.injectedJavaScriptBeforeContentLoaded).toBe('');
     expect(bridge.onMessage({ nativeEvent: { data: 'host' } })).toBe(false);
+    expect(console.warn).toHaveBeenCalledWith(
+      '[MetaRouter]',
+      'attachWebView called before the SDK loaded — ignoring.'
+    );
     // Nothing took a pending-call slot.
     setRealClient(mockClient);
     expect(mockClient.attachWebView).not.toHaveBeenCalled();
