@@ -7,8 +7,8 @@ import com.facebook.react.bridge.ReactMethod
 
 /**
  * Synchronous string store for state that must be known before host code runs:
- * provider context. AsyncStorage resolves after the first host line, so a
- * synchronous read there could only report this launch's values — the Android
+ * consent and provider context. AsyncStorage resolves after the first host line,
+ * so a synchronous getConsent() there could only report defaults — the Android
  * SDK reads SharedPreferences synchronously and has no such window.
  *
  * Its own preferences file: the Android SDK's files in a hybrid app stay apart.
@@ -36,10 +36,10 @@ class MetaRouterKeyValueStoreModule(
 
     /**
      * Synchronous so writes land in call order; a null [value] removes the key.
-     * commit(), not apply(): a clear must survive the process dying right after
-     * it. Writes are rare and small. Returns whether the write reached disk: a
-     * blocking method must return a value to stay synchronous under the new
-     * architecture.
+     * commit(), not apply(): a consent withdrawal or clear must survive the
+     * process dying right after it. Writes are rare and small. Returns whether
+     * the write reached disk: a blocking method must return a value to stay
+     * synchronous under the new architecture.
      */
     @ReactMethod(isBlockingSynchronousMethod = true)
     fun setSync(key: String, value: String?): Boolean {

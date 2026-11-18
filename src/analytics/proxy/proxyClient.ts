@@ -1,6 +1,7 @@
 import type { AnalyticsInterface } from '../types';
 import { inertProps } from '../webview/webViewBridge';
 import { getProcessProviderContextManager } from '../providers/providerContextManager';
+import { getProcessConsentManager } from '../consent/consentManager';
 import { warn } from '../utils/logger';
 
 type PendingItem = {
@@ -76,6 +77,7 @@ function degradedResult(methodName: AsyncMethod): unknown {
         pendingCalls: pendingCalls.length,
         configError: configDisabledError,
         providerContext: getProcessProviderContextManager().toDebugInfo(),
+        consent: getProcessConsentManager().getWireConsent(),
       };
     default:
       return undefined;
@@ -282,6 +284,16 @@ export const proxyClient: AnalyticsInterface = {
   clearProviderContext: (provider) =>
     getProcessProviderContextManager().clear(provider),
   clearAllProviderContext: () => getProcessProviderContextManager().clearAll(),
+
+  // Consent bypasses the queue for the same reasons, and one more: compliance
+  // state must never be dropped at the queue cap or applied late.
+  registerConsentCategories: (categories) =>
+    getProcessConsentManager().registerConsentCategories(categories),
+  setConsent: (consent) => getProcessConsentManager().setConsent(consent),
+  getConsent: () => getProcessConsentManager().getConsent(),
+  clearConsent: () => getProcessConsentManager().clearConsent(),
+  subscribeToConsent: (handler) =>
+    getProcessConsentManager().subscribe(handler),
 };
 
 /**

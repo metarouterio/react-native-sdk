@@ -11,4 +11,7 @@ export type {
   WebViewRefLike,
   JsonValue,
   ProviderContextMap,
+  Consent,
+  ConsentCategory,
 } from './analytics/types';
+export { OneTrustAdapter } from './analytics/consent/adapters/oneTrustAdapter';

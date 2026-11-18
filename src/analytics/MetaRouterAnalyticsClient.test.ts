@@ -3,6 +3,7 @@ import type { InitOptions } from './types';
 import { AppState } from 'react-native';
 import { StubNetworkMonitor } from './utils/networkMonitor';
 import { ProviderContextManager } from './providers/providerContextManager';
+import { ConsentManager } from './consent/consentManager';
 
 // No react-native-device-info in tests, so the app version falls back to 'unknown'.
 const APP_VERSION = 'unknown';
@@ -793,6 +794,95 @@ describe('MetaRouterAnalyticsClient', () => {
       const info = await client.getDebugInfo();
       expect(info.providerContext).toEqual({ vendor: ['id'] });
       expect(JSON.stringify(info)).not.toContain('secret-id');
+    });
+  });
+
+  describe('consent', () => {
+    const memoryConsent = (stored: any = null) =>
+      new ConsentManager({ load: async () => stored, save: async () => {} });
+
+    it('stamps the reconciled consent on the POSTed event, never the timestamp', async () => {
+      const consentManager = memoryConsent();
+      const client = new MetaRouterAnalyticsClient(opts, { consentManager });
+      await client.init();
+      client.registerConsentCategories([{ key: 'c0001' }, { key: 'c0002' }]);
+
+      client.setConsent({
+        explicit: true,
+        optOut: { C0001: false },
+        timestamp: 123,
+      });
+      client.track('Purchase');
+      await client.flush();
+
+      const body = JSON.parse((fetch as jest.Mock).mock.calls[0][1].body);
+      expect(body.batch[0].context.consent).toEqual({
+        explicit: true,
+        optOut: { c0001: false, c0002: true },
+      });
+    });
+
+    it('stamps the implicit default before any setConsent, and bridge events too', async () => {
+      const consentManager = memoryConsent();
+      consentManager.registerConsentCategories([{ key: 'c0001' }]);
+      const client = new MetaRouterAnalyticsClient(opts, { consentManager });
+      await client.init();
+
+      client.track('Native');
+      client.enqueueBridgeEvent({
+        type: 'track',
+        name: 'Web',
+        properties: {},
+      } as any);
+
+      for (const event of client.queue) {
+        expect(event.context.consent).toEqual({
+          explicit: false,
+          optOut: { c0001: true },
+        });
+      }
+    });
+
+    it("cold-launch events carry last launch's consent", async () => {
+      const consentManager = memoryConsent({
+        consent: { explicit: true, optOut: { c0001: false } },
+      });
+      const client = new MetaRouterAnalyticsClient(
+        { ...opts, trackLifecycleEvents: true },
+        { consentManager }
+      );
+      await client.init();
+
+      expect(client.queue[0].event).toMatch(/^Application /);
+      expect(client.queue[0].context.consent).toEqual({
+        explicit: true,
+        optOut: { c0001: false },
+      });
+    });
+
+    it('a setConsent on the line before a track reaches that track', async () => {
+      const consentManager = memoryConsent();
+      const client = new MetaRouterAnalyticsClient(opts, { consentManager });
+      await client.init();
+
+      client.track('Before');
+      client.setConsent({ explicit: true, optOut: { a: true } });
+      client.track('After');
+
+      expect(client.queue[0].context.consent.optOut).toEqual({});
+      expect(client.queue[1].context.consent.optOut).toEqual({ a: true });
+    });
+
+    it('getDebugInfo reports the wire shape', async () => {
+      const consentManager = memoryConsent();
+      const client = new MetaRouterAnalyticsClient(opts, { consentManager });
+      await client.init();
+      client.setConsent({ explicit: true, optOut: { a: true }, timestamp: 9 });
+
+      expect((await client.getDebugInfo()).consent).toEqual({
+        explicit: true,
+        optOut: { a: true },
+      });
     });
   });
 

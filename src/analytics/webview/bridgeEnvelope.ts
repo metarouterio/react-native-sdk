@@ -1,4 +1,5 @@
 import { utf8ByteLength } from '../utils/utf8';
+import { isRecord } from '../utils/isRecord';
 
 /**
  * Error codes returned to the web producer. Closed set — the web side may
@@ -68,9 +69,6 @@ export const MAX_ENVELOPE_BYTES = 64 * 1024;
 // just entries — 1000 retained near-64 KB ids would be ~64 MB.
 export const MAX_MESSAGE_ID_CHARS = 256;
 
-const isObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
 const stringOrUndefined = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
 
@@ -103,7 +101,7 @@ export function parseBridgeEnvelope(raw: string): BridgeParseResult {
   } catch {
     return invalid('malformed_json', 'envelope is not valid JSON');
   }
-  if (!isObject(root)) {
+  if (!isRecord(root)) {
     return invalid('malformed_payload', 'envelope must be a JSON object');
   }
 
@@ -165,7 +163,7 @@ export function parseBridgeEnvelope(raw: string): BridgeParseResult {
   let properties: Record<string, unknown>;
   if (root.properties === undefined || root.properties === null) {
     properties = {};
-  } else if (isObject(root.properties)) {
+  } else if (isRecord(root.properties)) {
     properties = root.properties;
   } else {
     return invalid(
@@ -184,7 +182,7 @@ export function parseBridgeEnvelope(raw: string): BridgeParseResult {
   };
   const sentAt = stringOrUndefined(root.sentAt);
   if (sentAt !== undefined) envelope.sentAt = sentAt;
-  if (isObject(root.page)) {
+  if (isRecord(root.page)) {
     const page: PageContext = {};
     for (const key of ['url', 'path', 'search', 'title', 'referrer'] as const) {
       const value = stringOrUndefined(root.page[key]);
@@ -192,7 +190,7 @@ export function parseBridgeEnvelope(raw: string): BridgeParseResult {
     }
     envelope.page = page;
   }
-  if (isObject(root.source)) {
+  if (isRecord(root.source)) {
     envelope.source = {
       producer: stringOrUndefined(root.source.producer),
       wrapperVersion: stringOrUndefined(root.source.wrapperVersion),
