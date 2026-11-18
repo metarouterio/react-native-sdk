@@ -2,6 +2,7 @@ import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import type { InitOptions } from './types';
 import { AppState } from 'react-native';
 import { StubNetworkMonitor } from './utils/networkMonitor';
+import { ProviderContextManager } from './providers/providerContextManager';
 
 // No react-native-device-info in tests, so the app version falls back to 'unknown'.
 const APP_VERSION = 'unknown';
@@ -707,6 +708,91 @@ describe('MetaRouterAnalyticsClient', () => {
       await expect(client.getAnonymousId()).rejects.toThrow(
         /no anonymous ID available/
       );
+    });
+  });
+
+  describe('provider context', () => {
+    const memoryManager = (persisted: Record<string, any> | null = null) =>
+      new ProviderContextManager({
+        load: async () => persisted,
+        save: async () => {},
+      });
+
+    it('stamps the host map with the session block last', async () => {
+      const providerContextManager = memoryManager({
+        // Only reachable through storage: set-time rejects this name.
+        metarouter: { sessionID: 'forged' },
+      });
+      const client = new MetaRouterAnalyticsClient(opts, {
+        providerContextManager,
+      });
+      await client.init();
+
+      client.setProviderContext('googleFirebase', 'appInstanceId', 'fid-1');
+      client.track('Purchase');
+
+      const providers = client.queue[0].context.providers;
+      expect(providers.googleFirebase).toEqual({ appInstanceId: 'fid-1' });
+      expect(providers.metarouter.sessionID).not.toBe('forged');
+      expect(providers.metarouter.sessionID).toEqual(expect.any(String));
+    });
+
+    it("cold-launch events carry last launch's values", async () => {
+      const providerContextManager = memoryManager({
+        vendor: { id: 'persisted' },
+      });
+      const client = new MetaRouterAnalyticsClient(
+        { ...opts, trackLifecycleEvents: true },
+        { providerContextManager }
+      );
+      await client.init();
+
+      expect(client.queue[0].event).toMatch(/^Application /);
+      expect(client.queue[0].context.providers.vendor).toEqual({
+        id: 'persisted',
+      });
+    });
+
+    it('a value set before init is on the first events', async () => {
+      const providerContextManager = memoryManager();
+      const client = new MetaRouterAnalyticsClient(opts, {
+        providerContextManager,
+      });
+      expect(client.setProviderContext('vendor', 'id', 'early')).toBe(true);
+      await client.init();
+
+      client.track('First');
+      expect(client.queue[0].context.providers.vendor).toEqual({ id: 'early' });
+    });
+
+    it('bridge events carry it too', async () => {
+      const providerContextManager = memoryManager();
+      const client = new MetaRouterAnalyticsClient(opts, {
+        providerContextManager,
+      });
+      await client.init();
+      client.setProviderContext('vendor', 'id', 'v');
+
+      client.enqueueBridgeEvent({
+        type: 'track',
+        name: 'Web Event',
+        properties: {},
+      } as any);
+
+      expect(client.queue[0].context.providers.vendor).toEqual({ id: 'v' });
+    });
+
+    it('getDebugInfo lists provider key names without values', async () => {
+      const providerContextManager = memoryManager();
+      const client = new MetaRouterAnalyticsClient(opts, {
+        providerContextManager,
+      });
+      await client.init();
+      client.setProviderContext('vendor', 'id', 'secret-id');
+
+      const info = await client.getDebugInfo();
+      expect(info.providerContext).toEqual({ vendor: ['id'] });
+      expect(JSON.stringify(info)).not.toContain('secret-id');
     });
   });
 

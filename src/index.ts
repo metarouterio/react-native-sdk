@@ -9,4 +9,6 @@ export type {
   WebViewBridgeProps,
   WebViewMessageEventLike,
   WebViewRefLike,
+  JsonValue,
+  ProviderContextMap,
 } from './analytics/types';

@@ -47,7 +47,12 @@ export function enrichEvent(
     // side forks them.
     context: {
       ...context,
+      // The host's map (setProviderContext) first, the SDK's own block last:
+      // `metarouter` is rejected at set time, and writing it last keeps that
+      // true for a value that reached the map another way. Flipping the order
+      // hands a host-set sessionID downstream, and nothing would flag it.
       providers: {
+        ...context.providers,
         metarouter: {
           sessionID: session.sessionId,
           sessionCount: session.sessionCount,
