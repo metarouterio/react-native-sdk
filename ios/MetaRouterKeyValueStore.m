@@ -1,9 +1,9 @@
 #import <React/RCTBridgeModule.h>
 
 // Synchronous string store for state that must be known before host code runs:
-// provider context. AsyncStorage resolves after the first host line, so a
-// synchronous read there could only report this launch's values — the iOS SDK
-// reads UserDefaults synchronously and has no such window.
+// consent and provider context. AsyncStorage resolves after the first host
+// line, so a synchronous getConsent() there could only report defaults — the
+// iOS SDK reads UserDefaults synchronously and has no such window.
 //
 // Its own UserDefaults keys, prefixed: the iOS SDK stores Data under the bare
 // names in a hybrid app, and a String read of Data is nil.

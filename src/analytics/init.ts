@@ -1,4 +1,6 @@
+import { buildConfig } from './utils/buildConfig';
 import { getProcessProviderContextManager } from './providers/providerContextManager';
+import { getProcessConsentManager } from './consent/consentManager';
 import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import {
   clearConfigDisabled,
@@ -39,14 +41,8 @@ let decisionCount = 0;
 let workChain: Promise<void> = Promise.resolve();
 let activeClient: MetaRouterAnalyticsClient | null = null;
 
-/**
- * Whether this is a development build. Injectable so tests can exercise the
- * release path; production reads React Native's `__DEV__`.
- */
-export const buildConfig = {
-  isDevelopmentBuild: (): boolean =>
-    typeof __DEV__ !== 'undefined' && __DEV__ === true,
-};
+// Re-exported: tests flip the release path through init.buildConfig.
+export { buildConfig };
 
 // For fire-and-forget enqueues: the runners catch everything today, but a
 // future throw must not surface as an unhandled rejection in the host.
@@ -244,6 +240,7 @@ setAttachWebViewHandler(attachWebView);
 // from native storage, so a getProviderContext() before createAnalyticsClient
 // already sees last launch's values (later without the native module).
 getProcessProviderContextManager();
+getProcessConsentManager();
 
 function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
   return {
@@ -269,6 +266,12 @@ function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
     getProviderContext: () => instance.getProviderContext(),
     clearProviderContext: (provider) => instance.clearProviderContext(provider),
     clearAllProviderContext: () => instance.clearAllProviderContext(),
+    registerConsentCategories: (categories) =>
+      instance.registerConsentCategories(categories),
+    setConsent: (consent) => instance.setConsent(consent),
+    getConsent: () => instance.getConsent(),
+    clearConsent: () => instance.clearConsent(),
+    subscribeToConsent: (handler) => instance.subscribeToConsent(handler),
     flush: () => instance.flush(),
     reset: () => resetSession(),
   };

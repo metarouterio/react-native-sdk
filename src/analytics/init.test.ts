@@ -38,6 +38,47 @@ describe('createAnalyticsClient', () => {
       undefined
     );
   });
+  it('consent set before createAnalyticsClient applies at once, survives reset(), and pre-bind events get the latest', async () => {
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    const initSpy = jest.spyOn(MetaRouterAnalyticsClient.prototype, 'init');
+    const { createAnalyticsClient } = require('./init');
+    const { proxyClient } = require('./proxy/proxyClient');
+
+    proxyClient.registerConsentCategories([{ key: 'c0001' }]);
+    expect(
+      proxyClient.setConsent({ explicit: true, optOut: { c0001: false } })
+    ).toBe(true);
+    expect(proxyClient.getConsent().optOut).toEqual({ c0001: false });
+
+    const client = createAnalyticsClient(opts);
+    // Queued before the bind: enriched at replay, so it carries the consent
+    // current at the bind — latest wins, as on iOS and Android.
+    client.track('Queued');
+    client.setConsent({ explicit: true, optOut: { c0001: true } });
+    await client.getAnonymousId(); // resolves once bound
+    const first = initSpy.mock.contexts[0] as any;
+    expect(first.queue[0].context.consent.optOut).toEqual({ c0001: true });
+
+    await client.reset();
+    const next = createAnalyticsClient(opts);
+    await next.getAnonymousId();
+    next.track('After Reset');
+    const second = initSpy.mock.contexts[1] as any;
+    expect(second.queue[0].context.consent).toEqual({
+      explicit: true,
+      optOut: { c0001: true },
+    });
+
+    next.clearConsent();
+    expect(next.getConsent()).toEqual({
+      explicit: false,
+      optOut: { c0001: true },
+    });
+    await next.reset();
+  });
+
   it('provider context set before createAnalyticsClient is stamped, and survives reset() into the next client', async () => {
     const {
       MetaRouterAnalyticsClient,

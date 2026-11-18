@@ -18,6 +18,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 - [Application Lifecycle Events](#application-lifecycle-events)
 - [Session Tracking](#session-tracking)
 - [WebView Bridge](#webview-bridge)
+- [Consent](#consent)
 - [Provider Context](#provider-context)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
@@ -241,6 +242,7 @@ The analytics client provides the following methods:
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
 - `attachWebView(webViewRef, allowedOrigins: string[])`: Bridge a `react-native-webview` WebView so its pages' events are sent through the SDK. Returns props to spread onto the `<WebView>`. See [WebView Bridge](#webview-bridge)
 - `getSessionId(): Promise<string | null>`: Returns the current session ID, or `null` before the first event has been sent this launch. Never waits for initialization and never extends the session. See [Session Tracking](#session-tracking)
+- `registerConsentCategories(categories)`, `setConsent(consent): boolean`, `getConsent()`, `clearConsent()`, `subscribeToConsent(handler): () => void`: Consent state stamped at `context.consent` on every event. See [Consent](#consent)
 - `setProviderContext(provider: string, key: string, value: unknown): boolean`: Stamp a value at `context.providers.<provider>.<key>` on every event. Persisted, survives `reset()`, usable before initialization. `null` or `undefined` removes the key. Returns `false` when the write is rejected. See [Provider Context](#provider-context)
 - `getProviderContext()`: Everything set with `setProviderContext`, read-only
 - `clearProviderContext(provider: string)` / `clearAllProviderContext()`: Remove one provider's block, or all of them
@@ -493,6 +495,109 @@ Each bridge message carries an ID minted by the page, used to drop duplicate del
 
 - SDK logs (`debug: true` or `enableDebugLogging()`) show attach confirmations, rejected messages with their error codes, and duplicate drops.
 - In Safari's Develop menu (iOS) or `chrome://inspect` (Android), check `typeof window.metarouterBridge` to verify injection, and read replies with `window.__metaRouterNativeChannel.onmessage = e => console.log(e.data)`.
+
+## Consent
+
+The host app owns consent acquisition — a CMP SDK callback, a cookie read out of a WebView, your own preference screen. The SDK owns storage, reconciliation, observation, and putting consent on the wire. Every event carries the current consent at `context.consent`, in the same shape the web SDK emits, so the cluster enforces one set of per-integration rules for web and mobile:
+
+```json
+"context": {
+  "consent": {
+    "explicit": true,
+    "optOut": {
+      "c0001": false,
+      "c0002": false,
+      "c0004": true
+    }
+  }
+}
+```
+
+- `explicit` — `true` when the user made an explicit choice, `false` for an implicit or regional default. You set it; the SDK cannot infer it.
+- `optOut` — a flat map with **opt-out** semantics: `true` means blocked. Keys are lowercase and pass through from your CMP (`c0001`…, `analytics`, `advertising`, …). `setConsent` canonicalizes the keys you pass (`C0004` → `c0004`); when two keys collapse to one, opted-out wins.
+
+Consent never gates delivery. Events send immediately and the server gates per integration, so there is no buffering, no init flag, and nothing to wait for.
+
+### 1. Register categories — right after `createAnalyticsClient`
+
+Register the category set your pipeline gates on, with each category's default posture. Default is opt-out (`defaultOptOut: true`): a category is opted *in* deliberately, and the absence of a signal never opts a user in. Consent calls never wait for initialization, so register on the returned object in the same synchronous block:
+
+```ts
+const analytics = createAnalyticsClient(options);
+analytics.registerConsentCategories([
+  { key: 'c0001', defaultOptOut: false }, // strictly necessary — always on
+  { key: 'c0002' }, // performance
+  { key: 'c0004' }, // targeting
+]);
+```
+
+Initialization runs after the current synchronous code, so a registration on the next line lands before `Application Opened` / `Session Started`. The registry is not persisted: until it is registered the implicit default has an empty `optOut`, which the cluster reads as nothing blocked.
+
+Keys are trimmed and lowercased, blank keys dropped, and duplicates keep their first occurrence, each with a warning. In **development** (`__DEV__`) any of those throws at the registration itself; release builds degrade with the warning.
+
+Registration is what lets the SDK complete a sparse CMP payload into a full block: known keys keep their value, unknown keys are dropped, missing categories take their registered default. Re-registering replaces the set and recomputes the view of any stored consent against it — the stored snapshot itself is kept whole, so a category one build drops and the next re-adds comes back with the user's original choice.
+
+### 2. Push consent whenever it changes
+
+```ts
+analytics.setConsent({
+  explicit: true,
+  optOut: { c0002: false, c0004: true },
+});
+```
+
+`setConsent` fully replaces the previous state, persists it across launches, and takes effect immediately: an event tracked on the next line carries it. Before the client is ready, `track` calls are queued and enriched when it binds, so every queued event carries the consent current at bind, not at its call. It is safe to call before `createAnalyticsClient` (CMP callbacks often fire first), and the state survives `reset()`: consent is a compliance record scoped to the device and person, not to the analytics identity, so a logout must not resurrect tracking the user opted out of. Only `clearConsent()` removes it.
+
+Each `Consent` carries an optional epoch-millisecond `timestamp`. If you supply timestamps (for example from the CMP's own record), a snapshot older than the newest timestamp you have supplied is ignored, so a CMP replaying a cached choice cannot overwrite a fresher one; `setConsent` returns `false` when that happens. `clearConsent()` resets that history, so after a clear any snapshot applies — do not re-push one from before the clear. Use one unit: a single millisecond timestamp followed by seconds rejects every seconds call until the next clear. A call without a timestamp is always applied as the user's current choice; the SDK stamps the device clock for information only and never compares it with yours. The timestamp never goes on the wire.
+
+Before the first `setConsent`, `getConsent()` and every outbound event carry the **implicit default** — `explicit: false` with every registered category at its default — which the cluster gates exactly like an implicit-consent web visitor. There is no "unknown" state.
+
+Consent is stored natively (UserDefaults on iOS, SharedPreferences on Android) and read synchronously when the SDK loads, as the iOS and Android SDKs read theirs: `getConsent()` and the first subscriber delivery carry the user's stored decision from your first line of code, and so do the first events.
+
+Without the SDK's native modules — Expo Go, or JavaScript shipped over the air onto a binary built before this release — consent falls back to AsyncStorage, which loads moments after the SDK does (initialization still waits for it, so events are unaffected). Until it loads, `getConsent()` and a subscriber's first delivery reflect only the registered defaults and what was set this launch; the stored decision follows as a change. If you gate a third-party SDK on a category that defaults to opted in, treat that first value as provisional there. Calls made before the stored state loads are applied on top of it (a timestamped `setConsent` older than the newest stored timestamp returns `true` and is then dropped, with a warning). Consent stored that way is not carried over once the app is rebuilt with the native modules: it starts from the implicit default until your CMP pushes the user's choice again.
+
+If storage cannot be read at startup (including a failing native read), that launch applies consent in memory only and leaves the stored state untouched rather than overwrite it — until `clearConsent()`: the clear is saved whenever storage accepts the write, and consent set after it in that launch is saved too.
+
+### OneTrust
+
+`OneTrustAdapter` translates OneTrust's opt-in statuses into the canonical shape: category IDs lowercased (`C0004` → `c0004`), values inverted to opt-out semantics. It is a pure function with no dependency on the OneTrust SDK — read OneTrust however you already do and hand the raw result over. Reconciliation against your registered categories happens in `setConsent`, so you can pass everything OneTrust reports.
+
+```ts
+import { OneTrustAdapter } from '@metarouter/react-native-sdk';
+
+// From the OneTrust SDK's category statuses
+analytics.setConsent(
+  OneTrustAdapter.normalize({ C0001: 1, C0002: 1, C0004: 0 }, true)
+);
+
+// From the OptanonConsent cookie's `groups` parameter (e.g. read out of a
+// WebView). Percent-encoded values, the whole cookie value and a full
+// document.cookie string are all accepted.
+analytics.setConsent(
+  OneTrustAdapter.normalize('C0001%3A1%2CC0002%3A1%2CC0004%3A0', true)
+);
+```
+
+Pass `explicit: true` from the banner-interaction callback and `false` when applying a regional default — the payload does not say which it was; your code does. Re-run it on every OneTrust consent-changed callback. If the cookie is absent, do not call `setConsent`: `normalize('', true)` reads as "explicitly opted out of everything", which records a rejection the user never made. Any other CMP (or your own preference screen) can build a `Consent` directly: adapters are a convenience, not a requirement.
+
+### Observing and withdrawing
+
+```ts
+useEffect(() => {
+  // Fires once with the current value (queued, never inline), then on every
+  // real change.
+  const unsubscribe = analytics.subscribeToConsent((consent) => {
+    thirdPartySdk.setEnabled(consent.optOut.c0004 === false);
+  });
+  // Nothing is delivered after this returns, even if already queued. Without
+  // it the handler keeps running for the life of the app.
+  return unsubscribe;
+}, [analytics]);
+
+analytics.clearConsent(); // back to the implicit default; stored state wiped
+```
+
+A `setConsent` whose values equal the current state does not notify subscribers, even with a fresher timestamp — handlers react to decisions, not clocks.
 
 ## Provider Context
 
@@ -763,9 +868,10 @@ The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID o
 | **anonymousId**   | Auto-generated (UUID v4) | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
 | **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
 | **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
+| **consent** | `setConsent(…)` | `metarouter:consent:state` | All events (`context.consent`) | `clearConsent()` (survives `reset()`) |
 | **provider context** | `setProviderContext(…)` | `metarouter:providers:context` | All events (`context.providers`) | `clearProviderContext`, `clearAllProviderContext` (survives `reset()`) |
 
-Identity keys are in AsyncStorage. Provider context is in native storage (UserDefaults keys prefixed `com.metarouter.reactnative:` on iOS; the `com.metarouter.reactnative.store` preferences file on Android), with AsyncStorage as the fallback without the native modules.
+Identity keys are in AsyncStorage. Consent and provider context are in native storage (UserDefaults keys prefixed `com.metarouter.reactnative:` on iOS; the `com.metarouter.reactnative.store` preferences file on Android), with AsyncStorage as the fallback without the native modules.
 
 ### Event Enrichment Flow
 
