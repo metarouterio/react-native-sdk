@@ -2,6 +2,7 @@ import { warn } from '../utils/logger';
 import { utf8ByteLength } from '../utils/utf8';
 import {
   loadProviderContext,
+  loadProviderContextSync,
   saveProviderContext,
   type JsonValue,
   type ProviderContextMap,
@@ -194,12 +195,13 @@ function encodedSize(snapshot: Readonly<ProviderContextMap>): number {
  * memory at once — a host that resolves a vendor id and tracks on the next line
  * expects that event to carry it — and persist in the background.
  *
- * AsyncStorage is asynchronous, so the persisted map arrives after
- * construction. Until then the manager runs in memory and records the writes
- * made meanwhile; `load()` replays them over the persisted map, in order and
- * through the same bounds, so the result is what storage read at startup would
- * have held. Client init awaits `load()`, so last launch's values are on the
- * cold-launch events.
+ * `load()` reads the persisted map synchronously from native storage, so it
+ * is in memory before host code runs, as on iOS and Android. Without the native
+ * module it comes from AsyncStorage and arrives later: until then the manager
+ * runs in memory and records the writes made meanwhile, and the load replays
+ * them over the persisted map, in order and through the same bounds, so the
+ * result is what storage read at startup would have held. Client init awaits
+ * `load()`, so last launch's values are on the cold-launch events.
  */
 export class ProviderContextManager {
   private providers: Providers = new Map();
@@ -226,9 +228,15 @@ export class ProviderContextManager {
 
   constructor(
     private readonly storage: {
+      /** Undefined when the map is only available through `load`. */
+      loadSync?: () => ProviderContextMap | null | undefined;
       load: () => Promise<ProviderContextMap | null>;
       save: (map: ProviderContextMap) => Promise<void>;
-    } = { load: () => loadProviderContext(), save: saveProviderContext }
+    } = {
+      loadSync: loadProviderContextSync,
+      load: () => loadProviderContext(),
+      save: saveProviderContext,
+    }
   ) {}
 
   // ===== Reads =====
@@ -461,25 +469,44 @@ export class ProviderContextManager {
    */
   load(): Promise<void> {
     if (!this.loading) {
-      this.loading = this.storage
-        .load()
-        .catch((err) => {
-          this.persistDisabled = true;
-          warn(
-            'Provider context storage unreadable — values apply in memory this launch; stored values left untouched.',
-            err
-          );
-          return null;
-        })
-        .then((persisted) => this.applyLoaded(persisted))
-        .catch((err) => {
-          // Last resort for the always-resolves contract.
-          this.persistDisabled = true;
-          this.loaded = true;
-          warn('Provider context could not be loaded', err);
-        });
+      let persisted: ProviderContextMap | null | undefined;
+      try {
+        persisted = this.storage.loadSync?.();
+      } catch (err) {
+        persisted = this.unreadable(err);
+      }
+      this.loading =
+        persisted !== undefined
+          ? Promise.resolve(this.settle(persisted))
+          : this.storage
+              .load()
+              .catch((err) => this.unreadable(err))
+              .then((map) => this.settle(map));
     }
     return this.loading;
+  }
+
+  private unreadable(err: unknown): null {
+    this.persistDisabled = true;
+    warn(
+      'Provider context storage unreadable — values apply in memory this launch; stored values left untouched.',
+      err
+    );
+    return null;
+  }
+
+  private settle(persisted: ProviderContextMap | null): void {
+    try {
+      this.applyLoaded(persisted);
+    } catch (err) {
+      // Last resort for the always-resolves contract. A throw after the load
+      // completed leaves saving as it was.
+      if (!this.loaded) {
+        this.persistDisabled = true;
+        this.loaded = true;
+      }
+      warn('Provider context could not be loaded', err);
+    }
   }
 
   private applyLoaded(persisted: ProviderContextMap | null): void {
@@ -522,9 +549,9 @@ export class ProviderContextManager {
 let processManager: ProviderContextManager | null = null;
 
 /**
- * The process-wide manager every client and the pre-init proxy share. Its load
- * starts on first use — when the SDK module loads (init.ts) — so the stored
- * map is usually in memory before the host's first read.
+ * The process-wide manager every client and the pre-init proxy share. It loads
+ * on first use — when the SDK module loads (init.ts) — so the stored map is in
+ * memory before the host's first read (later, without the native module).
  */
 export function getProcessProviderContextManager(): ProviderContextManager {
   if (!processManager) {

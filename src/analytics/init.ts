@@ -14,6 +14,7 @@ import type { InitOptions, AnalyticsInterface, ConfigError } from './types';
 import { validateInitOptions } from './utils/initOptions';
 import { BridgeMessageProcessor } from './webview/bridgeMessageProcessor';
 import { attachWebViewBridge } from './webview/webViewBridge';
+import { error as logError, warn } from './utils/logger';
 
 /*
  * Session choreography. Init, disable and reset work runs strictly FIFO on
@@ -74,9 +75,7 @@ function passesConfigGate(
   if (buildConfig.isDevelopmentBuild()) {
     throw new Error(`Invalid InitOptions: ${description}`);
   }
-  console.error(
-    `[MetaRouter] MetaRouter disabled for this session — ${description}`
-  );
+  logError(`MetaRouter disabled for this session — ${description}`);
   options.onConfigError?.(configError);
   return false;
 }
@@ -103,8 +102,8 @@ export function createAnalyticsClient(
       currentOptions &&
       JSON.stringify(currentOptions) !== JSON.stringify(normalized)
     ) {
-      console.warn(
-        '[MetaRouter] Config changed but client not reset. Call await client.reset() before reinitializing with new options.'
+      warn(
+        'Config changed but client not reset. Call await client.reset() before reinitializing with new options.'
       );
     }
     return proxyClient;
@@ -140,7 +139,7 @@ async function runInit(options: InitOptions, decision: number): Promise<void> {
     setInitializingClient(instance);
     await instance.init();
   } catch (err) {
-    console.error('[MetaRouter] Initialization failed:', err);
+    logError('Initialization failed:', err);
     // The one execution-time flag write: restores retryability so the next
     // createAnalyticsClient can try again. Skipped when a later call was made
     // after this init was queued — that call's decision (a reset, another
@@ -204,7 +203,7 @@ async function resetQuietly(
   try {
     await client.reset();
   } catch (err) {
-    console.error('[MetaRouter] Reset of the previous client failed:', err);
+    logError('Reset of the previous client failed:', err);
   }
 }
 
@@ -241,9 +240,9 @@ const attachWebView: AnalyticsInterface['attachWebView'] = (
 // The proxy routes every attachWebView here, bound or not.
 setAttachWebViewHandler(attachWebView);
 
-// Starts loading the stored provider context as soon as the SDK loads, so a
-// getProviderContext() before createAnalyticsClient usually already sees last
-// launch's values.
+// Loads the stored provider context as soon as the SDK loads — synchronously
+// from native storage, so a getProviderContext() before createAnalyticsClient
+// already sees last launch's values (later without the native module).
 getProcessProviderContextManager();
 
 function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
