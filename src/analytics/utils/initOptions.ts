@@ -107,6 +107,14 @@ export function validateInitOptions(
     );
   }
 
+  const sessionTimeoutMinutes = finiteOrUnset(
+    'sessionTimeoutMinutes',
+    raw.sessionTimeoutMinutes
+  );
+  if (sessionTimeoutMinutes != null && sessionTimeoutMinutes < 1) {
+    warn(`sessionTimeoutMinutes (${sessionTimeoutMinutes}) clamped to 1`);
+  }
+
   const clampedQueue = Math.max(1, maxQueueEvents ?? DEFAULT_MAX_QUEUE_EVENTS);
   const clampedDisk = Math.max(0, maxDiskEvents ?? DEFAULT_MAX_DISK_EVENTS);
   if (clampedDisk > 0 && clampedDisk < clampedQueue) {
@@ -126,6 +134,10 @@ export function validateInitOptions(
           : undefined,
       maxQueueEvents: clampedQueue,
       maxDiskEvents: clampedDisk,
+      sessionTimeoutMinutes:
+        sessionTimeoutMinutes != null
+          ? Math.max(1, sessionTimeoutMinutes)
+          : undefined,
     },
     configError,
   };
