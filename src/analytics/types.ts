@@ -1,4 +1,7 @@
 import type { ProviderContextMap } from './providers/providerContextStorage';
+import type { Consent, ConsentCategory } from './consent/consent';
+
+export type { Consent, ConsentCategory } from './consent/consent';
 
 export type {
   JsonValue,
@@ -189,6 +192,47 @@ export interface AnalyticsInterface {
   clearProviderContext: (provider: string) => void;
   /** Removes every provider's block. `reset()` does not. */
   clearAllProviderContext: () => void;
+  /**
+   * Registers the consent categories the pipeline gates on. Call it right
+   * after createAnalyticsClient, in the same synchronous block: initialization
+   * starts after it, so the cold-launch events are reconciled against it.
+   * Replaces the set (no merge) and recomputes any stored consent against it.
+   * Keys are trimmed and lowercased; a key that needed it, a blank key or a
+   * duplicate throws in development and warns in release.
+   */
+  registerConsentCategories: (categories: readonly ConsentCategory[]) => void;
+  /**
+   * Sets the user's consent, stamped on every later event at
+   * `context.consent` (`explicit` + `optOut`, never the timestamp). Usable
+   * before initialization and immediately effective. Consent never gates
+   * delivery: the server gates per integration on the stamped block. Survives
+   * app restarts and `reset()`.
+   *
+   * @returns false when ignored: malformed input, or a `timestamp` older than
+   *   the newest host-supplied timestamp since the last clearConsent (a stale
+   *   CMP replay). Untimestamped calls are always applied.
+   */
+  setConsent: (consent: Consent) => boolean;
+  /**
+   * The current reconciled consent. Never null: before the first setConsent
+   * (and after clearConsent) the implicit default — `explicit: false` with
+   * every registered category at its default.
+   */
+  getConsent: () => Consent;
+  /**
+   * Wipes the stored consent, timestamp history included, back to the implicit
+   * default. Unlike `reset()`, which leaves consent alone.
+   */
+  clearConsent: () => void;
+  /**
+   * Calls `handler` with the current consent (queued, never inline), then on
+   * every real change; value-identical setConsent calls do not fire.
+   *
+   * @returns an unsubscribe function — call it in your cleanup. Delivery
+   *   otherwise continues for the life of the app; after it returns the handler
+   *   is not called again, even for a delivery already queued.
+   */
+  subscribeToConsent: (handler: (consent: Consent) => void) => () => void;
 }
 
 export interface EventContext {
@@ -229,6 +273,11 @@ export interface EventContext {
    * the rest of the context, because session values change per event.
    */
   providers?: Record<string, Record<string, unknown>>;
+  /**
+   * The user's consent as of this event (setConsent), in the web SDK's shape.
+   * Always present: the implicit default before any setConsent.
+   */
+  consent?: { explicit: boolean; optOut: Readonly<Record<string, boolean>> };
   [key: string]: any; // allow arbitrary context
 }
 

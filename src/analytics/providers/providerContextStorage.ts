@@ -1,5 +1,6 @@
 import { warn } from '../utils/logger';
 import { persistedValue } from '../utils/persistedValue';
+import { isRecord } from '../utils/isRecord';
 
 /** A JSON value as stamped on the wire. */
 export type JsonValue =
@@ -31,9 +32,6 @@ export type ProviderContextMap = Record<string, Record<string, JsonValue>>;
  */
 export const PROVIDER_CONTEXT_KEY = 'metarouter:providers:context';
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
 const store = persistedValue(PROVIDER_CONTEXT_KEY);
 
 // Null for a value that is not a provider → key → value object. Values were
@@ -45,9 +43,9 @@ function parse(raw: string): ProviderContextMap | null {
   } catch {
     return null;
   }
-  if (!isPlainObject(parsed)) return null;
+  if (!isRecord(parsed)) return null;
   const entries = Object.entries(parsed);
-  if (entries.some(([, keys]) => !isPlainObject(keys))) return null;
+  if (entries.some(([, keys]) => !isRecord(keys))) return null;
   // fromEntries, not assignment: a provider named "__proto__" (JSON.parse
   // makes it an own key) would otherwise replace the map's prototype.
   return Object.fromEntries(
