@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { warn } from './logger';
+import { defaultDelay, getItemWithRetry } from './readWithRetry';
 
 // One JSON value under one key, read and written with getItem/setItem, which
 // AsyncStorage 2.x and 3.x both have (2.x's multiGet/multiSet became
@@ -35,10 +36,6 @@ function integerAtLeast(value: unknown, min: number): number | null {
     : null;
 }
 
-// Waits before each retry of a failed read. A failure here is usually transient
-// (storage busy at cold start); an immediate retry tends to fail the same way.
-const RETRY_DELAYS_MS = [100, 400];
-
 const EMPTY: StoredSession = { id: null, count: null, lastActivityMs: null };
 
 // Null for a value that is not a JSON object: rereading the same bad value
@@ -68,31 +65,22 @@ function parse(raw: string): StoredSession | null {
  * before the failure and interleave two session ids downstream.
  */
 export async function loadSession(
-  delay: (ms: number) => Promise<void> = (ms) =>
-    new Promise((resolve) => setTimeout(resolve, ms))
+  delay: (ms: number) => Promise<void> = defaultDelay
 ): Promise<StoredSession> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) await delay(RETRY_DELAYS_MS[attempt - 1]!);
-    let raw: string | null;
-    try {
-      raw = await AsyncStorage.getItem(SESSION_KEY);
-    } catch (err) {
-      lastError = err;
-      continue;
-    }
-    if (raw == null) return EMPTY;
-    const session = parse(raw);
-    if (session) return session;
+  const read = await getItemWithRetry(SESSION_KEY, delay);
+  if (!read.ok) {
     warn(
-      'Stored session is corrupt — starting a new session counted from 1.',
-      raw.slice(0, 100)
+      'Session storage unreadable — starting a new session counted from 1.',
+      read.error
     );
     return EMPTY;
   }
+  if (read.raw == null) return EMPTY;
+  const session = parse(read.raw);
+  if (session) return session;
   warn(
-    'Session storage unreadable — starting a new session counted from 1.',
-    lastError
+    'Stored session is corrupt — starting a new session counted from 1.',
+    read.raw.slice(0, 100)
   );
   return EMPTY;
 }

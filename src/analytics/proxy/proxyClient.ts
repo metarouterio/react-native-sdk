@@ -1,5 +1,6 @@
 import type { AnalyticsInterface } from '../types';
 import { inertProps } from '../webview/webViewBridge';
+import { getProcessProviderContextManager } from '../providers/providerContextManager';
 
 type PendingItem = {
   fn: () => void | Promise<void>;
@@ -73,6 +74,7 @@ function degradedResult(methodName: AsyncMethod): unknown {
         proxy: true,
         pendingCalls: pendingCalls.length,
         configError: configDisabledError,
+        providerContext: getProcessProviderContextManager().toDebugInfo(),
       };
     default:
       return undefined;
@@ -273,6 +275,16 @@ export const proxyClient: AnalyticsInterface = {
   getSessionId: () => handleMethodCall('getSessionId'),
   attachWebView: (webViewRef, allowedOrigins) =>
     handleMethodCall('attachWebView', webViewRef, allowedOrigins),
+
+  // Direct to the process-wide manager in every state, never queued: the map
+  // is not client state, a vendor id often resolves before init, and a queued
+  // write could be dropped at the queue cap or return no verdict.
+  setProviderContext: (provider, key, value) =>
+    getProcessProviderContextManager().setValue(provider, key, value),
+  getProviderContext: () => getProcessProviderContextManager().getAll(),
+  clearProviderContext: (provider) =>
+    getProcessProviderContextManager().clear(provider),
+  clearAllProviderContext: () => getProcessProviderContextManager().clearAll(),
 };
 
 /**
