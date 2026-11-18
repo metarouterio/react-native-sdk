@@ -139,6 +139,56 @@ describe('createAnalyticsClient', () => {
     await client.reset();
   });
 
+  it('a failed init logs through the logger and the next call can try again', async () => {
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    jest
+      .spyOn(MetaRouterAnalyticsClient.prototype, 'init')
+      .mockRejectedValueOnce(new Error('boom'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { createAnalyticsClient } = require('./init');
+
+    createAnalyticsClient(opts);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[MetaRouter]',
+      'Initialization failed:',
+      expect.any(Error)
+    );
+
+    const client = createAnalyticsClient(opts);
+    await expect(client.getAnonymousId()).resolves.toBe('anon-123');
+    await client.reset();
+    errorSpy.mockRestore();
+  });
+
+  it('a failing reset of the previous client logs through the logger and still resolves', async () => {
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    const { createAnalyticsClient } = require('./init');
+    const client = createAnalyticsClient(opts);
+    await client.getAnonymousId();
+
+    const realReset = MetaRouterAnalyticsClient.prototype.reset;
+    jest
+      .spyOn(MetaRouterAnalyticsClient.prototype, 'reset')
+      .mockImplementationOnce(async function (this: unknown) {
+        await realReset.call(this);
+        throw new Error('storage gone');
+      });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(client.reset()).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[MetaRouter]',
+      'Reset of the previous client failed:',
+      expect.any(Error)
+    );
+    errorSpy.mockRestore();
+  });
+
   it('creates a client with all analytics methods', async () => {
     const { createAnalyticsClient } = require('./init');
     const client = await createAnalyticsClient(opts);
@@ -332,9 +382,8 @@ describe('createAnalyticsClient', () => {
     createAnalyticsClient({ ...opts, maxQueueEvents: 3000 });
 
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(
-        '[MetaRouter] Config changed but client not reset'
-      )
+      '[MetaRouter]',
+      expect.stringContaining('Config changed but client not reset')
     );
     warnSpy.mockRestore();
     await client.getAnonymousId();

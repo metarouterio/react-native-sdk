@@ -88,7 +88,8 @@ describe('invalid InitOptions', () => {
       description: 'writeKey must not be empty or whitespace-only',
     });
     expect(errorSpy).toHaveBeenCalledWith(
-      '[MetaRouter] MetaRouter disabled for this session — writeKey must not be empty or whitespace-only'
+      '[MetaRouter]',
+      'MetaRouter disabled for this session — writeKey must not be empty or whitespace-only'
     );
     expect(() => client.track('Nothing happens')).not.toThrow();
 

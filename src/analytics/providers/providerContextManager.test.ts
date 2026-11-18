@@ -308,6 +308,34 @@ describe('ProviderContextManager', () => {
       expect(store.persisted).toEqual({ p: { k: 2 }, q: { k: 3 } });
     });
 
+    it('a synchronous load is in memory before load() returns', () => {
+      const manager = new ProviderContextManager({
+        loadSync: () => ({ p: { k: 1 } }),
+        load: () => Promise.reject(new Error('not used')),
+        save: async () => {},
+      });
+      void manager.load();
+      expect(manager.getAll()).toEqual({ p: { k: 1 } });
+    });
+
+    it('a failing synchronous read is unreadable storage: the launch stays in memory', async () => {
+      let saves = 0;
+      const manager = new ProviderContextManager({
+        loadSync: () => {
+          throw new Error('sync calls unsupported');
+        },
+        load: async () => null,
+        save: async () => {
+          saves++;
+        },
+      });
+      await manager.load();
+      manager.setValue('p', 'k', 1);
+      await flushPersist();
+      expect(manager.getAll()).toEqual({ p: { k: 1 } });
+      expect(saves).toBe(0);
+    });
+
     it('an unreadable store is never overwritten: the launch stays in memory', async () => {
       let saves = 0;
       const manager = new ProviderContextManager({

@@ -22,6 +22,10 @@ jest.mock('react-native', () => ({
     MetaRouterWebViewSupport: {
       isWebMessageListenerSupported: jest.fn(() => true),
     },
+    MetaRouterKeyValueStore: {
+      getSync: jest.fn(() => null),
+      setSync: jest.fn(() => true),
+    },
     MetaRouterQueueStorage: {
       exists: jest.fn(() => Promise.resolve(false)),
       readSnapshot: jest.fn(() => Promise.resolve(null)),

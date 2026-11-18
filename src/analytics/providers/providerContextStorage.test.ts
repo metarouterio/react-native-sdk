@@ -1,11 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModules } from 'react-native';
 import {
   loadProviderContext,
+  loadProviderContextSync,
   PROVIDER_CONTEXT_KEY,
   saveProviderContext,
 } from './providerContextStorage';
 
 const noDelay = () => Promise.resolve();
+const native = NativeModules.MetaRouterKeyValueStore as {
+  getSync: jest.Mock;
+  setSync: jest.Mock;
+};
 
 describe('providerContextStorage', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -14,21 +20,20 @@ describe('providerContextStorage', () => {
     expect(PROVIDER_CONTEXT_KEY).toBe('metarouter:providers:context');
   });
 
-  it('round-trips a map as one JSON value', async () => {
+  it('round-trips a map as one JSON value through native storage', async () => {
     await saveProviderContext({ p: { k: [1, 'a'] } });
-    const [key, raw] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+    const [key, raw] = native.setSync.mock.calls[0];
     expect(key).toBe(PROVIDER_CONTEXT_KEY);
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
 
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(raw);
-    await expect(loadProviderContext(noDelay)).resolves.toEqual({
-      p: { k: [1, 'a'] },
-    });
+    native.getSync.mockReturnValueOnce(raw);
+    expect(loadProviderContextSync()).toEqual({ p: { k: [1, 'a'] } });
   });
 
   it('removes the key for an empty map', async () => {
     await saveProviderContext({});
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith(PROVIDER_CONTEXT_KEY);
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect(native.setSync).toHaveBeenCalledWith(PROVIDER_CONTEXT_KEY, null);
+    expect(loadProviderContextSync()).toBeNull();
   });
 
   it('reads nothing stored as null', async () => {

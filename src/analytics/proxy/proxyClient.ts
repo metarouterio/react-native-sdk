@@ -1,6 +1,7 @@
 import type { AnalyticsInterface } from '../types';
 import { inertProps } from '../webview/webViewBridge';
 import { getProcessProviderContextManager } from '../providers/providerContextManager';
+import { warn } from '../utils/logger';
 
 type PendingItem = {
   fn: () => void | Promise<void>;
@@ -121,9 +122,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     }
     // Only reachable when init.ts was never loaded (a deep import). Queueing
     // would hand the render undefined; inert props keep it rendering.
-    console.warn(
-      '[MetaRouter] attachWebView called before the SDK loaded — ignoring.'
-    );
+    warn('attachWebView called before the SDK loaded — ignoring.');
     return inertProps() as ReturnType<AnalyticsInterface[T]>;
   }
 
@@ -183,9 +182,7 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
         `[MetaRouter] Dropped oldest call (queue cap ${MAX_PENDING_CALLS})`
       )
     );
-    console.warn(
-      `[MetaRouter] Oldest call dropped (queue cap ${MAX_PENDING_CALLS})`
-    );
+    warn(`Oldest call dropped (queue cap ${MAX_PENDING_CALLS})`);
   }
 
   if (isAsyncMethod(methodName) && configDisabledError !== null) {
@@ -339,7 +336,7 @@ export function setRealClient(
       try {
         Promise.resolve(fn()).catch(() => {});
       } catch (err) {
-        console.warn('[MetaRouter] replay error:', err);
+        warn('replay error:', err);
       }
     }
   } else {

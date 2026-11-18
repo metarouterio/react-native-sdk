@@ -20,12 +20,36 @@ describe('MetaRouter Logger', () => {
     expect(console.log).not.toHaveBeenCalled();
   });
 
+  it('a throwing console never throws into the SDK', () => {
+    setDebugLogging(true);
+    (console.log as jest.Mock).mockImplementation(() => {
+      throw new Error('fail on console');
+    });
+    (console.warn as jest.Mock).mockImplementation(() => {
+      throw new Error('fail on console');
+    });
+    (console.error as jest.Mock).mockImplementation(() => {
+      throw new Error('fail on console');
+    });
+
+    expect(() => log('l')).not.toThrow();
+    expect(() => warn('w')).not.toThrow();
+    expect(() => error('e')).not.toThrow();
+    // Still attempted: the throw was caught, not the call skipped.
+    expect(console.log).toHaveBeenCalledWith('[MetaRouter]', 'l');
+    expect(console.warn).toHaveBeenCalledWith('[MetaRouter]', 'w');
+    expect(console.error).toHaveBeenCalledWith('[MetaRouter]', 'e');
+  });
+
   it('always logs warnings regardless of debug setting', () => {
     setDebugLogging(false);
 
     warn('should always warn');
 
-    expect(console.warn).toHaveBeenCalledWith('[MetaRouter]', 'should always warn');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[MetaRouter]',
+      'should always warn'
+    );
   });
 
   it('always logs errors regardless of debug setting', () => {
@@ -33,7 +57,10 @@ describe('MetaRouter Logger', () => {
 
     error('should always error');
 
-    expect(console.error).toHaveBeenCalledWith('[MetaRouter]', 'should always error');
+    expect(console.error).toHaveBeenCalledWith(
+      '[MetaRouter]',
+      'should always error'
+    );
   });
 
   it('logs to console.log when debug is enabled', () => {
@@ -54,6 +81,8 @@ describe('MetaRouter Logger', () => {
     setDebugLogging(true);
 
     log('multiple', { foo: 'bar' });
-    expect(console.log).toHaveBeenCalledWith('[MetaRouter]', 'multiple', { foo: 'bar' });
+    expect(console.log).toHaveBeenCalledWith('[MetaRouter]', 'multiple', {
+      foo: 'bar',
+    });
   });
 });
