@@ -38,6 +38,40 @@ describe('createAnalyticsClient', () => {
       undefined
     );
   });
+  it('provider context set before createAnalyticsClient is stamped, and survives reset() into the next client', async () => {
+    const {
+      MetaRouterAnalyticsClient,
+    } = require('./MetaRouterAnalyticsClient');
+    const initSpy = jest.spyOn(MetaRouterAnalyticsClient.prototype, 'init');
+    const { createAnalyticsClient } = require('./init');
+    const { proxyClient } = require('./proxy/proxyClient');
+
+    // Before any client exists: applied at once, verdict returned, not queued.
+    expect(proxyClient.setProviderContext('vendor', 'id', 'early')).toBe(true);
+    expect(proxyClient.getProviderContext()).toEqual({
+      vendor: { id: 'early' },
+    });
+
+    const client = createAnalyticsClient(opts);
+    await client.getAnonymousId(); // resolves once bound
+    client.track('First');
+    const first = initSpy.mock.contexts[0] as any;
+    expect(first.queue[0].context.providers.vendor).toEqual({ id: 'early' });
+
+    await client.reset();
+    const next = createAnalyticsClient(opts);
+    await next.getAnonymousId();
+    next.track('After Reset');
+    const second = initSpy.mock.contexts[1] as any;
+    expect(second).not.toBe(first);
+    expect(second.queue[0].context.providers.vendor).toEqual({ id: 'early' });
+    expect(next.getProviderContext()).toEqual({ vendor: { id: 'early' } });
+
+    next.clearAllProviderContext();
+    expect(next.getProviderContext()).toEqual({});
+    await next.reset();
+  });
+
   it('hands recordOpenedURL to the new client before its init() instead of replaying it after bind', async () => {
     // The proxy binds only after init() resolves, but the cold-launch
     // Application Opened is emitted inside init(). A URL replayed after bind

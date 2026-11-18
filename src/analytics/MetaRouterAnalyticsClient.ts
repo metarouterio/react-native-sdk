@@ -46,6 +46,10 @@ import {
 } from './session/sessionManager';
 import type { BridgeEnvelope, PageContext } from './webview/bridgeEnvelope';
 import {
+  getProcessProviderContextManager,
+  type ProviderContextManager,
+} from './providers/providerContextManager';
+import {
   DEFAULT_MAX_DISK_EVENTS,
   validateInitOptions,
 } from './utils/initOptions';
@@ -111,6 +115,9 @@ export class MetaRouterAnalyticsClient {
   // getDebugInfo peek it. Its state outlives reset() through storage, not
   // through this instance.
   private sessionManager: SessionManager;
+  // Process-wide, shared with the proxy and every client: setProviderContext
+  // made before init or before a reset must land on the map this client stamps.
+  private providerContextManager: ProviderContextManager;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -121,6 +128,7 @@ export class MetaRouterAnalyticsClient {
     deps?: {
       networkMonitor?: NetworkReachability;
       sessionManager?: SessionManager;
+      providerContextManager?: ProviderContextManager;
     }
   ) {
     // Same rules as the createAnalyticsClient gate, without logging: the
@@ -147,6 +155,8 @@ export class MetaRouterAnalyticsClient {
     setDebugLogging(options.debug ?? false);
     this.trackLifecycleEvents = options.trackLifecycleEvents ?? false;
     this.identityManager = new IdentityManager();
+    this.providerContextManager =
+      deps?.providerContextManager ?? getProcessProviderContextManager();
     this.sessionManager =
       deps?.sessionManager ??
       new SessionManager(
@@ -266,6 +276,8 @@ export class MetaRouterAnalyticsClient {
         await Promise.all([
           this.identityManager.init(),
           this.sessionManager.loadPersisted(),
+          // Last launch's vendor ids must be on the cold-launch events.
+          this.providerContextManager.load(),
         ]);
 
         // Cheap existence check — memory queue starts empty. Any on-disk
@@ -421,6 +433,7 @@ export class MetaRouterAnalyticsClient {
         device: { ...this.context.device, advertisingId: this.advertisingId },
       }),
       ...(wifi !== null && { network: { wifi } }),
+      providers: this.providerContextManager.getAll(),
     };
     // Every enriched event is session activity, and this is the funnel all
     // event sources share (public calls, lifecycle events, the WebView
@@ -770,6 +783,23 @@ export class MetaRouterAnalyticsClient {
     this.enqueue({ type: 'alias', userId: newUserId, timestamp: this.now() });
   }
 
+  /** See AnalyticsInterface.setProviderContext. Works in every lifecycle state. */
+  setProviderContext(provider: string, key: string, value: unknown): boolean {
+    return this.providerContextManager.setValue(provider, key, value);
+  }
+
+  getProviderContext() {
+    return this.providerContextManager.getAll();
+  }
+
+  clearProviderContext(provider: string): void {
+    this.providerContextManager.clear(provider);
+  }
+
+  clearAllProviderContext(): void {
+    this.providerContextManager.clearAll();
+  }
+
   /**
    * Sets the advertising identifier for ad tracking and attribution.
    * This will update the context for all subsequent events and persist it to storage.
@@ -910,6 +940,7 @@ export class MetaRouterAnalyticsClient {
         sessionId: session.sessionId,
         sessionCount: session.sessionCount,
       }),
+      providerContext: this.providerContextManager.toDebugInfo(),
     };
   }
 
