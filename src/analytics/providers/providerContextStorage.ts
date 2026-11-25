@@ -39,14 +39,14 @@ const store = persistedValue(PROVIDER_CONTEXT_KEY);
 // Null for a value that is not a provider → key → value object. Values were
 // validated when set, and JSON.parse can only produce JSON.
 function parse(raw: string): ProviderContextMap | null {
-  let parsed: unknown;
+  let value: unknown;
   try {
-    parsed = JSON.parse(raw);
+    value = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!isPlainObject(parsed)) return null;
-  const entries = Object.entries(parsed);
+  if (!isPlainObject(value)) return null;
+  const entries = Object.entries(value);
   if (entries.some(([, keys]) => !isPlainObject(keys))) return null;
   // fromEntries, not assignment: a provider named "__proto__" (JSON.parse
   // makes it an own key) would otherwise replace the map's prototype.

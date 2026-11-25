@@ -172,9 +172,10 @@ export interface AnalyticsInterface {
    * bytes; `metarouter` is reserved in any casing. Values must be plain JSON
    * (strings, finite numbers, booleans, null, arrays, plain objects), at most
    * 2 KiB encoded, and the whole map at most 16 KiB. Returns false, with a
-   * warning, when the write is rejected; prior values stay. Before stored
-   * values load, the total is checked against this launch's values only, so a
-   * write that returned true can still be dropped when they load.
+   * warning, when the write is rejected; prior values stay. Without the native
+   * modules, before stored values load, the total is checked against this
+   * launch's values only, so a write that returned true can still be dropped
+   * when they load.
    */
   setProviderContext: (
     provider: string,
@@ -183,8 +184,9 @@ export interface AnalyticsInterface {
   ) => boolean;
   /**
    * Everything set with setProviderContext, as stamped. Read-only. Values
-   * stored by earlier launches load asynchronously as the SDK starts; until
-   * then only this launch's sets are visible.
+   * stored by earlier launches are read synchronously when the SDK loads;
+   * without the native modules they load asynchronously, and until then only
+   * this launch's sets are visible.
    */
   getProviderContext: () => Readonly<ProviderContextMap>;
   /** Removes one provider's block. */
