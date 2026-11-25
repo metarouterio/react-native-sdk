@@ -67,8 +67,16 @@ class MetaRouterNetworkMonitorModule(
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
 
+            // Networks this callback has reported up and not yet lost; whether any
+            // remain decides connectivity. activeNetwork cannot: in onLost it can
+            // still name the network being lost, or name none while another is up,
+            // and a network already reported is not reported again when it takes
+            // over. Touched only on the callback thread.
+            val up = mutableSetOf<Network>()
+
             val cb = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    up.add(network)
                     if (reReadWifi) setIsWifi(readActiveIsWifi(cm))
                     if (!isConnected) {
                         isConnected = true
@@ -77,19 +85,30 @@ class MetaRouterNetworkMonitorModule(
                 }
 
                 override fun onLost(network: Network) {
-                    val activeNet = cm.activeNetwork
-                    // activeNetwork can still name the network being lost here.
+                    // A loss for a network this callback never reported is stale.
+                    if (!up.remove(network)) return
+                    // A network whose own onLost never arrived reads no capabilities;
+                    // drop it rather than stay online on it for the life of the process.
+                    up.removeAll { n ->
+                        try {
+                            cm.getNetworkCapabilities(n) == null
+                        } catch (_: Exception) {
+                            false
+                        }
+                    }
+                    // Wifi from the networks left, not activeNetwork, which may still
+                    // be the lost one.
                     if (reReadWifi) {
+                        val reads = up.map { readIsWifi(cm, it) }
                         setIsWifi(
-                            if (activeNet != null && activeNet != network) readIsWifi(cm, activeNet)
-                            else false
+                            when {
+                                reads.any { it == true } -> true
+                                reads.any { it == null } -> null
+                                else -> false
+                            }
                         )
                     }
-                    val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
-                    val hasInternet = caps?.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_INTERNET
-                    ) == true
-                    if (!hasInternet && isConnected) {
+                    if (up.isEmpty() && isConnected) {
                         isConnected = false
                         sendEvent()
                     }
@@ -106,8 +125,13 @@ class MetaRouterNetworkMonitorModule(
             try {
                 cm.registerNetworkCallback(request, cb)
                 networkCallback = cb
-            } catch (_: SecurityException) {
-                // Missing ACCESS_NETWORK_STATE — fallback to always connected
+            } catch (_: Exception) {
+                // SecurityException without ACCESS_NETWORK_STATE; TooManyRequestsException
+                // (API 30+) when the app already holds ~100 network requests. Neither
+                // may fail React Native startup: fall back to always connected. The
+                // snapshot above may have read offline, and with no callback nothing
+                // would ever correct it.
+                isConnected = true
             }
         }
     }

@@ -953,7 +953,8 @@ export class MetaRouterAnalyticsClient {
     // Clear identity (must remove persisted IDs)
     await this.identityManager.reset();
 
-    // Clear advertising ID from storage
+    // Clear advertising ID from storage and context
+    this.advertisingId = undefined;
     await removeIdentityField(ADVERTISING_ID_KEY);
 
     // Allow a clean future init

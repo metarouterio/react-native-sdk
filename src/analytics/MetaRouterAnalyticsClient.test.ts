@@ -540,7 +540,7 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(client.queue[0].context.device.advertisingId).toBe(persistedAdId);
   });
 
-  it('clears advertisingId from storage on reset', async () => {
+  it('clears advertisingId from storage and context on reset', async () => {
     const advertisingId = 'IDFA-TO-CLEAR';
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
@@ -555,6 +555,7 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(identityStorage.removeIdentityField).toHaveBeenCalledWith(
       identityStorage.ADVERTISING_ID_KEY
     );
+    expect((client as any).advertisingId).toBeUndefined();
   });
 
   it('does not restore advertisingId if none is persisted', async () => {
