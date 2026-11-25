@@ -214,7 +214,9 @@ export interface AnalyticsInterface {
    *
    * @returns false when ignored: malformed input, or a `timestamp` older than
    *   the newest host-supplied timestamp since the last clearConsent (a stale
-   *   CMP replay). Untimestamped calls are always applied.
+   *   CMP replay). Untimestamped calls are always applied. Without the
+   *   native modules, a timestamped call made before stored consent loads
+   *   returns true and is still dropped if the stored timestamp is newer.
    */
   setConsent: (consent: Consent) => boolean;
   /**

@@ -193,7 +193,7 @@ Out-of-range numbers are clamped and logged as a warning; they never fail initia
 - Buffer is **in-memory only** (not persisted). Calls made before ready are lost if the process exits.
 - Ordering is preserved relative to other buffered calls; normal FIFO + batching applies after ready.
 - On fatal config errors from the ingestion host (`401/403/404`), the client enters **disabled** state and drops subsequent calls. This is separate from [invalid options](#invalid-configuration) and does not call `onConfigError`.
-- `sentAt` is stamped when the batch is prepared for transmission (just before network send). If you need the original occurrence time, pass your own `timestamp` on each event.
+- `sentAt` is stamped when the batch is prepared for transmission (just before network send). Each event's `timestamp` is set by the SDK when the call reaches the client, so a call buffered before ready is stamped when it is replayed, not when it was made. There is no way to pass your own.
 
 ### Invalid configuration
 
@@ -554,7 +554,7 @@ Before the first `setConsent`, `getConsent()` and every outbound event carry the
 
 Consent is stored natively (UserDefaults on iOS, SharedPreferences on Android) and read synchronously when the SDK loads, as the iOS and Android SDKs read theirs: `getConsent()` and the first subscriber delivery carry the user's stored decision from your first line of code, and so do the first events.
 
-Without the SDK's native modules — Expo Go, or JavaScript shipped over the air onto a binary built before this release — consent falls back to AsyncStorage, which loads moments after the SDK does (initialization still waits for it, so events are unaffected). Until it loads, `getConsent()` and a subscriber's first delivery reflect only the registered defaults and what was set this launch; the stored decision follows as a change. If you gate a third-party SDK on a category that defaults to opted in, treat that first value as provisional there. Calls made before the stored state loads are applied on top of it (a timestamped `setConsent` older than the newest stored timestamp returns `true` and is then dropped, with a warning). Consent stored that way is not carried over once the app is rebuilt with the native modules: it starts from the implicit default until your CMP pushes the user's choice again.
+Without the SDK's native modules — Expo Go, or JavaScript shipped over the air onto a binary built before this release — consent falls back to AsyncStorage, which loads moments after the SDK does (initialization still waits for it, so events are unaffected). Until it loads, `getConsent()` and a subscriber's first delivery reflect only the registered defaults and what was set this launch; the stored decision follows as a change. If you gate a third-party SDK on a category that defaults to opted in, treat that first value as provisional there. Calls made before the stored state loads are applied on top of it (a timestamped `setConsent` older than the newest stored timestamp returns `true` and is then dropped, with a warning — on this path, treat that `true` as provisional). Consent stored that way is not carried over once the app is rebuilt with the native modules: it starts from the implicit default until your CMP pushes the user's choice again.
 
 If storage cannot be read at startup (including a failing native read), that launch applies consent in memory only and leaves the stored state untouched rather than overwrite it — until `clearConsent()`: the clear is saved whenever storage accepts the write, and consent set after it in that launch is saved too.
 
@@ -578,7 +578,7 @@ analytics.setConsent(
 );
 ```
 
-Pass `explicit: true` from the banner-interaction callback and `false` when applying a regional default — the payload does not say which it was; your code does. Re-run it on every OneTrust consent-changed callback. If the cookie is absent, do not call `setConsent`: `normalize('', true)` reads as "explicitly opted out of everything", which records a rejection the user never made. Any other CMP (or your own preference screen) can build a `Consent` directly: adapters are a convenience, not a requirement.
+Pass `explicit: true` from the banner-interaction callback and `false` when applying a regional default — the payload does not say which it was; your code does. Re-run it on every OneTrust consent-changed callback. If the cookie is absent, do not call `setConsent`: `normalize('', true)` reports no categories, so every registered category takes its default and the result is recorded as the user's explicit choice: a rejection the user never made for categories that default to opted out, an opt-in they never gave for any registered with `defaultOptOut: false`. With no categories registered yet, it records nothing blocked until they are; then each takes its default as that same explicit choice. Any other CMP (or your own preference screen) can build a `Consent` directly: adapters are a convenience, not a requirement.
 
 ### Observing and withdrawing
 
@@ -733,7 +733,7 @@ Half-open probe: After cooldown, one probe is allowed.
 Success → breaker CLOSED (keep flushing).
 Failure → breaker OPEN again with longer cooldown.
 
-sentAt semantics: sentAt is stamped when a batch is prepared for transmission. If the client is backing off, the actual transmit may be later; if you need the original occurrence time, include your own event `timestamp`.
+sentAt semantics: sentAt is stamped when a batch is prepared for transmission. If the client is backing off, the actual transmit may be later. Each event's `timestamp` is set by the SDK and cannot be supplied.
 
 | Status / Failure                    | Action                                                               | Breaker | Queue effect                   |
 | ----------------------------------- | -------------------------------------------------------------------- | ------- | ------------------------------ |
@@ -871,7 +871,7 @@ The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID o
 | **consent** | `setConsent(…)` | `metarouter:consent:state` | All events (`context.consent`) | `clearConsent()` (survives `reset()`) |
 | **provider context** | `setProviderContext(…)` | `metarouter:providers:context` | All events (`context.providers`) | `clearProviderContext`, `clearAllProviderContext` (survives `reset()`) |
 
-Identity keys are in AsyncStorage. Consent and provider context are in native storage (UserDefaults keys prefixed `com.metarouter.reactnative:` on iOS; the `com.metarouter.reactnative.store` preferences file on Android), with AsyncStorage as the fallback without the native modules.
+Identity keys are in AsyncStorage. Consent and provider context are in native storage (UserDefaults keys prefixed `com.metarouter.reactnative:` on iOS; the `com.metarouter.reactnative.store` preferences file on Android), with AsyncStorage as the fallback without the native modules; on iOS the stored key is the table's key with that prefix. These never share state with the iOS or Android SDK: an app that embeds both keeps separate consent and provider context for each, so set them through each SDK.
 
 ### Event Enrichment Flow
 
@@ -968,9 +968,8 @@ await analytics.reset();
 All identity data is stored in **React Native AsyncStorage**, which provides:
 
 - Persistent storage across app sessions
-- Automatic data encryption on iOS (Keychain-backed)
-- Secure local storage on Android
-- Cleared only on app uninstall or explicit `reset()` call
+- Storage inside the app's sandbox, readable only by the app; iOS encrypts it at rest with Data Protection. The SDK does not encrypt it itself.
+- Cleared on explicit `reset()` call or app uninstall; on Android, Auto Backup (on unless the app turns it off) can restore it when the app is reinstalled
 
 ## Using the alias() Method
 

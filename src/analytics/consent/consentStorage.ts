@@ -4,10 +4,12 @@ import { isRecord } from '../utils/isRecord';
 import type { Consent } from './consent';
 
 /**
- * Same key as the iOS and Android SDKs. Outside identity and session, so
- * `reset()` never touches it: consent is a compliance record scoped to the
- * device and person, not to the analytics identity. A logout must not
- * resurrect tracking the user opted out of.
+ * The iOS and Android SDKs' key, but not their storage: the native store
+ * prefixes it on iOS and keeps its own preferences file on Android, so an app
+ * embedding both an RN and a native SDK holds two separate consent records.
+ * Outside identity and session, so `reset()` never touches it: consent is a
+ * compliance record scoped to the device and person, not to the analytics
+ * identity. A logout must not resurrect tracking the user opted out of.
  */
 export const CONSENT_KEY = 'metarouter:consent:state';
 
@@ -36,17 +38,17 @@ export interface StoredConsent {
 // Null for anything that is not the shape this SDK writes. Unknown fields are
 // tolerated, so a downgrade past a build that added one still reads.
 function parse(raw: string): StoredConsent | null {
-  let parsed: unknown;
+  let value: unknown;
   try {
-    parsed = JSON.parse(raw);
+    value = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!isRecord(parsed) || !isRecord(parsed.consent)) return null;
-  const { explicit, optOut, timestamp } = parsed.consent;
+  if (!isRecord(value) || !isRecord(value.consent)) return null;
+  const { explicit, optOut, timestamp } = value.consent;
   if (typeof explicit !== 'boolean' || !isRecord(optOut)) return null;
   if (Object.values(optOut).some((v) => typeof v !== 'boolean')) return null;
-  const watermark = parsed.lastHostTimestamp;
+  const watermark = value.lastHostTimestamp;
   return {
     consent: {
       explicit,

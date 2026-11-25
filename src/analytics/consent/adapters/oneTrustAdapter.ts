@@ -219,8 +219,11 @@ function fromGroups(groups: string, explicit: boolean): Consent {
  * (`C0004` → `c0004`) to match the web SDK.
  *
  * Do not call setConsent with the result of an absent cookie: an empty `groups`
- * value records "explicitly opted out of everything", a rejection the user
- * never made.
+ * value reports no categories, so each registered category takes its default
+ * as an explicit choice the user never made — a rejection for categories that
+ * default to opted out, an opt-in for any with `defaultOptOut: false`; with
+ * none registered yet, nothing blocked until they are, then each default as
+ * that same explicit choice.
  */
 export const OneTrustAdapter = {
   /**
