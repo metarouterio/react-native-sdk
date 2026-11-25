@@ -539,10 +539,11 @@ analytics.setProviderContext('adjust', 'adid', null); // remove one key
 analytics.clearProviderContext('adjust'); // remove one provider's block
 analytics.clearAllProviderContext(); // remove everything
 
-// A rejected write (oversize, not JSON) returns false and logs. Before the
-// stored values have loaded, the 16 KiB total is checked against this launch's
-// values only: a write that fits those but not the stored ones returns true and
-// can be dropped, with a warning, when they load.
+// A rejected write (oversize, not JSON) returns false and logs. Without the
+// native modules, before the stored values have loaded, the 16 KiB total is
+// checked against this launch's values only: a write that fits those but not
+// the stored ones returns true and can be dropped, with a warning, when they
+// load.
 if (!analytics.setProviderContext('adjust', 'attribution', attribution)) {
   // too big to stamp on every event — send a smaller id instead
 }
@@ -551,7 +552,7 @@ if (!analytics.setProviderContext('adjust', 'attribution', attribution)) {
 ### Lifetime and timing
 
 - **Usable before initialization**, and immediately effective — an event tracked on the next line carries the value. These calls never wait for a bind and never take a slot in the pre-initialization call queue.
-- **Persisted across launches** in AsyncStorage, and loaded as the SDK starts (initialization waits for it), so a value set in one launch is already on the next launch's first event (`Application Installed` / `Opened` included). Values set before the stored ones load are applied on top of them; a set that the limits reject against the loaded values returns `true` and is then dropped, with a warning. Until the load finishes, `getProviderContext()` shows only this launch's sets. If storage cannot be read at startup, that launch applies values in memory only and leaves the stored ones untouched rather than overwrite them; the next launch reads them again. `clearAllProviderContext()` is the exception: it is saved regardless, so a clear on logout always sticks.
+- **Persisted across launches** in native storage (UserDefaults, SharedPreferences) and read synchronously when the SDK loads, so a value set in one launch is in `getProviderContext()` from the next launch's first line and on its first event (`Application Installed` / `Opened` included). Without the SDK's native modules (Expo Go, or JavaScript newer than the app binary) it falls back to AsyncStorage, which loads moments later (initialization waits for it): values set before the stored ones load are applied on top of them, a set that the limits reject against the loaded values returns `true` and is then dropped, with a warning, and until the load finishes `getProviderContext()` shows only this launch's sets. Values stored that way are not carried over once the app is rebuilt with the native modules — set them again, as on every launch. If storage cannot be read at startup (including a failing native read), that launch applies values in memory only and leaves the stored ones untouched rather than overwrite them; the next launch reads them again. `clearAllProviderContext()` is the exception: it is saved regardless, so a clear on logout always sticks.
 - **Survives `reset()`**. These are install-scoped vendor identifiers, not user state; a logout must not quietly stop events being forwardable. Use `clearProviderContext` to remove one deliberately. Note that `reset()` clears the advertising ID but leaves an advertising-id-shaped value you put under a provider alone.
 
 **Set values on every launch, and clear the ones that rotate.** The persisted value is stamped on every event until you overwrite it, so an id that changes underneath you — Firebase after `resetAnalyticsData()`, an advertising id the user resets — goes out stale with nothing to flag it. Re-set each value on launch, and call `clearProviderContext` on logout or ad-id reset for privacy-sensitive values. Firebase's id resolves asynchronously, so on the install launch it usually arrives after the first events; from the next launch onward the persisted value covers them.
@@ -763,6 +764,8 @@ The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID o
 | **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
 | **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
 | **provider context** | `setProviderContext(…)` | `metarouter:providers:context` | All events (`context.providers`) | `clearProviderContext`, `clearAllProviderContext` (survives `reset()`) |
+
+Identity keys are in AsyncStorage. Provider context is in native storage (UserDefaults keys prefixed `com.metarouter.reactnative:` on iOS; the `com.metarouter.reactnative.store` preferences file on Android), with AsyncStorage as the fallback without the native modules.
 
 ### Event Enrichment Flow
 

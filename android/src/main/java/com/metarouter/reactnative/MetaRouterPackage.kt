@@ -13,7 +13,8 @@ class MetaRouterPackage : ReactPackage {
             MetaRouterQueueStorageModule(reactContext),
             MetaRouterNetworkMonitorModule(reactContext),
             MetaRouterClockModule(reactContext),
-            MetaRouterWebViewSupportModule(reactContext)
+            MetaRouterWebViewSupportModule(reactContext),
+            MetaRouterKeyValueStoreModule(reactContext)
         )
     }
 

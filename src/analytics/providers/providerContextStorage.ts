@@ -1,6 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { warn } from '../utils/logger';
-import { defaultDelay, getItemWithRetry } from '../utils/readWithRetry';
+import { persistedValue } from '../utils/persistedValue';
 
 /** A JSON value as stamped on the wire. */
 export type JsonValue =
@@ -26,24 +25,28 @@ export type ProviderContextMap = Record<string, Record<string, JsonValue>>;
  * Its own key, outside identity, session and consent, so `reset()` never
  * touches it: these are install-scoped vendor ids, not user state. A logout
  * that stopped the stamp would make every later event unforwardable.
- * Same key as the iOS and Android SDKs.
+ * Same key name as the iOS and Android SDKs; stored apart from theirs (a
+ * prefixed UserDefaults key on iOS, its own preferences file on Android — see
+ * MetaRouterKeyValueStore), so a hybrid app's two SDKs never share it.
  */
 export const PROVIDER_CONTEXT_KEY = 'metarouter:providers:context';
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const store = persistedValue(PROVIDER_CONTEXT_KEY);
+
 // Null for a value that is not a provider → key → value object. Values were
 // validated when set, and JSON.parse can only produce JSON.
 function parse(raw: string): ProviderContextMap | null {
-  let parsed: unknown;
+  let value: unknown;
   try {
-    parsed = JSON.parse(raw);
+    value = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!isPlainObject(parsed)) return null;
-  const entries = Object.entries(parsed);
+  if (!isPlainObject(value)) return null;
+  const entries = Object.entries(value);
   if (entries.some(([, keys]) => !isPlainObject(keys))) return null;
   // fromEntries, not assignment: a provider named "__proto__" (JSON.parse
   // makes it an own key) would otherwise replace the map's prototype.
@@ -52,31 +55,43 @@ function parse(raw: string): ProviderContextMap | null {
   ) as ProviderContextMap;
 }
 
-/**
- * Reads the stored map, retrying with a short backoff. Corrupt state reads as
- * never-set: rereading it would fail the same way, and the host's next set
- * heals it. A read that keeps failing THROWS instead: the map on disk may be
- * fine, and reading it as empty would let the next write replace every vendor
- * id stored in earlier launches.
- */
-export async function loadProviderContext(
-  delay: (ms: number) => Promise<void> = defaultDelay
-): Promise<ProviderContextMap | null> {
-  const read = await getItemWithRetry(PROVIDER_CONTEXT_KEY, delay);
-  if (!read.ok) throw read.error;
-  if (read.raw == null) return null;
-  const map = parse(read.raw);
+// Corrupt state reads as never-set: rereading it would fail the same way, and
+// the host's next set heals it.
+function parsed(raw: string | null): ProviderContextMap | null {
+  if (raw == null) return null;
+  const map = parse(raw);
   if (!map) warn('Stored provider context unreadable — treating as unset.');
   return map;
 }
 
-/** Writes the whole map, or removes the key when it is empty. */
+/**
+ * The stored map synchronously, from native storage; undefined without the
+ * native module, when only `loadProviderContext()` has it. Throws when the
+ * native read fails.
+ */
+export function loadProviderContextSync():
+  | ProviderContextMap
+  | null
+  | undefined {
+  const raw = store.readSync();
+  return raw === undefined ? undefined : parsed(raw);
+}
+
+/**
+ * Reads the stored map from AsyncStorage — the store without the native module
+ * — retrying with a short backoff. A read that keeps failing THROWS: the map on
+ * disk may be fine, and reading it as empty would let the next write replace
+ * every vendor id stored in earlier launches.
+ */
+export async function loadProviderContext(
+  delay?: (ms: number) => Promise<void>
+): Promise<ProviderContextMap | null> {
+  return parsed(await store.read(delay));
+}
+
+/** Writes the whole map, or removes it when it is empty. */
 export async function saveProviderContext(
   map: ProviderContextMap
 ): Promise<void> {
-  if (Object.keys(map).length === 0) {
-    await AsyncStorage.removeItem(PROVIDER_CONTEXT_KEY);
-  } else {
-    await AsyncStorage.setItem(PROVIDER_CONTEXT_KEY, JSON.stringify(map));
-  }
+  await store.write(Object.keys(map).length === 0 ? null : JSON.stringify(map));
 }
