@@ -1,3 +1,4 @@
+import { getProcessProviderContextManager } from './providers/providerContextManager';
 import { MetaRouterAnalyticsClient } from './MetaRouterAnalyticsClient';
 import {
   clearConfigDisabled,
@@ -240,6 +241,11 @@ const attachWebView: AnalyticsInterface['attachWebView'] = (
 // The proxy routes every attachWebView here, bound or not.
 setAttachWebViewHandler(attachWebView);
 
+// Starts loading the stored provider context as soon as the SDK loads, so a
+// getProviderContext() before createAnalyticsClient usually already sees last
+// launch's values.
+getProcessProviderContextManager();
+
 function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
   return {
     track: (event, props) => instance.track(event, props),
@@ -259,6 +265,11 @@ function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
     getAnonymousId: () => instance.getAnonymousId(),
     getSessionId: () => instance.getSessionId(),
     attachWebView,
+    setProviderContext: (provider, key, value) =>
+      instance.setProviderContext(provider, key, value),
+    getProviderContext: () => instance.getProviderContext(),
+    clearProviderContext: (provider) => instance.clearProviderContext(provider),
+    clearAllProviderContext: () => instance.clearAllProviderContext(),
     flush: () => instance.flush(),
     reset: () => resetSession(),
   };

@@ -18,6 +18,7 @@ A lightweight React Native analytics SDK that transmits events to your MetaRoute
 - [Application Lifecycle Events](#application-lifecycle-events)
 - [Session Tracking](#session-tracking)
 - [WebView Bridge](#webview-bridge)
+- [Provider Context](#provider-context)
 - [Compatibility](#-compatibility)
 - [Debugging](#debugging)
 - [Identity Persistence](#identity-persistence)
@@ -240,6 +241,9 @@ The analytics client provides the following methods:
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
 - `attachWebView(webViewRef, allowedOrigins: string[])`: Bridge a `react-native-webview` WebView so its pages' events are sent through the SDK. Returns props to spread onto the `<WebView>`. See [WebView Bridge](#webview-bridge)
 - `getSessionId(): Promise<string | null>`: Returns the current session ID, or `null` before the first event has been sent this launch. Never waits for initialization and never extends the session. See [Session Tracking](#session-tracking)
+- `setProviderContext(provider: string, key: string, value: unknown): boolean`: Stamp a value at `context.providers.<provider>.<key>` on every event. Persisted, survives `reset()`, usable before initialization. `null` or `undefined` removes the key. Returns `false` when the write is rejected. See [Provider Context](#provider-context)
+- `getProviderContext()`: Everything set with `setProviderContext`, read-only
+- `clearProviderContext(provider: string)` / `clearAllProviderContext()`: Remove one provider's block, or all of them
 - `setTracing(enabled: boolean)`: Enable or disable tracing headers on API requests. When enabled, includes a `Trace: true` header for debugging request flows
 - `flush()`: Flush events immediately
 - `reset()`: Reset analytics state and clear stored identity (includes clearing advertising ID). The analytics session survives, so a logout does not split it
@@ -490,6 +494,74 @@ Each bridge message carries an ID minted by the page, used to drop duplicate del
 - SDK logs (`debug: true` or `enableDebugLogging()`) show attach confirmations, rejected messages with their error codes, and duplicate drops.
 - In Safari's Develop menu (iOS) or `chrome://inspect` (Android), check `typeof window.metarouterBridge` to verify injection, and read replies with `window.__metaRouterNativeChannel.onmessage = e => console.log(e.data)`.
 
+## Provider Context
+
+Some destinations will not accept an event unless it carries a vendor's own identifier — one the app can read but a web page cannot. GA4's app streams, for example, reject app event data without a genuine Firebase app instance id. On the web, sync injectors write values like this into `context.providers`; on mobile, `setProviderContext` is how the app puts them there.
+
+Set a value once and the SDK stamps it onto **every** outbound event — your calls, lifecycle events, and WebView-bridge events alike:
+
+```ts
+import firebaseAnalytics from '@react-native-firebase/analytics';
+
+// On every launch, as early as possible. null while Firebase Analytics
+// collection is disabled, and a null value removes the key, so a stale id
+// from an earlier launch never lingers.
+firebaseAnalytics()
+  .getAppInstanceId()
+  .then((id) => analytics.setProviderContext('googleFirebase', 'appInstanceId', id));
+```
+
+Every event then carries:
+
+```json
+"context": {
+  "providers": {
+    "googleFirebase": {
+      "appInstanceId": "c0ffee1234567890abcdef"
+    },
+    "metarouter": {
+      "sessionID": "1757400000000",
+      "sessionCount": 3
+    }
+  }
+}
+```
+
+The provider namespace and key are **wire paths, stamped verbatim** apart from trimming surrounding whitespace — no casing or separator normalisation — because pipeline mappings match them exactly. `googleFirebase` / `appInstanceId` above is one worked example, not a special case: any provider and key your pipeline reads will do.
+
+```ts
+// Several keys under one provider, and several providers, are all fine.
+analytics.setProviderContext('googleFirebase', 'nonPersonalizedAds', false);
+analytics.setProviderContext('adjust', 'adid', adjustAdid);
+
+analytics.getProviderContext(); // everything you have set
+analytics.setProviderContext('adjust', 'adid', null); // remove one key
+analytics.clearProviderContext('adjust'); // remove one provider's block
+analytics.clearAllProviderContext(); // remove everything
+
+// A rejected write (oversize, not JSON) returns false and logs. Before the
+// stored values have loaded, the 16 KiB total is checked against this launch's
+// values only: a write that fits those but not the stored ones returns true and
+// can be dropped, with a warning, when they load.
+if (!analytics.setProviderContext('adjust', 'attribution', attribution)) {
+  // too big to stamp on every event — send a smaller id instead
+}
+```
+
+### Lifetime and timing
+
+- **Usable before initialization**, and immediately effective — an event tracked on the next line carries the value. These calls never wait for a bind and never take a slot in the pre-initialization call queue.
+- **Persisted across launches** in AsyncStorage, and loaded as the SDK starts (initialization waits for it), so a value set in one launch is already on the next launch's first event (`Application Installed` / `Opened` included). Values set before the stored ones load are applied on top of them; a set that the limits reject against the loaded values returns `true` and is then dropped, with a warning. Until the load finishes, `getProviderContext()` shows only this launch's sets. If storage cannot be read at startup, that launch applies values in memory only and leaves the stored ones untouched rather than overwrite them; the next launch reads them again. `clearAllProviderContext()` is the exception: it is saved regardless, so a clear on logout always sticks.
+- **Survives `reset()`**. These are install-scoped vendor identifiers, not user state; a logout must not quietly stop events being forwardable. Use `clearProviderContext` to remove one deliberately. Note that `reset()` clears the advertising ID but leaves an advertising-id-shaped value you put under a provider alone.
+
+**Set values on every launch, and clear the ones that rotate.** The persisted value is stamped on every event until you overwrite it, so an id that changes underneath you — Firebase after `resetAnalyticsData()`, an advertising id the user resets — goes out stale with nothing to flag it. Re-set each value on launch, and call `clearProviderContext` on logout or ad-id reset for privacy-sensitive values. Firebase's id resolves asynchronously, so on the install launch it usually arrives after the first events; from the next launch onward the persisted value covers them.
+
+### Limits
+
+Because this map rides on every event, it is bounded by size, not count: **2 KiB** (2,048 bytes) per value encoded as JSON, **16 KiB** (16,384 bytes) for everything you set, encoded as JSON with names included, and **64 bytes** per name (UTF-8). There is no limit on the number of providers or keys. A write that would grow the map past 16 KiB is rejected; overwriting a key with a value of the same or smaller size, or removing one, is always allowed. The SDK's own `metarouter` session block is added to each event and does not count against your budget. Names are trimmed and must not be blank. The `metarouter` provider is reserved for the SDK's own session block, in any casing or with separators (`Meta_Router`). Values must be plain JSON all the way down — strings, finite numbers, booleans, `null`, arrays and plain objects: an object holding a `Date`, `undefined`, `NaN` or a class instance is rejected whole.
+
+A write that breaks one of these rules is **ignored**: `setProviderContext` returns `false` and logs a warning, and prior values stay. It never throws, even in development, because these values often come from third-party SDKs you do not control. Nothing is silently truncated: a trimmed vendor id looks valid and matches nothing downstream, which is worse than an absent one. `getDebugInfo()` reports the shape (providers and their key names) under `providerContext`, without the values, since these are device identifiers and debug info lands in logs.
+
 ## ✅ Compatibility
 
 | Component                  | Supported Versions |
@@ -690,6 +762,7 @@ The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID o
 | **anonymousId**   | Auto-generated (UUID v4) | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
 | **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
 | **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
+| **provider context** | `setProviderContext(…)` | `metarouter:providers:context` | All events (`context.providers`) | `clearProviderContext`, `clearAllProviderContext` (survives `reset()`) |
 
 ### Event Enrichment Flow
 

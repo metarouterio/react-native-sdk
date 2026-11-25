@@ -1,3 +1,10 @@
+import type { ProviderContextMap } from './providers/providerContextStorage';
+
+export type {
+  JsonValue,
+  ProviderContextMap,
+} from './providers/providerContextStorage';
+
 export type EventType =
   | 'track'
   | 'identify'
@@ -155,6 +162,35 @@ export interface AnalyticsInterface {
     webViewRef: WebViewRefLike | null | undefined,
     allowedOrigins: readonly string[]
   ) => WebViewBridgeProps;
+  /**
+   * Sets `context.providers.<provider>.<key>` on every later event, for
+   * vendor values a destination needs (e.g. Firebase's app instance id at
+   * `googleFirebase.appInstanceId`). Usable before initialization and survives
+   * app restarts and `reset()`. `null` or `undefined` removes the key.
+   *
+   * Names are trimmed, matched verbatim (not recased) and at most 64 UTF-8
+   * bytes; `metarouter` is reserved in any casing. Values must be plain JSON
+   * (strings, finite numbers, booleans, null, arrays, plain objects), at most
+   * 2 KiB encoded, and the whole map at most 16 KiB. Returns false, with a
+   * warning, when the write is rejected; prior values stay. Before stored
+   * values load, the total is checked against this launch's values only, so a
+   * write that returned true can still be dropped when they load.
+   */
+  setProviderContext: (
+    provider: string,
+    key: string,
+    value: unknown
+  ) => boolean;
+  /**
+   * Everything set with setProviderContext, as stamped. Read-only. Values
+   * stored by earlier launches load asynchronously as the SDK starts; until
+   * then only this launch's sets are visible.
+   */
+  getProviderContext: () => Readonly<ProviderContextMap>;
+  /** Removes one provider's block. */
+  clearProviderContext: (provider: string) => void;
+  /** Removes every provider's block. `reset()` does not. */
+  clearAllProviderContext: () => void;
 }
 
 export interface EventContext {
