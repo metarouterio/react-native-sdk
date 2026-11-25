@@ -539,7 +539,10 @@ analytics.setProviderContext('adjust', 'adid', null); // remove one key
 analytics.clearProviderContext('adjust'); // remove one provider's block
 analytics.clearAllProviderContext(); // remove everything
 
-// A rejected write (oversize, not JSON) returns false and logs.
+// A rejected write (oversize, not JSON) returns false and logs. Before the
+// stored values have loaded, the 16 KiB total is checked against this launch's
+// values only: a write that fits those but not the stored ones returns true and
+// can be dropped, with a warning, when they load.
 if (!analytics.setProviderContext('adjust', 'attribution', attribution)) {
   // too big to stamp on every event — send a smaller id instead
 }

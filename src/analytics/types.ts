@@ -172,7 +172,9 @@ export interface AnalyticsInterface {
    * bytes; `metarouter` is reserved in any casing. Values must be plain JSON
    * (strings, finite numbers, booleans, null, arrays, plain objects), at most
    * 2 KiB encoded, and the whole map at most 16 KiB. Returns false, with a
-   * warning, when the write is rejected; prior values stay.
+   * warning, when the write is rejected; prior values stay. Before stored
+   * values load, the total is checked against this launch's values only, so a
+   * write that returned true can still be dropped when they load.
    */
   setProviderContext: (
     provider: string,
