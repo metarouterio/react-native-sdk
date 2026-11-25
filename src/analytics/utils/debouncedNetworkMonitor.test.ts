@@ -137,3 +137,25 @@ describe('DebouncedNetworkMonitor', () => {
     expect(debounced.currentStatus).toBe('disconnected');
   });
 });
+
+describe('DebouncedNetworkMonitor wifi', () => {
+  it('passes isWifi through without the online debounce', () => {
+    const inner = new StubNetworkMonitor('connected', true);
+    const monitor = new DebouncedNetworkMonitor(inner);
+
+    inner.isWifi = false;
+
+    expect(monitor.isWifi).toBe(false);
+    monitor.stop();
+  });
+
+  it('stop() stops the inner monitor it owns', () => {
+    const inner = new StubNetworkMonitor('connected', true);
+    const stopInner = jest.spyOn(inner, 'stop');
+    const monitor = new DebouncedNetworkMonitor(inner);
+
+    monitor.stop();
+
+    expect(stopInner).toHaveBeenCalled();
+  });
+});

@@ -6,7 +6,6 @@ import { EventContext } from '../types';
 import { AppContext } from './appContext';
 
 let cachedContext: EventContext | null = null;
-let cachedAdvertisingId: string | undefined;
 let DeviceInfo: any = null;
 
 try {
@@ -16,34 +15,24 @@ try {
 }
 
 /**
- * Clears the cached context information, forcing a refresh on the next getContextInfo call.
- */
-export function clearContextCache(): void {
-  cachedContext = null;
-  cachedAdvertisingId = undefined;
-}
-
-/**
  * Gathers and caches device, app, and environment context information for analytics events.
  *
- * - Collects details such as device model/type, OS, screen size, locale, timezone, and network status.
+ * - Collects details such as device model/type, OS, screen size, locale and timezone.
  * - Uses `react-native-device-info` and the current environment to populate device/os fields.
  * - Reuses the caller-provided AppContext for the `app:` block so version/build
  *   are sourced from the same snapshot used by lifecycle events.
  * - Caches the result for the lifetime of the app to avoid redundant async calls.
+ *   Only static fields belong here: network and the advertising ID change while
+ *   the app runs, and enrichment stamps them per event.
  * - Returns a context object suitable for event enrichment.
  *
  * @param appContext - The host app identity snapshot (name, version, build, namespace).
- * @param advertisingId - Optional advertising identifier (IDFA on iOS, GAID on Android) for ad tracking and attribution.
  * @returns {Promise<EventContext>} A promise that resolves to the context information object.
  */
 export async function getContextInfo(
-  appContext: AppContext,
-  advertisingId?: string
+  appContext: AppContext
 ): Promise<EventContext> {
-  // Return cached context only if it exists AND the advertising ID hasn't changed
-  if (cachedContext && cachedAdvertisingId === advertisingId)
-    return cachedContext;
+  if (cachedContext) return cachedContext;
 
   let locale = 'en-US';
   if (
@@ -74,7 +63,6 @@ export async function getContextInfo(
       ...(Platform.OS === 'android'
         ? { name: (await DeviceInfo?.getDevice?.()) ?? 'unknown' }
         : {}),
-      ...(advertisingId ? { advertisingId } : {}),
     },
     os: {
       name: DeviceInfo?.getSystemName?.() ?? 'unknown',
@@ -91,16 +79,7 @@ export async function getContextInfo(
       height: Math.round(height),
       density,
     },
-    ...(Platform.OS === 'android'
-      ? {
-          network: {
-            wifi: (await DeviceInfo?.isWifiEnabled?.()) ?? false,
-          },
-        }
-      : {}),
   };
-
-  cachedAdvertisingId = advertisingId;
 
   return cachedContext;
 }

@@ -1,5 +1,6 @@
 import type { EventPayload } from './types';
 import type CircuitBreaker from './utils/circuitBreaker';
+import { utf8ByteLength } from './utils/utf8';
 
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
@@ -153,10 +154,8 @@ export default class Dispatcher {
     );
   }
 
-  private static encoder = new TextEncoder();
-
   private estimateEventSize(event: EventPayload): number {
-    return Dispatcher.encoder.encode(JSON.stringify(event)).byteLength;
+    return utf8ByteLength(JSON.stringify(event));
   }
 
   private handleCapacityOverflow(triggerDesc: string): void {
