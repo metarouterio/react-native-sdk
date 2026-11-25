@@ -50,6 +50,11 @@ import {
   type ProviderContextManager,
 } from './providers/providerContextManager';
 import {
+  getProcessConsentManager,
+  type ConsentManager,
+} from './consent/consentManager';
+import type { Consent, ConsentCategory } from './consent/consent';
+import {
   DEFAULT_MAX_DISK_EVENTS,
   validateInitOptions,
 } from './utils/initOptions';
@@ -118,6 +123,9 @@ export class MetaRouterAnalyticsClient {
   // Process-wide, shared with the proxy and every client: setProviderContext
   // made before init or before a reset must land on the map this client stamps.
   private providerContextManager: ProviderContextManager;
+  // Process-wide too: the host's setConsent before init or before a reset must
+  // land on the state this client stamps.
+  private consentManager: ConsentManager;
 
   /**
    * Initializes the analytics client with the provided options.
@@ -129,6 +137,7 @@ export class MetaRouterAnalyticsClient {
       networkMonitor?: NetworkReachability;
       sessionManager?: SessionManager;
       providerContextManager?: ProviderContextManager;
+      consentManager?: ConsentManager;
     }
   ) {
     // Same rules as the createAnalyticsClient gate, without logging: the
@@ -157,6 +166,7 @@ export class MetaRouterAnalyticsClient {
     this.identityManager = new IdentityManager();
     this.providerContextManager =
       deps?.providerContextManager ?? getProcessProviderContextManager();
+    this.consentManager = deps?.consentManager ?? getProcessConsentManager();
     this.sessionManager =
       deps?.sessionManager ??
       new SessionManager(
@@ -278,6 +288,8 @@ export class MetaRouterAnalyticsClient {
           this.sessionManager.loadPersisted(),
           // Last launch's vendor ids must be on the cold-launch events.
           this.providerContextManager.load(),
+          // Last launch's consent must be on the cold-launch events.
+          this.consentManager.load(),
         ]);
 
         // Cheap existence check — memory queue starts empty. Any on-disk
@@ -434,6 +446,10 @@ export class MetaRouterAnalyticsClient {
       }),
       ...(wifi !== null && { network: { wifi } }),
       providers: this.providerContextManager.getAll(),
+      // The manager's frozen wire shape, rebuilt whenever the decision
+      // changes, so a setConsent on the line before a track reaches that
+      // track. No timestamp on the wire.
+      consent: this.consentManager.getWireConsent(),
     };
     // Every enriched event is session activity, and this is the funnel all
     // event sources share (public calls, lifecycle events, the WebView
@@ -783,6 +799,30 @@ export class MetaRouterAnalyticsClient {
     this.enqueue({ type: 'alias', userId: newUserId, timestamp: this.now() });
   }
 
+  // ===== Consent =====
+  // Thin delegation, no lifecycle gate: consent must be settable during init,
+  // and reset() deliberately leaves it alone.
+
+  registerConsentCategories(categories: readonly ConsentCategory[]): void {
+    this.consentManager.registerConsentCategories(categories);
+  }
+
+  setConsent(consent: Consent): boolean {
+    return this.consentManager.setConsent(consent);
+  }
+
+  getConsent(): Consent {
+    return this.consentManager.getConsent();
+  }
+
+  clearConsent(): void {
+    this.consentManager.clearConsent();
+  }
+
+  subscribeToConsent(handler: (consent: Consent) => void): () => void {
+    return this.consentManager.subscribe(handler);
+  }
+
   /** See AnalyticsInterface.setProviderContext. Works in every lifecycle state. */
   setProviderContext(provider: string, key: string, value: unknown): boolean {
     return this.providerContextManager.setValue(provider, key, value);
@@ -941,6 +981,7 @@ export class MetaRouterAnalyticsClient {
         sessionCount: session.sessionCount,
       }),
       providerContext: this.providerContextManager.toDebugInfo(),
+      consent: this.consentManager.getWireConsent(),
     };
   }
 
