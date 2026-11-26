@@ -6,17 +6,22 @@ import { AppState } from 'react-native';
 
 jest.spyOn(AppState, 'addEventListener').mockImplementation(jest.fn());
 
-jest.mock('./utils/identityStorage', () => ({
-  getIdentityField: jest.fn(async (key: string) =>
-    key === 'metarouter:anonymous_id' ? 'anon-123' : undefined
-  ),
-  setIdentityField: jest.fn(() => Promise.resolve()),
-  removeIdentityField: jest.fn(() => Promise.resolve()),
-  ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
-  USER_ID_KEY: 'metarouter:user_id',
-  GROUP_ID_KEY: 'metarouter:group_id',
-  ADVERTISING_ID_KEY: 'metarouter:advertising_id',
-}));
+jest.mock('./utils/identityStorage', () => {
+  const m = {
+    getIdentityField: jest.fn(async (key: string) =>
+      key === 'metarouter:anonymous_id' ? 'anon-123' : undefined
+    ),
+    setIdentityField: jest.fn(() => Promise.resolve()),
+    removeIdentityField: jest.fn(() => Promise.resolve()),
+    ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
+    USER_ID_KEY: 'metarouter:user_id',
+    GROUP_ID_KEY: 'metarouter:group_id',
+    ADVERTISING_ID_KEY: 'metarouter:advertising_id',
+  };
+  return require('./__mocks__/identityStorageMock').completeIdentityStorageMock(
+    m
+  );
+});
 
 jest.mock('./utils/lifecycleStorage', () => ({
   getLifecycleVersion: jest.fn(() => Promise.resolve(null)),

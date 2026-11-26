@@ -7,15 +7,20 @@ import type { InitOptions } from './types';
 
 global.fetch = jest.fn(() => Promise.resolve({ ok: true, status: 200 })) as any;
 
-jest.mock('./utils/identityStorage', () => ({
-  getIdentityField: jest.fn(),
-  setIdentityField: jest.fn(),
-  removeIdentityField: jest.fn(),
-  ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
-  USER_ID_KEY: 'metarouter:user_id',
-  GROUP_ID_KEY: 'metarouter:group_id',
-  ADVERTISING_ID_KEY: 'metarouter:advertising_id',
-}));
+jest.mock('./utils/identityStorage', () => {
+  const m = {
+    getIdentityField: jest.fn(),
+    setIdentityField: jest.fn(),
+    removeIdentityField: jest.fn(),
+    ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
+    USER_ID_KEY: 'metarouter:user_id',
+    GROUP_ID_KEY: 'metarouter:group_id',
+    ADVERTISING_ID_KEY: 'metarouter:advertising_id',
+  };
+  return require('./__mocks__/identityStorageMock').completeIdentityStorageMock(
+    m
+  );
+});
 
 const valid: InitOptions = {
   writeKey: 'test_write_key',

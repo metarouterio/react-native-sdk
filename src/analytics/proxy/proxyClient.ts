@@ -36,6 +36,11 @@ let resetHandler: (() => Promise<void>) | null = null;
 // render, and queueing it would leave the WebView without a wrapper.
 let attachWebViewHandler: AnalyticsInterface['attachWebView'] | null = null;
 
+// Owned by init.ts, which knows which client a host anonymousId belongs to.
+// Direct, never queued: like consent, the id must reach the launch's first
+// events, which a queued call replayed at bind would miss.
+let setAnonymousIdHandler: AnalyticsInterface['setAnonymousId'] | null = null;
+
 // The client whose init() is still running. recordOpenedURL only fills a
 // one-slot buffer that the cold-launch Application Opened reads during
 // init(), and the proxy binds only after init() resolves — so a cold-launch
@@ -274,6 +279,11 @@ export const proxyClient: AnalyticsInterface = {
   getSessionId: () => handleMethodCall('getSessionId'),
   attachWebView: (webViewRef, allowedOrigins) =>
     handleMethodCall('attachWebView', webViewRef, allowedOrigins),
+  setAnonymousId: (anonymousId) => {
+    if (setAnonymousIdHandler) return setAnonymousIdHandler(anonymousId);
+    warn('setAnonymousId: the SDK is not loaded; anonymousId unchanged.');
+    return false;
+  },
 
   // Direct to the process-wide manager in every state, never queued: the map
   // is not client state, a vendor id often resolves before init, and a queued
@@ -366,6 +376,13 @@ export function setAttachWebViewHandler(
   handler: AnalyticsInterface['attachWebView'] | null
 ) {
   attachWebViewHandler = handler;
+}
+
+/** Registers init.ts's setAnonymousId, used in every state. */
+export function setSetAnonymousIdHandler(
+  handler: AnalyticsInterface['setAnonymousId'] | null
+) {
+  setAnonymousIdHandler = handler;
 }
 
 /** Registers init.ts's session reset, used by `reset()` in every state. */

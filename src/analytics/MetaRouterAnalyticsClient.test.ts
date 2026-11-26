@@ -13,15 +13,20 @@ jest
   .spyOn(AppState, 'addEventListener')
   .mockImplementation(mockAddEventListener);
 
-jest.mock('./utils/identityStorage', () => ({
-  getIdentityField: jest.fn(),
-  setIdentityField: jest.fn(),
-  removeIdentityField: jest.fn(),
-  ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
-  USER_ID_KEY: 'metarouter:user_id',
-  GROUP_ID_KEY: 'metarouter:group_id',
-  ADVERTISING_ID_KEY: 'metarouter:advertising_id',
-}));
+jest.mock('./utils/identityStorage', () => {
+  const m = {
+    getIdentityField: jest.fn(),
+    setIdentityField: jest.fn(),
+    removeIdentityField: jest.fn(),
+    ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
+    USER_ID_KEY: 'metarouter:user_id',
+    GROUP_ID_KEY: 'metarouter:group_id',
+    ADVERTISING_ID_KEY: 'metarouter:advertising_id',
+  };
+  return require('./__mocks__/identityStorageMock').completeIdentityStorageMock(
+    m
+  );
+});
 
 jest.mock('./utils/lifecycleStorage', () => ({
   getLifecycleVersion: jest.fn(() => Promise.resolve(null)),
@@ -520,7 +525,8 @@ describe('MetaRouterAnalyticsClient', () => {
 
     expect(identityStorage.setIdentityField).toHaveBeenCalledWith(
       identityStorage.ADVERTISING_ID_KEY,
-      advertisingId
+      advertisingId,
+      expect.any(Number)
     );
   });
 
@@ -542,7 +548,7 @@ describe('MetaRouterAnalyticsClient', () => {
     expect(client.queue[0].context.device.advertisingId).toBe(persistedAdId);
   });
 
-  it('clears advertisingId from storage and context on reset', async () => {
+  it('clears advertisingId from context on reset, leaving storage to the public reset()', async () => {
     const advertisingId = 'IDFA-TO-CLEAR';
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();
@@ -554,9 +560,8 @@ describe('MetaRouterAnalyticsClient', () => {
 
     await client.reset();
 
-    expect(identityStorage.removeIdentityField).toHaveBeenCalledWith(
-      identityStorage.ADVERTISING_ID_KEY
-    );
+    // Memory only: init.ts clears storage (clearIdentityStorage).
+    expect(identityStorage.removeIdentityField).not.toHaveBeenCalled();
     expect((client as any).advertisingId).toBeUndefined();
   });
 
@@ -635,7 +640,8 @@ describe('MetaRouterAnalyticsClient', () => {
     await client.clearAdvertisingId();
 
     expect(identityStorage.removeIdentityField).toHaveBeenCalledWith(
-      identityStorage.ADVERTISING_ID_KEY
+      identityStorage.ADVERTISING_ID_KEY,
+      expect.any(Number)
     );
   });
 
