@@ -373,7 +373,7 @@ describe('MetaRouterAnalyticsClient', () => {
       type: 'screen',
       event: 'Home',
     });
-    expect(client.queue[0].properties).toBeUndefined();
+    expect(client.queue[0].properties).toEqual({ name: 'Home' });
   });
 
   it('accepts page with empty payload', async () => {
@@ -387,7 +387,158 @@ describe('MetaRouterAnalyticsClient', () => {
       type: 'page',
       event: 'Settings',
     });
-    expect(client.queue[0].properties).toBeUndefined();
+    expect(client.queue[0].properties).toEqual({ name: 'Settings' });
+  });
+
+  describe('page and screen name in properties', () => {
+    it.each(['page', 'screen'] as const)(
+      '%s sends the name in properties.name and keeps event',
+      async (kind) => {
+        const client = new MetaRouterAnalyticsClient(opts);
+        await client.init();
+
+        client[kind]('Checkout', { step: 2 });
+
+        expect(client.queue[0]).toMatchObject({
+          type: kind,
+          event: 'Checkout',
+          properties: { step: 2, name: 'Checkout' },
+        });
+      }
+    );
+
+    it.each(['page', 'screen'] as const)(
+      '%s replaces a host-set properties.name with the name argument',
+      async (kind) => {
+        const client = new MetaRouterAnalyticsClient(opts);
+        await client.init();
+        const props = { name: 'Host Name', step: 1 };
+
+        client[kind]('Checkout', props);
+
+        expect(client.queue[0].properties).toEqual({
+          name: 'Checkout',
+          step: 1,
+        });
+        // The host's object is not mutated.
+        expect(props.name).toBe('Host Name');
+      }
+    );
+
+    it.each(['page', 'screen'] as const)(
+      '%s from untyped JavaScript: a non-object properties value sends only the name',
+      async (kind) => {
+        const client = new MetaRouterAnalyticsClient(opts);
+        await client.init();
+
+        (client[kind] as any)('Home', '{"a":1}');
+        (client[kind] as any)('Home', ['x']);
+
+        expect(client.queue[0].properties).toEqual({ name: 'Home' });
+        expect(client.queue[1].properties).toEqual({ name: 'Home' });
+      }
+    );
+
+    it('track is unchanged: no name added', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.track('Purchase', { total: 5 });
+
+      expect(client.queue[0].properties).toEqual({ total: 5 });
+    });
+  });
+
+  describe('WebView bridge page properties', () => {
+    const PAGE = {
+      url: 'https://shop.example.com/cart?x=1',
+      path: '/cart',
+      search: '?x=1',
+      title: 'Cart',
+      referrer: 'https://shop.example.com/',
+    };
+
+    it('copies the page facts and the name into properties; context.page is unchanged', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.enqueueBridgeEvent({
+        type: 'page',
+        name: 'page_view',
+        properties: { section: 'checkout' },
+        page: PAGE,
+      } as any);
+
+      const event = client.queue[0];
+      expect(event.event).toBe('page_view');
+      expect(event.properties).toEqual({
+        ...PAGE,
+        section: 'checkout',
+        name: 'page_view',
+      });
+      expect(event.context.page).toEqual(PAGE);
+    });
+
+    it("the page's own properties win over the facts; the name wins over both", async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.enqueueBridgeEvent({
+        type: 'page',
+        name: 'page_view',
+        properties: { title: 'Page Title', name: 'from page' },
+        page: PAGE,
+      } as any);
+
+      expect(client.queue[0].properties).toEqual({
+        url: PAGE.url,
+        path: PAGE.path,
+        search: PAGE.search,
+        referrer: PAGE.referrer,
+        title: 'Page Title',
+        name: 'page_view',
+      });
+    });
+
+    it('copies only the facts the page sent, and works without page facts', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.enqueueBridgeEvent({
+        type: 'page',
+        name: 'p1',
+        properties: {},
+        page: { path: '/a', title: '' },
+      } as any);
+      client.enqueueBridgeEvent({
+        type: 'page',
+        name: 'p2',
+        properties: {},
+      } as any);
+
+      // An empty string is a fact the page sent, as on iOS and Android.
+      expect(client.queue[0].properties).toEqual({
+        path: '/a',
+        title: '',
+        name: 'p1',
+      });
+      expect(client.queue[1].properties).toEqual({ name: 'p2' });
+    });
+
+    it('bridge track events are unchanged', async () => {
+      const client = new MetaRouterAnalyticsClient(opts);
+      await client.init();
+
+      client.enqueueBridgeEvent({
+        type: 'track',
+        name: 'product_viewed',
+        properties: { sku: 'S1' },
+        page: PAGE,
+      } as any);
+
+      expect(client.queue[0].properties).toEqual({ sku: 'S1' });
+      expect(client.queue[0].context.page).toEqual(PAGE);
+    });
   });
 
   it('accepts identify with empty traits', async () => {

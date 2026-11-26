@@ -61,7 +61,9 @@ export const SUPPORTED_ENVELOPE_VERSION = 1;
 /**
  * Max envelope size accepted at the untrusted page→SDK boundary: a policy cap
  * that bounds parse cost. 64 KiB sits well under the cluster's 250 KiB
- * single-event ingest cap, leaving headroom for enrichment.
+ * single-event ingest cap, leaving headroom for enrichment — which, for a page
+ * event, copies the page facts into `properties` too (at most twice the page
+ * object, still well under the cap).
  */
 export const MAX_ENVELOPE_BYTES = 64 * 1024;
 

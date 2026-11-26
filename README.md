@@ -35,6 +35,8 @@ npm install @metarouter/react-native-sdk @react-native-async-storage/async-stora
 
 After installing or upgrading, run `cd ios && pod install` and rebuild the native app. This release includes native iOS and Android modules for queue persistence, so a JavaScript-only reload is not sufficient.
 
+On Android the app's `minSdkVersion` must be 23 or higher. React Native 0.73's app template defaults to 21, so older apps may need to raise it in `android/build.gradle`.
+
 ## Usage
 
 ### Basic Setup
@@ -233,8 +235,8 @@ The analytics client provides the following methods:
 - `track(event: string, properties?: Record<string, any>)`: Track custom events
 - `identify(userId: string, traits?: Record<string, any>)`: Identify users
 - `group(groupId: string, traits?: Record<string, any>)`: Group users
-- `screen(name: string, properties?: Record<string, any>)`: Track screen views
-- `page(name: string, properties?: Record<string, any>)`: Track page views
+- `screen(name: string, properties?: Record<string, any>)`: Track screen views. The name is sent in `event` and in `properties.name`, where it replaces a `name` you pass in `properties`
+- `page(name: string, properties?: Record<string, any>)`: Track page views. The name is sent as for `screen`
 - `alias(newUserId: string)`: Connect anonymous users to known user IDs. See [Using the alias() Method](#using-the-alias-method) for details
 - `recordOpenedURL(url: string, sourceApplication?: string)`: Forward a URL the host received (from `Linking.getInitialURL`, `Linking.addEventListener('url', ...)`, a UIScene URL handler, or an Android Intent) so it is attached to the next `Application Opened` event. The SDK does not read `Linking` itself, so only URLs passed here are recorded. One-shot — the buffer is cleared after the next Opened emit; last-write-wins if called multiple times. No-op (with a warning, always logged) when `trackLifecycleEvents` is disabled. See [Application Lifecycle Events](#application-lifecycle-events) for deep-link wiring details.
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
@@ -481,6 +483,8 @@ Bridged events go through the same enrichment as the app's own events. The page 
 |---|---|
 | event type (`track`/`page`), name, properties | `anonymousId` / `userId`, device + app context, session |
 | `context.page` — url, path, search, title, referrer | `messageId`, `timestamp` |
+
+A bridged `page` event also carries the page facts and the name in `properties`, as the web SDK sends them: url, path, search, title and referrer, then the page's own properties over them, then `name`. Integrations that read a page view from `properties` see the same fields as for a web page view.
 
 Each bridge message carries an ID minted by the page, used to drop duplicate deliveries within 5 minutes. Malformed input is rejected with a coded error, never silently dropped, and events arriving while the SDK cannot accept them are answered `not_ready` rather than acknowledged.
 
