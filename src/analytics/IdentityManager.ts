@@ -1,18 +1,65 @@
-import { log, warn } from "./utils/logger";
-import uuid from "react-native-uuid";
-import { EventPayload, EventWithIdentity } from "./types";
+import { log, warn } from './utils/logger';
+import uuid from 'react-native-uuid';
+import { EventPayload, EventWithIdentity } from './types';
 import {
   USER_ID_KEY,
   GROUP_ID_KEY,
   ANONYMOUS_ID_KEY,
-  getIdentityField,
+  HOST_SET_MARKER_KEY,
+  currentIdentityEpoch,
+  readIdentityFields,
   setIdentityField,
   removeIdentityField,
-} from "./utils/identityStorage";
+} from './utils/identityStorage';
+import { utf8ByteLength } from './utils/utf8';
+
+/**
+ * Longest accepted host anonymousId, in UTF-8 bytes (as on iOS and Android).
+ * Generous for any web or vendor id (a UUID is 36), and it rides on every event.
+ */
+export const MAX_HOST_ANONYMOUS_ID_BYTES = 256;
+
+/** First 8 characters, as the SDKs log identifiers. */
+export const maskId = (id: string | null | undefined): string =>
+  id ? `${id.slice(0, 8)}***` : 'not loaded yet';
+
+/**
+ * The trimmed id, or null (with a warning) when it is rejected: empty after
+ * trimming, or over 256 UTF-8 bytes. No format check: passing the id the web
+ * SDK actually sends is the host's job. `current` is only for the warning.
+ */
+export function validateHostAnonymousId(
+  raw: unknown,
+  current: string | null
+): string | null {
+  const unchanged = `anonymousId unchanged (${maskId(current)}).`;
+  if (typeof raw !== 'string') {
+    warn(`setAnonymousId rejected: the value is not a string. ${unchanged}`);
+    return null;
+  }
+  // Unicode whitespace, but not U+FEFF: String.prototype.trim() strips it,
+  // and the iOS and Android SDKs keep it.
+  const id = raw.replace(/^[^\S\uFEFF]+|[^\S\uFEFF]+$/g, '');
+  if (id === '') {
+    warn(
+      `setAnonymousId rejected: the value is empty after trimming whitespace. ${unchanged}`
+    );
+    return null;
+  }
+  const bytes = utf8ByteLength(id);
+  if (bytes > MAX_HOST_ANONYMOUS_ID_BYTES) {
+    warn(
+      `setAnonymousId rejected: ${maskId(id)} is ${bytes} UTF-8 bytes, over the ${MAX_HOST_ANONYMOUS_ID_BYTES}-byte limit. ${unchanged}`
+    );
+    return null;
+  }
+  return id;
+}
 
 /**
  * Manages user, group, and anonymous identity for analytics events.
  * - Loads or generates a persistent anonymous ID.
+ * - Adopts an anonymous ID the host sets (setHostAnonymousId).
  * - Tracks current user and group IDs.
  * - Can enrich events with identity information.
  * - Supports reset for logout/testing scenarios.
@@ -21,44 +68,65 @@ export class IdentityManager {
   private anonymousId: string | null = null;
   private userId?: string;
   private groupId?: string;
+  private loaded = false;
+  // A host id set while init() is reading: init() adopts it instead of the
+  // stored or generated one. Storage already has it (init.ts writes it).
+  private hostAnonymousId: string | null = null;
+  /**
+   * @param epoch - The identity epoch of the decision that built this client
+   *   (see utils/identityStorage): its writes are dropped once a reset() or a
+   *   refusal has been called since.
+   */
+  constructor(private readonly epoch: number = currentIdentityEpoch()) {}
 
   /**
-   * Initializes the manager by loading or generating an anonymous ID.
-   * Should be called before using other methods.
+   * Loads the stored ids, or generates and stores an anonymous ID. Reads are
+   * retried; an anonymous ID that still cannot be read is replaced for this
+   * launch only and never written over the stored one, so a storage hiccup
+   * cannot change the device's identity.
    */
   async init(): Promise<void> {
-    try {
-      const storedAnonId = await getIdentityField(ANONYMOUS_ID_KEY);
-      if (!storedAnonId) {
-        const newId = uuid.v4();
-        await setIdentityField(ANONYMOUS_ID_KEY, newId);
-        this.anonymousId = newId;
-        log("Generated and stored new anonymous ID:", newId);
-      } else {
-        this.anonymousId = storedAnonId;
-        log("Loaded stored anonymous ID:", storedAnonId);
-      }
+    const [anon, user, group, marker] = await readIdentityFields([
+      ANONYMOUS_ID_KEY,
+      USER_ID_KEY,
+      GROUP_ID_KEY,
+      HOST_SET_MARKER_KEY,
+    ]);
 
-      this.userId = (await getIdentityField(USER_ID_KEY)) || undefined;
-      this.groupId = (await getIdentityField(GROUP_ID_KEY)) || undefined;
-      log(
-        "IdentityManager initialized with anonymous ID:",
-        this.anonymousId,
-        "userId:",
-        this.userId,
-        "groupId:",
-        this.groupId
-      );
-    } catch (error) {
-      warn(
-        "Failed to initialize IdentityManager, using fallback anonymous ID",
-        error
-      );
-      this.anonymousId = `fallback-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 10)}`;
-      log("Using fallback anonymous ID:", this.anonymousId);
+    // Synchronous from here: a setHostAnonymousId() made during the reads
+    // above is in hostAnonymousId, and one made after sees loaded = true.
+    this.userId = (user.ok && user.raw) || undefined;
+    this.groupId = (group.ok && group.raw) || undefined;
+    if (!user.ok || !group.ok) {
+      warn('Failed to read the stored userId/groupId; continuing without them');
     }
+
+    // Install detection has read the marker before this init: it has done its
+    // job. Also when a host id arrived during the reads above: its write,
+    // queued after them, may set the marker, and this removal queues after it.
+    if (!marker.ok || marker.raw || this.hostAnonymousId !== null) {
+      void removeIdentityField(HOST_SET_MARKER_KEY, this.epoch);
+    }
+
+    if (this.hostAnonymousId !== null) {
+      this.anonymousId = this.hostAnonymousId;
+      this.hostAnonymousId = null;
+      log('Adopted the host-set anonymous ID:', maskId(this.anonymousId));
+    } else if (anon.ok && anon.raw) {
+      this.anonymousId = anon.raw;
+      log('Loaded stored anonymous ID:', maskId(this.anonymousId));
+    } else if (anon.ok) {
+      this.anonymousId = String(uuid.v4());
+      void setIdentityField(ANONYMOUS_ID_KEY, this.anonymousId, this.epoch);
+      log('Generated and stored new anonymous ID:', maskId(this.anonymousId));
+    } else {
+      this.anonymousId = String(uuid.v4());
+      warn(
+        'Failed to read the stored anonymous ID; using a new one for this launch without replacing the stored one',
+        anon.error
+      );
+    }
+    this.loaded = true;
   }
 
   /**
@@ -70,17 +138,28 @@ export class IdentityManager {
   }
 
   /**
+   * Adopts an anonymous ID the host set, in memory: init.ts validates it and
+   * writes storage. Before init() has loaded, the id is held and init() adopts
+   * it; after, it applies to the next event.
+   */
+  setHostAnonymousId(id: string): void {
+    if (!this.loaded) {
+      this.hostAnonymousId = id;
+      return;
+    }
+    if (id === this.anonymousId) return;
+    this.anonymousId = id;
+    log('Host set the anonymous ID:', maskId(id));
+  }
+
+  /**
    * Sets the user ID for the current session.
    * @param userId - The user ID to set.
    */
   async identify(userId: string) {
     this.userId = userId;
-    try {
-      await setIdentityField(USER_ID_KEY, userId);
-    } catch (error) {
-      warn("Failed to persist userId", error);
-    }
-    log("User identified:", userId);
+    await setIdentityField(USER_ID_KEY, userId, this.epoch);
+    log('User identified:', userId);
   }
 
   /**
@@ -89,12 +168,8 @@ export class IdentityManager {
    */
   async group(groupId: string) {
     this.groupId = groupId;
-    try {
-      await setIdentityField(GROUP_ID_KEY, groupId);
-    } catch (error) {
-      warn("Failed to persist groupId", error);
-    }
-    log("User grouped:", groupId);
+    await setIdentityField(GROUP_ID_KEY, groupId, this.epoch);
+    log('User grouped:', groupId);
   }
 
   /**
@@ -121,27 +196,23 @@ export class IdentityManager {
   addIdentityInfo<T extends EventPayload>(event: T): EventWithIdentity {
     return {
       ...event,
-      anonymousId: this.anonymousId ?? "unknown",
+      anonymousId: this.anonymousId ?? 'unknown',
       userId: event.userId ?? this.userId,
       groupId: event.groupId ?? this.groupId,
     };
   }
 
   /**
-   * Resets the identity manager to its initial state.
-   * Clears all user and group IDs, and sets the anonymous ID to null.
+   * Clears the ids in memory, for a client being torn down. Storage is cleared
+   * where the teardown is decided (init.ts: reset(), or a refusal over a
+   * running session), queued in call order with identity writes.
    */
   async reset() {
     this.anonymousId = null;
     this.userId = undefined;
     this.groupId = undefined;
-    try {
-      await removeIdentityField(ANONYMOUS_ID_KEY);
-      await removeIdentityField(USER_ID_KEY);
-      await removeIdentityField(GROUP_ID_KEY);
-    } catch (error) {
-      warn("Failed to clear userId/groupId/anonymousId from storage", error);
-    }
-    log("IdentityManager reset");
+    this.hostAnonymousId = null;
+    this.loaded = false;
+    log('IdentityManager reset');
   }
 }

@@ -4,14 +4,19 @@ import type { InitOptions } from './types';
 
 global.fetch = jest.fn(() => Promise.resolve({ ok: true })) as any;
 
-jest.mock('./utils/identityStorage', () => ({
-  getIdentityField: jest.fn(),
-  setIdentityField: jest.fn(),
-  removeIdentityField: jest.fn(),
-  ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
-  USER_ID_KEY: 'metarouter:user_id',
-  GROUP_ID_KEY: 'metarouter:group_id',
-}));
+jest.mock('./utils/identityStorage', () => {
+  const m = {
+    getIdentityField: jest.fn(),
+    setIdentityField: jest.fn(),
+    removeIdentityField: jest.fn(),
+    ANONYMOUS_ID_KEY: 'metarouter:anonymous_id',
+    USER_ID_KEY: 'metarouter:user_id',
+    GROUP_ID_KEY: 'metarouter:group_id',
+  };
+  return require('./__mocks__/identityStorageMock').completeIdentityStorageMock(
+    m
+  );
+});
 
 const opts: InitOptions = {
   ingestionHost: 'https://example.com',
@@ -261,6 +266,7 @@ describe('createAnalyticsClient', () => {
         setRealClient: setRealClientSpy,
         setInitializingClient: jest.fn(),
         setResetHandler: jest.fn(),
+        setSetAnonymousIdHandler: jest.fn(),
         setAttachWebViewHandler: jest.fn(),
         takePendingOpenedURLs: jest.fn(() => []),
         clearConfigDisabled: jest.fn(),

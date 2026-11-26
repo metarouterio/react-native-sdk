@@ -10,6 +10,7 @@ import {
   setRealClient,
   setAttachWebViewHandler,
   setResetHandler,
+  setSetAnonymousIdHandler,
   takePendingOpenedURLs,
 } from './proxy/proxyClient';
 import type { InitOptions, AnalyticsInterface, ConfigError } from './types';
@@ -17,6 +18,12 @@ import { validateInitOptions } from './utils/initOptions';
 import { BridgeMessageProcessor } from './webview/bridgeMessageProcessor';
 import { attachWebViewBridge } from './webview/webViewBridge';
 import { error as logError, warn } from './utils/logger';
+import { validateHostAnonymousId } from './IdentityManager';
+import {
+  clearIdentityStorage,
+  currentIdentityEpoch,
+  writeHostAnonymousId,
+} from './utils/identityStorage';
 
 /*
  * Session choreography. Init, disable and reset work runs strictly FIFO on
@@ -40,6 +47,12 @@ let decisionCount = 0;
 
 let workChain: Promise<void> = Promise.resolve();
 let activeClient: MetaRouterAnalyticsClient | null = null;
+
+// The client a setAnonymousId also reaches in memory: the session's client
+// from the moment its init starts until a reset or refusal is called
+// (synchronously, like the flags above). Storage always gets the id; a client
+// built later reads it from there.
+let identityOwner: MetaRouterAnalyticsClient | null = null;
 
 // Re-exported: tests flip the release path through init.buildConfig.
 export { buildConfig };
@@ -84,6 +97,13 @@ export function createAnalyticsClient(
   if (!passesConfigGate(options, configError)) {
     // An invalid call disables the whole session, even over a running valid
     // client: keeping the stale client would mask the config error.
+    if (initializationStarted && !sessionRefused) {
+      // Discarding a running session clears its identity, as the Android SDK
+      // does (its disable resets the client); in call order with identity
+      // writes, like reset().
+      void clearIdentityStorage();
+    }
+    identityOwner = null;
     initializationStarted = true;
     sessionRefused = true;
     currentOptions = null;
@@ -114,11 +134,20 @@ export function createAnalyticsClient(
   currentOptions = normalized;
   clearConfigDisabled();
   const decision = ++decisionCount;
-  enqueue(() => runInit(normalized, decision)).catch(ignoreFailure);
+  // Captured now, not when the init runs: a reset() or refusal called before
+  // it runs must still drop this client's identity writes.
+  const identityEpoch = currentIdentityEpoch();
+  enqueue(() => runInit(normalized, decision, identityEpoch)).catch(
+    ignoreFailure
+  );
   return proxyClient;
 }
 
-async function runInit(options: InitOptions, decision: number): Promise<void> {
+async function runInit(
+  options: InitOptions,
+  decision: number,
+  identityEpoch: number
+): Promise<void> {
   // Unreachable today: every path that queues an init has a disable or reset
   // queued ahead of it, or no bound client at all. Kept so a future path that
   // breaks that invariant leaves the bound client alone instead of orphaning
@@ -128,7 +157,10 @@ async function runInit(options: InitOptions, decision: number): Promise<void> {
 
   let instance: MetaRouterAnalyticsClient;
   try {
-    instance = new MetaRouterAnalyticsClient(options);
+    instance = new MetaRouterAnalyticsClient(options, { identityEpoch });
+    // Only the newest decision's client owns identity: an init superseded by
+    // a later reset or refusal is about to be torn down.
+    if (decision === decisionCount) identityOwner = instance;
     for (const args of takePendingOpenedURLs()) {
       instance.recordOpenedURL(...args);
     }
@@ -136,6 +168,7 @@ async function runInit(options: InitOptions, decision: number): Promise<void> {
     await instance.init();
   } catch (err) {
     logError('Initialization failed:', err);
+    if (identityOwner === instance!) identityOwner = null;
     // The one execution-time flag write: restores retryability so the next
     // createAnalyticsClient can try again. Skipped when a later call was made
     // after this init was queued — that call's decision (a reset, another
@@ -209,6 +242,12 @@ async function resetQuietly(
  * right after (even without awaiting) queues a real init behind it.
  */
 function resetSession(): Promise<void> {
+  // Identity storage is cleared now, in call order with identity writes and
+  // whether or not a client is running: a host id set before this reset is
+  // discarded, one set after it is kept for the next client. Writes from the
+  // client being torn down are dropped from here on.
+  identityOwner = null;
+  void clearIdentityStorage();
   if (!initializationStarted) return Promise.resolve();
   initializationStarted = false;
   sessionRefused = false;
@@ -218,6 +257,25 @@ function resetSession(): Promise<void> {
 }
 
 setResetHandler(resetSession);
+
+/**
+ * setAnonymousId from the public API, in any state; never queued. See
+ * AnalyticsInterface.setAnonymousId.
+ */
+function setAnonymousId(anonymousId: string): boolean {
+  const id = validateHostAnonymousId(
+    anonymousId,
+    identityOwner?.peekAnonymousId() ?? null
+  );
+  if (id === null) return false;
+  // Stored at call time, like the native SDKs: a client built later (or the
+  // next launch, if the app dies first) reads it from storage.
+  void writeHostAnonymousId(id);
+  identityOwner?.adoptHostAnonymousId(id);
+  return true;
+}
+
+setSetAnonymousIdHandler(setAnonymousId);
 
 // One processor for every WebView the host attaches, across sessions — like
 // the native proxy's. The sink resolves the client per message: the props are
@@ -259,6 +317,7 @@ function bindClient(instance: MetaRouterAnalyticsClient): AnalyticsInterface {
     enableDebugLogging: () => instance.enableDebugLogging(),
     getDebugInfo: () => instance.getDebugInfo(),
     getAnonymousId: () => instance.getAnonymousId(),
+    setAnonymousId,
     getSessionId: () => instance.getSessionId(),
     attachWebView,
     setProviderContext: (provider, key, value) =>

@@ -240,6 +240,7 @@ The analytics client provides the following methods:
 - `setAdvertisingId(advertisingId: string)`: Set the advertising identifier (IDFA on iOS, GAID on Android) for ad tracking. See [Advertising ID](#advertising-id-idfagaid) section for usage and compliance requirements
 - `clearAdvertisingId()`: Clear the advertising identifier from storage and context. Useful for GDPR/CCPA compliance when users opt out of ad tracking
 - `getAnonymousId(): Promise<string>`: Returns the current anonymous ID. Async, never returns null — guaranteed to resolve a string after `init()`
+- `setAnonymousId(anonymousId: string): boolean`: Replace the anonymousId with one the app already has, such as the web SDK's id in a hybrid app. Returns `false` when rejected. See [Setting the anonymousId](#setting-the-anonymousid)
 - `attachWebView(webViewRef, allowedOrigins: string[])`: Bridge a `react-native-webview` WebView so its pages' events are sent through the SDK. Returns props to spread onto the `<WebView>`. See [WebView Bridge](#webview-bridge)
 - `getSessionId(): Promise<string | null>`: Returns the current session ID, or `null` before the first event has been sent this launch. Never waits for initialization and never extends the session. See [Session Tracking](#session-tracking)
 - `registerConsentCategories(categories)`, `setConsent(consent): boolean`, `getConsent()`, `clearConsent()`, `subscribeToConsent(handler): () => void`: Consent state stamped at `context.consent` on every event. See [Consent](#consent)
@@ -803,7 +804,7 @@ The `anonymousId` is a unique identifier automatically generated for each device
 **How it's set:**
 
 - **Automatically** generated as a UUID v4 on first SDK initialization
-- No manual action required
+- Or by the app with `setAnonymousId()` (see below)
 
 **Behavior:**
 
@@ -822,6 +823,31 @@ console.log(anonymousId); // e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 **Use case:**
 Track user behavior before they log in or create an account, then connect pre-login and post-login activity using the `alias()` method.
+
+##### Setting the anonymousId
+
+In a hybrid app, the web SDK running in the app's WebViews already has an anonymousId, often one with history behind it. Hand it to the SDK so native and web events from the same user share one id:
+
+```js
+const analytics = createAnalyticsClient(options);
+
+// `raw` is the web SDK's `ajs_anonymous_id` cookie value, read however your app
+// reaches the WebView's cookies (a cookie library, or a message from the page).
+// The web SDK stores the id JSON-encoded, usually percent-encoded too:
+// %22a1b2c3d4-...%22 → "a1b2c3d4-..." → a1b2c3d4-...
+const webAnonymousId = decodeURIComponent(raw).replace(/^"|"$/g, "");
+analytics.setAnonymousId(webAnonymousId); // false if rejected
+```
+
+> **Pass the id exactly as the web SDK sends it.** The SDK only trims whitespace and stores everything else as given. A raw cookie value (`%22a1b2c3d4-...%22`) is accepted, and native events then carry an id that never matches the web events. Compare the value with the `anonymousId` on a web event before shipping. The cookie's name, domain and encoding depend on the web SDK's configuration.
+
+- **Call it right after `createAnalyticsClient`, in the same synchronous block, when the id is available.** Initialization runs after the current synchronous code, so the launch's first events (`Application Opened`, …) then carry it too. It also works any time later.
+- Applies to every event enriched after the call: your own calls, lifecycle events and [WebView Bridge](#webview-bridge) events. Events tracked before the call keep the previous id. Calls made before initialization finishes are replayed when it does, so they carry the new id.
+- Stored when you call it, and persisted across launches like the generated id, so an id set before initialization reaches the next launch even if the app is closed first. `reset()` discards it, and a new UUID is generated at the next `createAnalyticsClient`. An id set after calling `reset()` is kept for the next `createAnalyticsClient`, so a logout flow can call `reset()`, hand over the web SDK's new id, and initialize again (the id may be set before or after `createAnalyticsClient`).
+- No format is required (a UUID is not enforced). Values that are not strings, empty, or over 256 UTF-8 bytes are rejected: the call returns `false`, logs a warning, and the anonymousId is unchanged.
+- Setting an id before the first initialization on a new install still reports `Application Installed`.
+- The session is not affected.
+- Same contract as `setAnonymousId` in the iOS and Android SDKs (the SDKs trim a few rare control characters differently). In an app that embeds both, the React Native SDK's id is separate: set it through each SDK.
 
 #### 3. groupId
 
@@ -865,7 +891,7 @@ The `advertisingId` is used for ad tracking and attribution (IDFA on iOS, GAID o
 | Field             | Set By                   | Storage Key                 | Auto-Attached        | Cleared By                                |
 | ----------------- | ------------------------ | --------------------------- | -------------------- | ----------------------------------------- |
 | **userId**        | `identify(userId)`       | `metarouter:user_id`        | All events           | `reset()`                                 |
-| **anonymousId**   | Auto-generated (UUID v4) | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
+| **anonymousId**   | Auto-generated (UUID v4) or `setAnonymousId()` | `metarouter:anonymous_id`   | All events           | `reset()` (new ID generated on next init) |
 | **groupId**       | `group(groupId)`         | `metarouter:group_id`       | All events after set | `reset()`                                 |
 | **advertisingId** | `setAdvertisingId(id)`   | `metarouter:advertising_id` | Event context        | `clearAdvertisingId()`, `reset()`         |
 | **consent** | `setConsent(…)` | `metarouter:consent:state` | All events (`context.consent`) | `clearConsent()` (survives `reset()`) |
@@ -909,10 +935,10 @@ await analytics.reset();
 **What `reset()` does:**
 
 - Clears `userId`, `anonymousId`, `groupId`, and `advertisingId` from memory
-- Removes all identity fields from AsyncStorage
+- Removes all identity fields from AsyncStorage, also when called before `createAnalyticsClient` (calls made on the old client after `reset()` no longer write identity)
 - Stops background flush loops
 - Clears event queue
-- Next `init()` will generate a **new** `anonymousId`
+- Next `init()` will generate a **new** `anonymousId`, unless `setAnonymousId()` was called after `reset()`
 
 **Common logout flow:**
 

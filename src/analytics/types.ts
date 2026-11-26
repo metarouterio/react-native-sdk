@@ -146,6 +146,31 @@ export interface AnalyticsInterface {
   getDebugInfo: () => Promise<Record<string, any>>;
   getAnonymousId: () => Promise<string>;
   /**
+   * Replace the anonymousId with one the host already has — typically the id
+   * the web SDK uses in the app's WebViews (`ajs_anonymous_id`), so native and
+   * web events from one user share one anonymousId.
+   *
+   * Persisted, and stamped on every event enriched after the call: native
+   * calls, lifecycle events and WebView-bridge events. Never queued: call it
+   * in the same synchronous block as `createAnalyticsClient` when the id is
+   * available (initialization runs after the current synchronous code), so
+   * the launch's first events (`Application Opened`, …) carry it. A host id
+   * set before the first launch's init still reports `Application Installed`.
+   * The session is unaffected.
+   *
+   * `reset()` discards it and a new anonymousId is generated; an id set after
+   * calling `reset()` (e.g. adopting the web SDK's new id on logout) is kept
+   * for the next `createAnalyticsClient`.
+   *
+   * The value is trimmed and otherwise stored as given; any format is
+   * accepted, and passing the id the web SDK actually uses is up to the host.
+   * Setting the current value is a no-op that returns `true`.
+   *
+   * @returns `false` when rejected (not a string, empty, or over 256 UTF-8
+   *   bytes); the anonymousId is unchanged and a warning is logged.
+   */
+  setAnonymousId: (anonymousId: string) => boolean;
+  /**
    * The current session id, or null before the first event of the process
    * has been enriched. Sessions are minted by events, not reads, so this never
    * waits for initialization and never extends the session. The same value is

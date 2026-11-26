@@ -13,12 +13,15 @@ import { getContextInfo } from './utils/contextInfo';
 import { AppContext, loadAppContext } from './utils/appContext';
 import {
   getIdentityField,
+  readIdentityFields,
   setIdentityField,
   removeIdentityField,
   ADVERTISING_ID_KEY,
   ANONYMOUS_ID_KEY,
   USER_ID_KEY,
   GROUP_ID_KEY,
+  HOST_SET_MARKER_KEY,
+  currentIdentityEpoch,
 } from './utils/identityStorage';
 import {
   getLifecycleVersion,
@@ -83,6 +86,9 @@ export class MetaRouterAnalyticsClient {
   // Held in memory and overlaid per event, so `setAdvertisingId(id); track()`
   // stamps the new ID on that track without waiting for the storage write.
   private advertisingId: string | undefined;
+  // Identity writes are dropped once a reset() has been called since this
+  // client was built (see utils/identityStorage).
+  private readonly identityEpoch: number;
   private appContext!: AppContext;
   private appState: AppStateStatus = AppState.currentState;
   private appStateSubscription: { remove?: () => void } | null = null;
@@ -138,6 +144,9 @@ export class MetaRouterAnalyticsClient {
       sessionManager?: SessionManager;
       providerContextManager?: ProviderContextManager;
       consentManager?: ConsentManager;
+      // The identity epoch of the createAnalyticsClient call that queued
+      // this client; defaults to the current one (direct construction).
+      identityEpoch?: number;
     }
   ) {
     // Same rules as the createAnalyticsClient gate, without logging: the
@@ -163,7 +172,8 @@ export class MetaRouterAnalyticsClient {
 
     setDebugLogging(options.debug ?? false);
     this.trackLifecycleEvents = options.trackLifecycleEvents ?? false;
-    this.identityManager = new IdentityManager();
+    this.identityEpoch = deps?.identityEpoch ?? currentIdentityEpoch();
+    this.identityManager = new IdentityManager(this.identityEpoch);
     this.providerContextManager =
       deps?.providerContextManager ?? getProcessProviderContextManager();
     this.consentManager = deps?.consentManager ?? getProcessConsentManager();
@@ -603,16 +613,24 @@ export class MetaRouterAnalyticsClient {
    * build. Best-effort: failures are treated as "no identity state".
    */
   private async hasIdentityState(): Promise<boolean> {
-    try {
-      const [anon, user, group] = await Promise.all([
-        getIdentityField(ANONYMOUS_ID_KEY),
-        getIdentityField(USER_ID_KEY),
-        getIdentityField(GROUP_ID_KEY),
-      ]);
-      return !!(anon || user || group);
-    } catch {
-      return false;
-    }
+    const [anon, user, group, marker] = await readIdentityFields([
+      ANONYMOUS_ID_KEY,
+      USER_ID_KEY,
+      GROUP_ID_KEY,
+      HOST_SET_MARKER_KEY,
+    ]);
+    // Unreadable storage counts as prior identity: reporting an existing user
+    // as a new install is worse than the reverse. An anonymousId the host set
+    // on a device that had none (marker present) is not prior identity.
+    const hostSetOnly = marker.ok && !!marker.raw;
+    return (
+      !user.ok ||
+      !group.ok ||
+      !!user.raw ||
+      !!group.raw ||
+      !anon.ok ||
+      (!!anon.raw && !hostSetOnly)
+    );
   }
 
   private consumePendingDeepLink(): DeepLinkInfo | undefined {
@@ -799,6 +817,20 @@ export class MetaRouterAnalyticsClient {
     this.enqueue({ type: 'alias', userId: newUserId, timestamp: this.now() });
   }
 
+  /**
+   * Adopts an anonymousId the host set, already validated (init.ts routes and
+   * validates every setAnonymousId). Works before init() has loaded: the id is
+   * then adopted by init(), after install detection has read storage.
+   */
+  adoptHostAnonymousId(id: string): void {
+    this.identityManager.setHostAnonymousId(id);
+  }
+
+  /** The anonymousId in memory, or null before init() has loaded it. */
+  peekAnonymousId(): string | null {
+    return this.identityManager.getAnonymousId();
+  }
+
   // ===== Consent =====
   // Thin delegation, no lifecycle gate: consent must be settable during init,
   // and reset() deliberately leaves it alone.
@@ -869,7 +901,11 @@ export class MetaRouterAnalyticsClient {
 
     log('Setting advertising ID');
     this.advertisingId = advertisingId;
-    await setIdentityField(ADVERTISING_ID_KEY, advertisingId);
+    await setIdentityField(
+      ADVERTISING_ID_KEY,
+      advertisingId,
+      this.identityEpoch
+    );
     log('Advertising ID updated and persisted');
   }
 
@@ -890,7 +926,7 @@ export class MetaRouterAnalyticsClient {
 
     log('Clearing advertising ID');
     this.advertisingId = undefined;
-    await removeIdentityField(ADVERTISING_ID_KEY);
+    await removeIdentityField(ADVERTISING_ID_KEY, this.identityEpoch);
     log('Advertising ID cleared from storage and context');
   }
 
@@ -1022,12 +1058,10 @@ export class MetaRouterAnalyticsClient {
     this.dispatcher.reset();
     await this.persistentQueue.deleteSnapshot();
 
-    // Clear identity (must remove persisted IDs)
+    // Identity in memory. Storage is cleared where the teardown is decided
+    // (init.ts), in call order with identity writes.
     await this.identityManager.reset();
-
-    // Clear advertising ID from storage and context
     this.advertisingId = undefined;
-    await removeIdentityField(ADVERTISING_ID_KEY);
 
     // Allow a clean future init
     this.initPromise = null;
