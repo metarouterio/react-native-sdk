@@ -20,7 +20,7 @@ export const RESERVED_PROVIDER = 'metarouter';
 // not how many providers or keys it holds: hybrid apps forward ~20 sync
 // providers, and a count cap rejects them while a few large values pass.
 // 16 KiB total sits well under the cluster's single-event cap (250 KiB), even
-// beside a 64 KiB bridge payload.
+// beside a 64 KiB bridge payload (whose page facts a page event carries twice).
 //
 // 2 KiB per value fits an encrypted enrichment envelope (always over 256 B) and
 // stops one key from taking the whole budget. Exceeding a bound rejects that

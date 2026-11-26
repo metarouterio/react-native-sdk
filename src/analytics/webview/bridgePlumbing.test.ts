@@ -107,6 +107,39 @@ describe('WebView bridge plumbing (direct client)', () => {
     await client.reset();
   });
 
+  it('a page message through the wrapper channel carries the page facts and name in properties', async () => {
+    const client = new MetaRouterAnalyticsClient(opts);
+    await client.init();
+    const bridge = attachTo(client);
+
+    bridge.onMessage(
+      bridgeMessage(prefixOf(bridge), 'web-page-1', {
+        type: 'page',
+        name: 'page_view',
+        properties: { section: 'checkout', title: 'Own Title' },
+        // A non-string fact is dropped by the parser, so it never reaches properties.
+        page: { ...PAGE, search: null },
+      })
+    );
+
+    const [web] = (client as any).queue;
+    expect(web.properties).toEqual({
+      url: PAGE.url,
+      path: PAGE.path,
+      referrer: '',
+      title: 'Own Title',
+      section: 'checkout',
+      name: 'page_view',
+    });
+    expect(web.context.page).toEqual({
+      url: PAGE.url,
+      path: PAGE.path,
+      title: PAGE.title,
+      referrer: '',
+    });
+    await client.reset();
+  });
+
   it('sends page context and the session stamp in the POSTed batch body', async () => {
     const client = new MetaRouterAnalyticsClient(opts);
     await client.init();

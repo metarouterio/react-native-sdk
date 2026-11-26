@@ -45,6 +45,7 @@ import {
   SessionManager,
 } from './session/sessionManager';
 import type { BridgeEnvelope, PageContext } from './webview/bridgeEnvelope';
+import { isRecord } from './utils/isRecord';
 import {
   getProcessProviderContextManager,
   type ProviderContextManager,
@@ -489,7 +490,10 @@ export class MetaRouterAnalyticsClient {
         {
           type: envelope.type,
           event: envelope.name,
-          properties: envelope.properties,
+          properties:
+            envelope.type === 'page'
+              ? bridgePageProperties(envelope)
+              : envelope.properties,
           timestamp: this.now(),
         },
         envelope.page
@@ -752,7 +756,9 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
-   * Tracks a page view.
+   * Tracks a page view. The name is sent in `event` and in `properties.name`,
+   * where it replaces a `name` passed in `properties` (as the native SDKs and
+   * the web SDK's `page` do).
    * @param name - The name of the page.
    * @param properties - The properties to track.
    */
@@ -760,7 +766,7 @@ export class MetaRouterAnalyticsClient {
     this.enqueue({
       type: 'page',
       event: name,
-      properties,
+      properties: withName(properties, name),
       timestamp: this.now(),
     });
   }
@@ -776,7 +782,8 @@ export class MetaRouterAnalyticsClient {
   }
 
   /**
-   * Tracks a screen view.
+   * Tracks a screen view. The name is sent in `event` and in
+   * `properties.name`, where it replaces a `name` passed in `properties`.
    * @param name - The name of the screen.
    * @param properties - The properties to track.
    */
@@ -784,7 +791,7 @@ export class MetaRouterAnalyticsClient {
     this.enqueue({
       type: 'screen',
       event: name,
-      properties,
+      properties: withName(properties, name),
       timestamp: this.now(),
     });
   }
@@ -1038,4 +1045,26 @@ export class MetaRouterAnalyticsClient {
 
     log('Analytics client reset complete');
   }
+}
+
+/**
+ * `properties` with the name added, replacing a `name` the host passed, as the
+ * native SDKs do. Only a plain object is merged: from untyped JavaScript a
+ * string or array would otherwise spread into index keys.
+ */
+function withName(properties: unknown, name: string): Record<string, unknown> {
+  return isRecord(properties) ? { ...properties, name } : { name };
+}
+
+/**
+ * A bridge page event's properties as the web SDK sends them: the page facts,
+ * the page's own properties over them, then the name. Integrations that map a
+ * page view from `properties` (GA4's page_title / page_location) see nothing
+ * in `context.page`, which keeps the facts too. The parser already keeps only
+ * the facts the page sent, as strings.
+ */
+function bridgePageProperties(
+  envelope: BridgeEnvelope
+): Record<string, unknown> {
+  return { ...envelope.page, ...envelope.properties, name: envelope.name };
 }
