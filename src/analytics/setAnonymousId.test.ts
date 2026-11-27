@@ -105,11 +105,6 @@ const events = (client: any) =>
 // per call).
 const settle = () => new Promise((r) => setTimeout(r, 60));
 const USER = 'metarouter:user_id';
-const waitFor = async (cond: () => unknown) => {
-  for (let i = 0; i < 200 && !cond(); i++) {
-    await new Promise((r) => setTimeout(r, 10));
-  }
-};
 const MARKER = 'metarouter:anonymous_id_host_set';
 
 beforeEach(() => {
@@ -471,19 +466,116 @@ describe('setAnonymousId', () => {
     expect(events(next.clients[0])[0].event).toBe('Application Updated');
   });
 
-  it('a client superseded by reset() before its init ran writes no identity', async () => {
+  it('createAnalyticsClient, reset(), createAnalyticsClient: one client is built, and getAnonymousId answers for it', async () => {
     const { createAnalyticsClient, proxy, clients } = load();
     createAnalyticsClient(opts);
     void proxy.reset();
     createAnalyticsClient(opts);
-    await waitFor(() => clients[1]?.peekAnonymousId());
+    const id = await proxy.getAnonymousId();
     await settle();
 
-    const [superseded, current] = clients;
-    const id = current.peekAnonymousId();
-    expect(superseded.identityEpoch).toBeLessThan(current.identityEpoch);
+    expect(clients).toHaveLength(1);
+    expect(id).toBe(clients[0].peekAnonymousId());
     expect(store.get(ANON)).toBe(id);
+    // No cold-launch events from a superseded client: one Installed.
+    expect(events(clients[0]).map((e: any) => e.event)).toEqual([
+      'Application Installed',
+      'Application Opened',
+    ]);
+  });
+
+  it('a reset() while init runs: that client is not bound, is torn down, and its identity writes are dropped', async () => {
+    let proxy: any;
+    let fired = false;
+    const loaded = load({
+      // The client's init is reading identity: reset and re-initialize now.
+      onGet: (key) => {
+        if (key === MARKER && !fired) {
+          fired = true;
+          void proxy.reset();
+          loaded.createAnalyticsClient(opts);
+        }
+      },
+    });
+    proxy = loaded.proxy;
+    loaded.createAnalyticsClient(opts);
+    for (let i = 0; i < 100 && !fired; i++) await settle();
+    expect(fired).toBe(true);
+    const id = await proxy.getAnonymousId(); // asked after the reset
+    await settle();
+
+    const [discarded, current] = loaded.clients;
+    expect(id).toBe(current.peekAnonymousId());
+    expect(discarded.peekAnonymousId()).toBeNull(); // torn down
     expect(writes.filter(([k]) => k === ANON)).toEqual([[ANON, id]]);
+  });
+
+  it('calls queued before reset() do not replay into the next session; settings and queries do, commands reject', async () => {
+    const { createAnalyticsClient, proxy, clients } = load();
+    createAnalyticsClient(opts);
+    proxy.identify('user-before-logout');
+    proxy.setTracing(true);
+    const early = proxy.getAnonymousId();
+    const flushed = proxy.flush();
+    void proxy.reset();
+    createAnalyticsClient(opts);
+    await expect(flushed).rejects.toThrow('Dropped by reset()');
+    // Answered by the next session's client, as on iOS.
+    expect(await early).toBe(clients[0].peekAnonymousId());
+    await settle();
+
+    const client = clients[0];
+    expect(client.queue.some((e: any) => e.type === 'identify')).toBe(false);
+    expect(client.identityManager.getUserId()).toBeUndefined();
+    expect(store.has(USER)).toBe(false);
+    expect(client.tracingEnabled).toBe(true);
+  });
+
+  it('calls queued before a refusal that discards a session do not replay into the recovered one', async () => {
+    const { createAnalyticsClient, proxy, clients, init } = load();
+    const isDev = jest
+      .spyOn(init.buildConfig, 'isDevelopmentBuild')
+      .mockReturnValue(false);
+    try {
+      createAnalyticsClient(opts);
+      proxy.identify('user-A');
+      const flushed = proxy.flush();
+      createAnalyticsClient({ ...opts, writeKey: '' }); // refused
+      createAnalyticsClient(opts); // recovers
+      await expect(flushed).resolves.toBeUndefined(); // degraded, not rejected
+      await proxy.getAnonymousId();
+      await settle();
+
+      const client = clients[clients.length - 1];
+      expect(client.identityManager.getUserId()).toBeUndefined();
+      expect(client.queue.some((e: any) => e.type === 'identify')).toBe(false);
+      expect(store.has(USER)).toBe(false);
+    } finally {
+      isDev.mockRestore();
+    }
+  });
+
+  it('an opened URL recorded after a reset() during init reaches the next session', async () => {
+    let fired = false;
+    const loaded = load({
+      onGet: (key) => {
+        if (key === MARKER && !fired) {
+          fired = true;
+          void loaded.proxy.reset();
+          loaded.createAnalyticsClient(opts);
+          loaded.proxy.recordOpenedURL('app://deep');
+        }
+      },
+    });
+    loaded.createAnalyticsClient(opts);
+    for (let i = 0; i < 100 && !fired; i++) await settle();
+    await loaded.proxy.getAnonymousId();
+
+    const current = loaded.clients[1];
+    const opened = current.queue.find(
+      (e: any) => e.event === 'Application Opened'
+    );
+    expect(opened.properties.url).toBe('app://deep');
   });
 
   describe('unreadable identity storage', () => {

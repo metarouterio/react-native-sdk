@@ -11,6 +11,7 @@ import {
   setAttachWebViewHandler,
   setResetHandler,
   setSetAnonymousIdHandler,
+  dropCallsQueuedBeforeReset,
   takePendingOpenedURLs,
 } from './proxy/proxyClient';
 import type { InitOptions, AnalyticsInterface, ConfigError } from './types';
@@ -100,10 +101,13 @@ export function createAnalyticsClient(
     if (initializationStarted && !sessionRefused) {
       // Discarding a running session clears its identity, as the Android SDK
       // does (its disable resets the client); in call order with identity
-      // writes, like reset().
+      // writes, like reset(). Its queued calls are dropped like a reset's: a
+      // valid call that recovers the session must not replay them.
       void clearIdentityStorage();
+      dropCallsQueuedBeforeReset({ degrade: true });
     }
     identityOwner = null;
+    setInitializingClient(null);
     initializationStarted = true;
     sessionRefused = true;
     currentOptions = null;
@@ -153,14 +157,18 @@ async function runInit(
   // breaks that invariant leaves the bound client alone instead of orphaning
   // it with its flush loop still running.
   if (activeClient) return;
+  // Superseded before it ran: a reset() or refusal called after this init was
+  // queued tears its session down anyway, so building a client would only emit
+  // its cold-launch events and answer calls meant for the next session (the
+  // native SDKs skip the build too). Calls made meanwhile wait for the next
+  // bind; queued opened URLs stay for the next init.
+  if (decision !== decisionCount) return;
   clearConfigDisabled();
 
   let instance: MetaRouterAnalyticsClient;
   try {
     instance = new MetaRouterAnalyticsClient(options, { identityEpoch });
-    // Only the newest decision's client owns identity: an init superseded by
-    // a later reset or refusal is about to be torn down.
-    if (decision === decisionCount) identityOwner = instance;
+    identityOwner = instance;
     for (const args of takePendingOpenedURLs()) {
       instance.recordOpenedURL(...args);
     }
@@ -180,6 +188,14 @@ async function runInit(
     return;
   } finally {
     setInitializingClient(null);
+  }
+
+  if (decision !== decisionCount) {
+    // A reset() or refusal arrived while init() ran. Not bound, so the
+    // teardown queued behind this init finds no active client: stop this one
+    // here, or its flush loop would keep running.
+    await resetQuietly(instance);
+    return;
   }
 
   activeClient = instance;
@@ -248,6 +264,12 @@ function resetSession(): Promise<void> {
   // client being torn down are dropped from here on.
   identityOwner = null;
   void clearIdentityStorage();
+  // Calls queued before this reset are dropped now: the init they waited for
+  // may be skipped or torn down, and a later init must not replay them. A
+  // client still initializing no longer receives opened URLs either; they
+  // queue for the next init.
+  dropCallsQueuedBeforeReset();
+  setInitializingClient(null);
   if (!initializationStarted) return Promise.resolve();
   initializationStarted = false;
   sessionRefused = false;

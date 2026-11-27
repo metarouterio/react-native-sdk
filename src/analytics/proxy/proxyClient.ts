@@ -10,6 +10,11 @@ type PendingItem = {
   // Settles an async call's promise with its degraded value when the session
   // is refused before the call could run (see markConfigDisabled).
   degrade?: () => void;
+  // Not session activity, so kept when reset() or a refusal drops the calls
+  // queued before it: settings (setTracing, enableDebugLogging), as on iOS and
+  // Android, and queries (getAnonymousId, getDebugInfo), which the next
+  // session's client answers, as iOS's waiters are.
+  keepOnReset?: true;
   // Arguments of a queued recordOpenedURL, so the init that builds the next
   // client can hand them over before its cold-launch Opened (see
   // takePendingOpenedURLs).
@@ -211,6 +216,8 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     // Queue async call and return a promise that resolves after bind+run
     return new Promise<any>((resolve, reject) => {
       pendingCalls.push({
+        ...((methodName === 'getAnonymousId' ||
+          methodName === 'getDebugInfo') && { keepOnReset: true as const }),
         reject, // keep a handle for dropPending
         degrade: () => resolve(degradedResult(methodName)),
         fn: async () => {
@@ -251,6 +258,10 @@ function handleMethodCall<T extends keyof AnalyticsInterface>(
     },
     ...(methodName === 'recordOpenedURL' && {
       openedURL: args as Parameters<AnalyticsInterface['recordOpenedURL']>,
+    }),
+    ...((methodName === 'setTracing' ||
+      methodName === 'enableDebugLogging') && {
+      keepOnReset: true as const,
     }),
   });
   return undefined as ReturnType<AnalyticsInterface[T]>;
@@ -376,6 +387,25 @@ export function setAttachWebViewHandler(
   handler: AnalyticsInterface['attachWebView'] | null
 ) {
   attachWebViewHandler = handler;
+}
+
+/**
+ * reset(), or a refusal discarding a running session, was called: the calls
+ * queued before it belong to the session being torn down and must not replay
+ * into the next one (a pre-logout identify would carry its user over).
+ * Settings and queries are kept (see PendingItem.keepOnReset). A dropped async
+ * call rejects after a reset, as one cut off by a reset's teardown does, and
+ * settles with its degraded value after a refusal, as markConfigDisabled does.
+ */
+export function dropCallsQueuedBeforeReset(opts?: { degrade?: boolean }) {
+  const kept = pendingCalls.filter((it) => it.keepOnReset);
+  for (const it of pendingCalls) {
+    if (it.keepOnReset) continue;
+    if (opts?.degrade) it.degrade?.();
+    else it.reject?.(new Error('[MetaRouter] Dropped by reset()'));
+  }
+  pendingCalls.length = 0;
+  pendingCalls.push(...kept);
 }
 
 /** Registers init.ts's setAnonymousId, used in every state. */
