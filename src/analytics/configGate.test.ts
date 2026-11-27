@@ -202,13 +202,22 @@ describe('invalid InitOptions', () => {
 
   it('a failed init does not undo a reset and init queued behind it', async () => {
     const { createAnalyticsClient, ClientClass } = load();
-    jest
-      .spyOn(ClientClass.prototype, 'init')
-      .mockRejectedValueOnce(new Error('storage unavailable'));
+    // This init fails, but only after the reset and the next init are queued
+    // (an init superseded before it runs is never built).
+    let fail: ((err: Error) => void) | undefined;
+    jest.spyOn(ClientClass.prototype, 'init').mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          fail = reject;
+        })
+    );
 
-    const client = createAnalyticsClient(valid); // this init fails
+    const client = createAnalyticsClient(valid);
+    for (let i = 0; i < 50 && !fail; i++) await Promise.resolve();
+    expect(fail).toBeDefined();
     void client.reset();
     createAnalyticsClient({ ...valid, maxQueueEvents: 3000 });
+    fail!(new Error('storage unavailable'));
     expect(await client.getAnonymousId()).toBe('anon-123');
 
     // The failed init's rollback must not have marked the session as not
